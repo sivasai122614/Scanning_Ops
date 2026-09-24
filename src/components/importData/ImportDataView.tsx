@@ -31,7 +31,13 @@ import {
   Maximize2,
   Copy,
 } from 'lucide-react';
-import { importedService, ImportedRecord, ClassIdSummary, ImportedStats } from '../../services/importedService';
+import {
+  importedService,
+  ImportedRecord,
+  ClassIdSummary,
+  ImportedStats,
+  sanitizeBarcode,
+} from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
@@ -91,6 +97,7 @@ export const ImportDataView: React.FC<{
   // Camera & Live Scanner State
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const roiCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const zxingReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const zxingControlsRef = useRef<{ stop: () => void } | null>(null);
   const barcodeIntervalRef = useRef<any>(null);
@@ -428,14 +435,14 @@ export const ImportDataView: React.FC<{
   const handleDownloadTemplate = () => {
     const templateData = [
       ['Class ID', 'Member ID'],
-      ['0403', 'MIS0001'],
+      ['0031', '21MIS0074'],
+      ['0031', '22MIS0267'],
+      ['0031', '21MIS0080'],
+      ['0403', 'MIS0089'],
       ['0403', 'MIS0002'],
       ['0403', 'MIS0003'],
       ['0404', 'MIS0004'],
       ['0404', 'MIS0005'],
-      ['0405', 'MIS0006'],
-      ['0405', 'MIS0007'],
-      ['0405', 'MIS0008'],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(templateData);
@@ -445,7 +452,7 @@ export const ImportDataView: React.FC<{
   };
 
   // ----------------------------------------------------------------------------
-  // CAMERA STREAM & BARCODE SCANNER (Section 2, 3, 4, 5, 6)
+  // CAMERA STREAM & BARCODE SCANNER (Section 2, 3, 4, 5, 6 & V3)
   // ----------------------------------------------------------------------------
   const startCamera = async () => {
     setCameraLoading(true);
@@ -462,35 +469,45 @@ export const ImportDataView: React.FC<{
 
       let stream: MediaStream | null = null;
 
-      // Tier 1: Exact configuration specified in Section 4:
-      // facingMode: "environment", width: 1280, height: 720, focusMode: "continuous"
+      // Section 4 (V3): High-resolution rear camera stream
+      // Request 1080p environment stream with continuous autofocus
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            focusMode: 'continuous',
-          } as any,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 },
+          },
           audio: false,
         });
       } catch (err1) {
-        console.warn('High-spec environment camera constraint failed, retrying relaxed:', err1);
+        console.warn('1080p environment camera failed, falling back to 720p:', err1);
         try {
-          // Tier 2: Relaxed environment camera
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: { ideal: 'environment' },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
             },
             audio: false,
           });
         } catch (err2) {
-          console.warn('Relaxed environment camera failed, falling back to any video device:', err2);
-          // Tier 3: Universal fallback
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: false,
-          });
+          console.warn('720p environment camera failed, falling back to relaxed environment:', err2);
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: { ideal: 'environment' },
+              },
+              audio: false,
+            });
+          } catch (err3) {
+            console.warn('Relaxed environment camera failed, falling back to any video device:', err3);
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+          }
         }
       }
 
@@ -499,6 +516,27 @@ export const ImportDataView: React.FC<{
       }
 
       streamRef.current = stream;
+
+      // Inspect actual track capabilities when available (Section 4)
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        try {
+          const capabilities = typeof videoTrack.getCapabilities === 'function' ? videoTrack.getCapabilities() : {};
+          const settings = typeof videoTrack.getSettings === 'function' ? videoTrack.getSettings() : {};
+          console.info('[ExamScan Camera] Resolution:', settings.width, 'x', settings.height, 'Capabilities:', capabilities);
+
+          // Apply continuous autofocus if supported
+          if ((capabilities as any).focusMode && Array.isArray((capabilities as any).focusMode) && (capabilities as any).focusMode.includes('continuous')) {
+            if (typeof videoTrack.applyConstraints === 'function') {
+              await videoTrack.applyConstraints({
+                advanced: [{ focusMode: 'continuous' } as any],
+              }).catch(() => {});
+            }
+          }
+        } catch (capsErr) {
+          console.warn('[ExamScan Camera] Track capabilities note:', capsErr);
+        }
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -512,7 +550,7 @@ export const ImportDataView: React.FC<{
       setPermissionDenied(false);
       setCameraError(null);
 
-      // Start continuous scanning engine (Section 2 & 6)
+      // Start continuous scanning engine with prioritized wide horizontal ROI
       startContinuousScanner();
     } catch (err: any) {
       console.warn('Camera initialization or permission error:', err);
@@ -552,7 +590,7 @@ export const ImportDataView: React.FC<{
     setCameraLoading(false);
   };
 
-  // Section 2: Real Barcode Scanning Library with Code 39, Code 128, etc. explicitly enabled
+  // Section 2 & 5 (V3): Real Barcode Scanning Library with Prioritized Horizontal ROI
   const startContinuousScanner = () => {
     if (barcodeIntervalRef.current) {
       clearInterval(barcodeIntervalRef.current);
@@ -565,7 +603,25 @@ export const ImportDataView: React.FC<{
       zxingControlsRef.current = null;
     }
 
-    // Preferred approach: BarcodeDetector API (Section 2)
+    const getRoiCanvas = (vw: number, vh: number) => {
+      if (!roiCanvasRef.current) {
+        roiCanvasRef.current = document.createElement('canvas');
+      }
+      // Section 5: Wide horizontal rectangular ROI:
+      // ~90% width, ~25% height, centered horizontally & vertically (y ~ 37.5%)
+      const roiWidth = Math.max(100, Math.round(vw * 0.90));
+      const roiHeight = Math.max(50, Math.round(vh * 0.25));
+      const roiX = Math.round(vw * 0.05);
+      const roiY = Math.round(vh * 0.375);
+
+      if (roiCanvasRef.current.width !== roiWidth || roiCanvasRef.current.height !== roiHeight) {
+        roiCanvasRef.current.width = roiWidth;
+        roiCanvasRef.current.height = roiHeight;
+      }
+      return { canvas: roiCanvasRef.current, roiX, roiY, roiWidth, roiHeight };
+    };
+
+    // Preferred approach: Native BarcodeDetector API (Section 2 & 5)
     if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
       try {
         const detector = new (window as any).BarcodeDetector({
@@ -577,29 +633,47 @@ export const ImportDataView: React.FC<{
             'itf',
             'upc_a',
             'upc_e',
-            'qr_code',
           ],
         });
 
         barcodeIntervalRef.current = setInterval(async () => {
           if (isProcessingRef.current) return;
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
+          const video = videoRef.current;
+          if (!video || video.readyState < 2 || video.videoWidth === 0) return;
+
           try {
-            const detected = await detector.detect(videoRef.current);
-            if (detected && detected.length > 0 && detected[0].rawValue) {
-              handleBarcodeScanned(detected[0].rawValue);
+            // 1. Crop to the wide horizontal scan ROI (Section 5)
+            const { canvas, roiX, roiY, roiWidth, roiHeight } = getRoiCanvas(video.videoWidth, video.videoHeight);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (ctx) {
+              ctx.drawImage(video, roiX, roiY, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
+              try {
+                const roiDetected = await detector.detect(canvas);
+                if (roiDetected && roiDetected.length > 0 && roiDetected[0].rawValue) {
+                  handleBarcodeScanned(roiDetected[0].rawValue);
+                  return;
+                }
+              } catch (canvasErr) {
+                // If canvas detection errors on specific browser, continue to full video element
+              }
+            }
+
+            // 2. Fallback to full video frame if barcode is held slightly off-center
+            const fullDetected = await detector.detect(video);
+            if (fullDetected && fullDetected.length > 0 && fullDetected[0].rawValue) {
+              handleBarcodeScanned(fullDetected[0].rawValue);
             }
           } catch (e) {
             // Frame skip
           }
-        }, 85);
+        }, 90);
         return;
       } catch (nativeErr) {
         console.warn('Native BarcodeDetector initialization note, using ZXing fallback:', nativeErr);
       }
     }
 
-    // Fallback approach: ZXing BrowserMultiFormatReader (Section 2)
+    // Fallback approach: ZXing BrowserMultiFormatReader (Section 2 & 5)
     try {
       const hints = new Map<DecodeHintType, any>();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [
@@ -610,7 +684,6 @@ export const ImportDataView: React.FC<{
         BarcodeFormat.ITF,
         BarcodeFormat.UPC_A,
         BarcodeFormat.UPC_E,
-        BarcodeFormat.QR_CODE,
       ]);
       hints.set(DecodeHintType.TRY_HARDER, true);
 
@@ -640,46 +713,51 @@ export const ImportDataView: React.FC<{
   };
 
   // ----------------------------------------------------------------------------
-  // BARCODE PROCESSING & MATCHING ENGINE (Section 7, 8, 9, 10, 11, 12, 13, 15)
+  // BARCODE PROCESSING & MATCHING ENGINE (Section 7, 8, 9, 10, 11, 12, 13, 15 & V3)
   // ----------------------------------------------------------------------------
   const handleBarcodeScanned = async (rawCode: string) => {
-    const trimmed = rawCode.trim();
-    if (!trimmed) return;
+    // 1. Sanitize barcode: strip whitespace and Code 39 start/stop asterisks (e.g. "*003121MIS0074*" => "003121MIS0074")
+    const sanitized = sanitizeBarcode(rawCode);
+    if (!sanitized || sanitized.length < 4) return;
 
     const now = Date.now();
-    // Debounce duplicate scans within 1.5 seconds if identical
+    // 2. Camera Frame Debounce / Duplicate Scan Lock (V3 Item 4 & 5):
+    // Continuous video stream captures 15-30 frames per second. If the user keeps holding the
+    // same booklet in front of the lens, ignore identical barcode frames for 2.5 seconds.
+    // This completely separates camera stream duplicate frames from Excel upload validation,
+    // and prevents repeated buzzers/warnings on every camera tick.
     if (
-      lastScannedCodeRef.current === trimmed &&
-      now - lastScannedTimeRef.current < 1500
+      lastScannedCodeRef.current === sanitized &&
+      now - lastScannedTimeRef.current < 2500
     ) {
       return;
     }
 
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
-    lastScannedCodeRef.current = trimmed;
+    lastScannedCodeRef.current = sanitized;
     lastScannedTimeRef.current = now;
 
-    // Section 7: Extract first 4 characters for Class ID: const classId = barcodeValue.substring(0, 4);
-    const detectedClassId = trimmed.length >= 4 ? trimmed.substring(0, 4) : trimmed;
+    // 3. Section 7: Extract first 4 characters for Class ID: const classId = barcodeValue.substring(0, 4);
+    const detectedClassId = sanitized.substring(0, 4);
     setActiveClassId(detectedClassId);
 
     try {
-      // Section 8 & 10: Query Supabase / imported table and update record to 'started'
-      const result = await importedService.processBarcode(trimmed);
+      // 4. Query Supabase / imported table and update record to 'started'
+      const result = await importedService.processBarcode(sanitized);
 
       if (result.success) {
         // Section 11: AUDIO & VISUAL FEEDBACK
         playScanSuccessSound();
-        const displayMember = result.member_id || (trimmed.length > 4 ? trimmed.substring(4) : '—');
+        const displayMember = result.member_id || (sanitized.length > 4 ? sanitized.substring(4) : '—');
         setLastSuccessfulScan({
-          barcode: trimmed,
+          barcode: sanitized,
           class_id: result.class_id || detectedClassId,
           member_id: displayMember,
           timestamp: new Date().toLocaleTimeString(),
         });
         setScanSuccessFlash({
-          barcode: trimmed,
+          barcode: sanitized,
           class_id: result.class_id || detectedClassId,
           member_id: displayMember,
         });
@@ -688,40 +766,40 @@ export const ImportDataView: React.FC<{
         setScannerNotification({
           type: 'success',
           title: `Class ${result.class_id} • Verified`,
-          message: `Scanned Barcode: ${trimmed} → Assigned to Member ${displayMember} (Status: Started)`,
+          message: `Scanned Barcode: ${sanitized} → Assigned to Member ${displayMember} (Status: Started)`,
         });
       } else {
         playScanWarningSound();
         if (result.isDuplicate) {
-          // Section 12: DUPLICATE SCAN HANDLING
+          // Section 12 & V3: DUPLICATE SCAN HANDLING (Alert operator once, no frame spam)
           setScanWarningFlash({
             title: 'Barcode Already Scanned',
-            message: `Barcode: ${trimmed}`,
+            message: `Barcode: ${sanitized} (${result.message || 'Already marked as started'})`,
           });
-          setTimeout(() => setScanWarningFlash(null), 1600);
+          setTimeout(() => setScanWarningFlash(null), 1800);
           setScannerNotification({
             type: 'warning',
             title: 'Duplicate Barcode Scanned',
-            message: `Barcode Already Scanned: ${trimmed}`,
+            message: `Barcode Already Scanned: ${sanitized}`,
           });
         } else if (result.isUnknownClass) {
           // Section 13: UNRECOGNIZED BARCODE HANDLING
           setScanWarningFlash({
             title: `Unknown Class ID: ${detectedClassId}`,
-            message: `No imported records found for this Class ID.`,
+            message: `No imported records found for Class "${detectedClassId}".`,
           });
-          setTimeout(() => setScanWarningFlash(null), 1600);
+          setTimeout(() => setScanWarningFlash(null), 1800);
           setScannerNotification({
             type: 'error',
             title: `Unknown Class ID: ${detectedClassId}`,
-            message: `No imported records found for this Class ID.`,
+            message: `No imported records found for Class "${detectedClassId}".`,
           });
         } else {
           setScanWarningFlash({
             title: 'Scan Alert',
             message: result.message,
           });
-          setTimeout(() => setScanWarningFlash(null), 1600);
+          setTimeout(() => setScanWarningFlash(null), 1800);
           setScannerNotification({
             type: 'warning',
             title: 'Scan Alert',
@@ -739,7 +817,7 @@ export const ImportDataView: React.FC<{
         message: e?.message || 'Failed processing barcode',
       });
     } finally {
-      // Section 6: Continue camera scanning for next barcode
+      // Continue camera scanning for next booklet after processing finishes + small buffer
       setTimeout(() => {
         isProcessingRef.current = false;
       }, 350);
@@ -1438,120 +1516,124 @@ export const ImportDataView: React.FC<{
               </div>
             )}
 
-            {/* Camera Viewport (Section 5) */}
-            <div className="relative w-full bg-black min-h-[380px] sm:min-h-[440px] flex items-center justify-center overflow-hidden">
-              <video
-                ref={videoRef}
-                className="w-full h-full object-cover min-h-[380px] sm:min-h-[440px]"
-                playsInline
-                muted
-                autoPlay
-              />
+            {/* Mobile-Optimized Wide Horizontal Camera Container (Matches Reference Image) */}
+            <div className="p-3 sm:p-4 bg-[#F8FAFC]">
+              {/* Live Camera Preview: Wide Horizontal Black Rectangle */}
+              <div className="relative w-full max-w-[720px] aspect-[2.9/1] sm:aspect-[3.2/1] min-h-[110px] max-h-[175px] sm:max-h-[220px] bg-black rounded-xl overflow-hidden shadow-md border border-slate-900 mx-auto flex items-center justify-center">
+                <video
+                  ref={videoRef}
+                  className="w-full h-full object-cover"
+                  playsInline
+                  muted
+                  autoPlay
+                />
 
-              {/* Viewfinder Target Guide Overlay (Section 5) */}
-              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-                <div className="relative w-72 sm:w-96 h-40 sm:h-52 border-2 border-emerald-400/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.50)]">
-                  {/* Four Corner Accents */}
-                  <div className="absolute -top-1.5 -left-1.5 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg" />
-                  <div className="absolute -top-1.5 -right-1.5 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg" />
-                  <div className="absolute -bottom-1.5 -left-1.5 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-lg" />
-                  <div className="absolute -bottom-1.5 -right-1.5 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-lg" />
+                {/* Wide Horizontal Scan Guide (Section 6, 8 & Reference Image) */}
+                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-2 sm:p-3">
+                  <div className="relative w-[94%] h-[82%] rounded-lg border border-emerald-400/80 flex items-center justify-center">
+                    {/* Corner Reticle Accents */}
+                    <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-400 rounded-tl-xs" />
+                    <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-emerald-400 rounded-tr-xs" />
+                    <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-emerald-400 rounded-bl-xs" />
+                    <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-emerald-400 rounded-br-xs" />
 
-                  {/* Target Crosshairs */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-4">
-                    <div className="text-[11px] font-bold text-emerald-300 uppercase tracking-widest bg-black/60 px-3 py-1 rounded-full border border-emerald-400/30">
-                      SCAN BARCODE HERE
+                    {/* Scan Guide Text */}
+                    <div className="relative z-10 px-2.5 py-0.5 bg-black/65 backdrop-blur-xs rounded-full border border-emerald-400/30 flex items-center gap-1.5">
+                      <span className="text-emerald-400 text-[10px] select-none">─────</span>
+                      <span className="text-[9px] sm:text-[11px] font-black text-emerald-300 uppercase tracking-wider">
+                        SCAN BARCODE HERE
+                      </span>
+                      <span className="text-emerald-400 text-[10px] select-none">─────</span>
+                    </div>
+
+                    {/* Full Width Laser Scanning Guide Line */}
+                    <div className="absolute left-1.5 right-1.5 top-1/2 -translate-y-1/2 h-[1.5px] bg-rose-500/90 shadow-[0_0_8px_#f43f5e] animate-pulse" />
+                  </div>
+                </div>
+
+                {/* Green Check Flash Overlay (Section 11) */}
+                {scanSuccessFlash && (
+                  <div className="absolute inset-0 bg-emerald-600/40 backdrop-blur-xs flex items-center justify-center text-white z-30 transition-all p-2">
+                    <div className="bg-black/90 px-3.5 py-1.5 rounded-xl text-center shadow-lg border border-emerald-400/50 flex items-center gap-2.5 max-w-[90%]">
+                      <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                        <CheckCircle2 className="h-4 w-4 stroke-[3]" />
+                      </div>
+                      <div className="text-left min-w-0">
+                        <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider truncate">
+                          ✓ Verified & Started
+                        </div>
+                        <div className="text-xs font-mono font-bold text-white truncate">
+                          {scanSuccessFlash.barcode} (Class {scanSuccessFlash.class_id} • {scanSuccessFlash.member_id})
+                        </div>
+                      </div>
                     </div>
                   </div>
+                )}
 
-                  {/* Pulsing Red Laser Line (Continuous Scan) */}
-                  <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500 shadow-[0_0_12px_#f43f5e] animate-pulse" />
-                </div>
+                {/* Amber Warning Flash Overlay (Section 12 & 13) */}
+                {scanWarningFlash && (
+                  <div className="absolute inset-0 bg-amber-600/35 backdrop-blur-xs flex items-center justify-center text-white z-30 transition-all p-2">
+                    <div className="bg-black/90 px-3.5 py-1.5 rounded-xl text-center shadow-lg border border-amber-400/60 flex items-center gap-2.5 max-w-[90%]">
+                      <div className="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0">
+                        <AlertTriangle className="h-4 w-4 stroke-[2.5]" />
+                      </div>
+                      <div className="text-left min-w-0">
+                        <div className="text-[10px] font-bold text-amber-400 uppercase tracking-wider truncate">
+                          {scanWarningFlash.title}
+                        </div>
+                        <div className="text-[11px] font-medium text-slate-200 truncate">
+                          {scanWarningFlash.message}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-                {/* Searching indicator */}
-                <div className="mt-4 bg-black/75 backdrop-blur-xs text-white text-[11px] font-semibold px-4 py-1.5 rounded-full flex items-center gap-2 border border-white/20">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                  <span>Searching for barcode...</span>
-                </div>
+                {/* Camera Loading Overlay */}
+                {cameraLoading && (
+                  <div className="absolute inset-0 bg-black/90 flex flex-row items-center justify-center gap-2 text-white z-20">
+                    <RefreshCw className="h-5 w-5 animate-spin text-[#1565D8]" />
+                    <span className="text-xs font-semibold">Starting Camera...</span>
+                  </div>
+                )}
+
+                {/* Camera Permission Required Overlay */}
+                {(permissionDenied || cameraError) && !cameraLoading && (
+                  <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-xs flex flex-row items-center justify-center gap-2.5 px-3 py-2 text-white z-20">
+                    <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                      <Camera className="h-4 w-4" />
+                    </div>
+                    <div className="text-left flex-1 min-w-0">
+                      <div className="text-xs font-bold text-white truncate">Camera Permission Required</div>
+                      <div className="text-[10px] text-slate-300 truncate">Allow camera access to start scanning</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="px-2.5 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-[10px] font-bold transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <Camera className="h-3 w-3" />
+                        <span>Allow</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[10px] font-bold border border-white/20 transition-all flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        <span>Retry</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Green Check Flash Overlay (Section 11) */}
-              {scanSuccessFlash && (
-                <div className="absolute inset-0 bg-emerald-600/35 backdrop-blur-xs flex flex-col items-center justify-center text-white z-30 transition-all">
-                  <div className="w-16 h-16 rounded-full bg-emerald-500 text-white flex items-center justify-center mb-3 shadow-xl animate-bounce">
-                    <CheckCircle2 className="h-10 w-10 stroke-[2.5]" />
-                  </div>
-                  <div className="bg-black/85 backdrop-blur-sm px-5 py-3 rounded-2xl text-center shadow-lg border border-emerald-400/40">
-                    <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
-                      ✓ Verified & Started
-                    </div>
-                    <div className="text-base font-mono font-bold text-white mt-1">
-                      {scanSuccessFlash.barcode}
-                    </div>
-                    <div className="text-xs text-emerald-200 mt-1 flex items-center justify-center gap-3">
-                      <span>Class: <strong>{scanSuccessFlash.class_id}</strong></span>
-                      <span>•</span>
-                      <span>Member: <strong>{scanSuccessFlash.member_id}</strong></span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Amber Warning Flash Overlay (Section 12 & 13) */}
-              {scanWarningFlash && (
-                <div className="absolute inset-0 bg-amber-600/30 backdrop-blur-xs flex flex-col items-center justify-center text-white z-30 transition-all">
-                  <div className="w-16 h-16 rounded-full bg-amber-500 text-white flex items-center justify-center mb-3 shadow-xl animate-pulse">
-                    <AlertTriangle className="h-10 w-10 stroke-[2.5]" />
-                  </div>
-                  <div className="bg-black/90 backdrop-blur-sm px-6 py-3.5 rounded-2xl text-center shadow-lg border border-amber-400/50 max-w-sm mx-4">
-                    <div className="text-xs font-bold text-amber-400 uppercase tracking-wider">
-                      {scanWarningFlash.title}
-                    </div>
-                    <div className="text-xs text-slate-200 mt-1 font-medium">
-                      {scanWarningFlash.message}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Camera Loading Overlay */}
-              {cameraLoading && (
-                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center text-white z-20">
-                  <RefreshCw className="h-8 w-8 animate-spin text-[#1565D8] mb-2" />
-                  <p className="text-xs font-semibold">Initializing Device Camera...</p>
-                </div>
-              )}
-
-              {/* Section 3: Proper Camera Permission Handling Overlay */}
-              {(permissionDenied || cameraError) && !cameraLoading && (
-                <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-xs flex flex-col items-center justify-center text-center p-6 text-white z-20">
-                  <div className="w-14 h-14 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center mb-3">
-                    <Camera className="h-7 w-7" />
-                  </div>
-                  <h4 className="text-base font-bold text-white">Camera Permission Required</h4>
-                  <p className="text-xs text-slate-300 max-w-sm mt-1 mb-5">
-                    Please allow camera access to start scanning.
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={startCamera}
-                      className="px-5 py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer active:scale-95"
-                    >
-                      <Camera className="h-4 w-4" />
-                      <span>Allow Camera</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={startCamera}
-                      className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all border border-white/20 flex items-center gap-2 cursor-pointer active:scale-95"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      <span>Retry Camera</span>
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* Status Below Camera: ● Searching for barcode... (Matches Section 9 & 13) */}
+              <div className="mt-2.5 flex items-center justify-center gap-2 text-[11px] font-medium text-[#64748B]">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                <span>Searching for barcode... (Hold booklet at comfortable distance)</span>
+              </div>
             </div>
 
             {/* Quick Test Barcodes Simulation Bar */}
@@ -1592,6 +1674,21 @@ export const ImportDataView: React.FC<{
                   </>
                 ) : (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => handleBarcodeScanned('*003121MIS0074*')}
+                      className="px-2.5 py-1 bg-white hover:bg-[#1565D8] hover:text-white text-[#1565D8] rounded-md font-mono text-[11px] font-bold border border-[#CBD5E1] transition-all shadow-2xs cursor-pointer active:scale-95"
+                      title="Test Code 39 asterisk format"
+                    >
+                      Scan *003121MIS0074*
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBarcodeScanned('003122MIS0267')}
+                      className="px-2.5 py-1 bg-white hover:bg-[#1565D8] hover:text-white text-[#1565D8] rounded-md font-mono text-[11px] font-bold border border-[#CBD5E1] transition-all shadow-2xs cursor-pointer active:scale-95"
+                    >
+                      Scan 003122MIS0267
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleBarcodeScanned('040322MIS0089')}

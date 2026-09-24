@@ -507,9 +507,10 @@ export const BarcodeScannerView: React.FC<{
     setManualInput('');
   };
 
-  // Continuous Barcode Handler with frame debounce & validation (STRICT REQUIREMENT 6 & 8)
+  // Continuous Barcode Handler with frame debounce & validation (STRICT REQUIREMENT 6 & 8 & V3)
   const handleContinuousBarcode = (rawCode: string) => {
-    const code = rawCode.trim().toUpperCase();
+    // Strip Code 39 start/stop asterisks (e.g. *003121MIS0074* -> 003121MIS0074)
+    const code = rawCode.trim().replace(/^\*+|\*+$/g, '').toUpperCase();
     if (!code) return;
 
     // STRICT REQUIREMENT 6: Frame Debouncing
@@ -820,8 +821,8 @@ export const BarcodeScannerView: React.FC<{
           </div>
         ) : (
         <div className="space-y-3.5">
-          {/* Viewfinder Card with Real-Time Camera Stream (Requirement 3: Large, Expansive Detection Area) */}
-          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center h-[380px] sm:h-[450px] md:h-[490px] w-full text-center transition-all">
+          {/* Viewfinder Card with Real-Time Camera Stream (Wide Horizontal Container) */}
+          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center aspect-[2.9/1] sm:aspect-[3.2/1] min-h-[110px] max-h-[175px] sm:max-h-[220px] w-full max-w-[720px] mx-auto text-center transition-all">
             {/* Real-time HTML5 Camera Video Stream */}
             <video
               ref={videoRef}
@@ -917,34 +918,31 @@ export const BarcodeScannerView: React.FC<{
               </button>
             </div>
 
-            {/* EXPANDED Viewfinder Target Frame (Large, High-Visibility, 100% Transparent Live View) */}
-            <div
-              className={`relative z-10 rounded-2xl border-2 border-white/25 pointer-events-none flex flex-col items-center justify-between p-3 transition-all duration-300 ${
-                detectionSize === 'ultra-wide'
-                  ? 'w-[94%] sm:w-[90%] max-w-xl h-[78%] sm:h-[82%]'
-                  : 'w-[84%] sm:w-[80%] max-w-lg h-[66%] sm:h-[72%]'
-              }`}
-            >
+            {/* EXPANDED 4:1 Wide Horizontal Viewfinder Target Frame (V3 1D Barcode Optimized) */}
+            <div className="relative z-10 w-[92%] sm:w-[86%] max-w-[660px] h-[100px] sm:h-[130px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2.5 transition-all duration-300">
               {/* Bold Corner Reticle Brackets */}
-              <div className="absolute -top-1 -left-1 w-9 h-9 border-t-4 border-l-4 border-[#16A34A] rounded-tl-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute -top-1 -right-1 w-9 h-9 border-t-4 border-r-4 border-[#16A34A] rounded-tr-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute -bottom-1 -left-1 w-9 h-9 border-b-4 border-l-4 border-[#16A34A] rounded-bl-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute -bottom-1 -right-1 w-9 h-9 border-b-4 border-r-4 border-[#16A34A] rounded-br-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-[#16A34A] rounded-tl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-[#16A34A] rounded-tr-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute bottom-0 left-0 w-7 h-7 border-b-4 border-l-4 border-[#16A34A] rounded-bl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute bottom-0 right-0 w-7 h-7 border-b-4 border-r-4 border-[#16A34A] rounded-br-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
 
-              {/* Top Guidance Indicator */}
-              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/50 backdrop-blur-xs text-[11px] font-semibold text-emerald-300">
-                <Scan className="h-3.5 w-3.5 text-emerald-400" />
-                <span>EXPANDED DETECTION AREA</span>
+              {/* Center Guidance Text */}
+              <div className="relative z-10 flex items-center gap-1.5 sm:gap-2 px-3 py-1 bg-black/65 backdrop-blur-xs rounded-full border border-emerald-400/30">
+                <span className="text-emerald-400 text-xs font-bold select-none">─────</span>
+                <span className="text-[10px] sm:text-xs font-black text-emerald-300 uppercase tracking-widest">
+                  SCAN BARCODE HERE
+                </span>
+                <span className="text-emerald-400 text-xs font-bold select-none">─────</span>
               </div>
 
-              {/* Laser Scan Line */}
+              {/* Full Width Laser Scan Line */}
               {isScanning && (
-                <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-[#16A34A] shadow-[0_0_14px_#16A34A] animate-pulse" />
+                <div className="absolute left-1 right-1 top-1/2 -translate-y-1/2 h-[2px] bg-[#16A34A] shadow-[0_0_14px_#16A34A] animate-pulse" />
               )}
 
               {/* Bottom Framing Note */}
-              <div className="text-[10px] font-mono text-white/80 bg-black/50 px-3 py-1 rounded-full backdrop-blur-xs">
-                Place answer script or barcode anywhere inside this area
+              <div className="text-[10px] font-mono text-white/80 bg-black/50 px-3 py-0.5 rounded-full backdrop-blur-xs">
+                Keep barcode booklet at a comfortable distance
               </div>
             </div>
 

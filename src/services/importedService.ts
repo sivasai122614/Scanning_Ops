@@ -44,6 +44,18 @@ export interface ScanResult {
 const LOCAL_STORAGE_KEY = 'imported_records_v1';
 const BATCH_SIZE = 500;
 
+/**
+ * Sanitizes barcode by trimming whitespace and stripping Code 39 start/stop
+ * asterisk delimiters (e.g. "*003121MIS0074*" -> "003121MIS0074")
+ */
+export function sanitizeBarcode(code: string): string {
+  if (!code) return '';
+  let cleaned = code.trim();
+  // Strip start and stop asterisks common in Code 39 fonts and scanners
+  cleaned = cleaned.replace(/^\*+|\*+$/g, '').trim();
+  return cleaned;
+}
+
 class ImportedService {
   private records: ImportedRecord[] = [];
   private listeners: (() => void)[] = [];
@@ -400,14 +412,14 @@ class ImportedService {
    * 6. Update record: scan_status='started', scanned_at=now, barcode=barcode
    */
   public async processBarcode(barcodeInput: string): Promise<ScanResult> {
-    const barcode = barcodeInput.trim();
+    const barcode = sanitizeBarcode(barcodeInput);
     if (!barcode) {
       return { success: false, message: 'Empty barcode received' };
     }
 
-    // 1. Duplicate Scan Protection (Section 20)
+    // 1. Duplicate Scan Protection (Section 20 & V3)
     const existingWithBarcode = this.records.find(
-      r => r.barcode && r.barcode.toLowerCase() === barcode.toLowerCase()
+      r => r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === barcode.toLowerCase()
     );
     if (existingWithBarcode) {
       return {
