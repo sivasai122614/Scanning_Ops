@@ -29,10 +29,12 @@ import {
   Sparkles,
   ArrowRight,
   Maximize2,
+  Copy,
 } from 'lucide-react';
 import { importedService, ImportedRecord, ClassIdSummary, ImportedStats } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 
 interface ParsedRow {
   rowNumber: number;
@@ -91,6 +93,7 @@ export const ImportDataView: React.FC<{
   const streamRef = useRef<MediaStream | null>(null);
   const zxingReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const zxingControlsRef = useRef<{ stop: () => void } | null>(null);
+  const barcodeIntervalRef = useRef<any>(null);
   const isProcessingRef = useRef<boolean>(false);
   const lastScannedCodeRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
@@ -98,6 +101,28 @@ export const ImportDataView: React.FC<{
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraLoading, setCameraLoading] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState<boolean>(false);
+
+  // Dynamic Active Class ID and Scanning Statistics (Section 9 & 15)
+  const [activeClassId, setActiveClassId] = useState<string | null>(null);
+
+  // Audio & Visual Feedback Overlays (Section 11, 12, 13)
+  const [scanSuccessFlash, setScanSuccessFlash] = useState<{
+    barcode: string;
+    class_id: string;
+    member_id: string;
+  } | null>(null);
+  const [scanWarningFlash, setScanWarningFlash] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+  const [lastSuccessfulScan, setLastSuccessfulScan] = useState<{
+    barcode: string;
+    class_id: string;
+    member_id: string;
+    timestamp: string;
+  } | null>(null);
+
   const [manualBarcodeInput, setManualBarcodeInput] = useState('');
   const [scannerNotification, setScannerNotification] = useState<{
     type: 'success' | 'warning' | 'error';
@@ -106,6 +131,16 @@ export const ImportDataView: React.FC<{
   } | null>(null);
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('all');
   const [previewPage, setPreviewPage] = useState<number>(1);
+
+  // Supabase cloud migration & status modal state
+  const [remoteStatus, setRemoteStatus] = useState<{ isConfigured: boolean; isRemoteTableAvailable: boolean }>({
+    isConfigured: false,
+    isRemoteTableAvailable: true,
+  });
+  const [showSqlMigrationModal, setShowSqlMigrationModal] = useState(false);
+  const [isVerifyingSync, setIsVerifyingSync] = useState(false);
+  const [syncVerificationResult, setSyncVerificationResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [hasCopiedSql, setHasCopiedSql] = useState(false);
 
   // Load Data on mount & subscribe
   const loadDatabaseData = useCallback(() => {
@@ -120,6 +155,7 @@ export const ImportDataView: React.FC<{
     setDbStats(stats);
     setClassSummaries(summaries);
     setRecentScans(scannedOnes);
+    setRemoteStatus(importedService.getRemoteStatus());
 
     // Auto-switch to scanner if data already exists and not in import preview
     if (stats.total_imported > 0 && !summary) {
@@ -352,8 +388,11 @@ export const ImportDataView: React.FC<{
       });
 
       if (result.success) {
+        const isCloud = importedService.getRemoteStatus().isRemoteTableAvailable;
         setImportSuccessMessage(
-          `Successfully imported ${result.inserted.toLocaleString()} records across ${classGroups.length} Class IDs into Supabase.`
+          `Successfully imported ${result.inserted.toLocaleString()} records across ${classGroups.length} Class IDs ${
+            isCloud ? 'into Supabase Cloud database.' : 'into high-speed storage (Ready for immediate scanning).'
+          }`
         );
         // Clear preview
         setParsedRows([]);
@@ -406,72 +445,94 @@ export const ImportDataView: React.FC<{
   };
 
   // ----------------------------------------------------------------------------
-  // CAMERA STREAM & ZXING BARCODE SCANNER (Section 10, 11, 12, 13, 14, 15, 20)
+  // CAMERA STREAM & BARCODE SCANNER (Section 2, 3, 4, 5, 6)
   // ----------------------------------------------------------------------------
   const startCamera = async () => {
     setCameraLoading(true);
     setCameraError(null);
+    setPermissionDenied(false);
+
+    // Stop any existing stream
+    stopCamera();
 
     try {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
-      if (zxingControlsRef.current) {
-        zxingControlsRef.current.stop();
-        zxingControlsRef.current = null;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera access (getUserMedia) is not supported in this browser environment.');
       }
 
-      // Constraints with high-definition resolution for sharp barcode recognition
-      const constraints: MediaStreamConstraints = {
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-        },
-        audio: false,
-      };
+      let stream: MediaStream | null = null;
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Tier 1: Exact configuration specified in Section 4:
+      // facingMode: "environment", width: 1280, height: 720, focusMode: "continuous"
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            focusMode: 'continuous',
+          } as any,
+          audio: false,
+        });
+      } catch (err1) {
+        console.warn('High-spec environment camera constraint failed, retrying relaxed:', err1);
+        try {
+          // Tier 2: Relaxed environment camera
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: 'environment' },
+            },
+            audio: false,
+          });
+        } catch (err2) {
+          console.warn('Relaxed environment camera failed, falling back to any video device:', err2);
+          // Tier 3: Universal fallback
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
+      }
+
+      if (!stream) {
+        throw new Error('Could not establish video feed from any camera device.');
+      }
+
       streamRef.current = stream;
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.muted = true;
+        await videoRef.current.play().catch(e => console.warn('Autoplay note:', e));
       }
 
       setCameraActive(true);
       setCameraLoading(false);
+      setPermissionDenied(false);
+      setCameraError(null);
 
-      // Initialize ZXing Reader
-      const codeReader = new BrowserMultiFormatReader();
-      zxingReaderRef.current = codeReader;
-
-      const controls = await codeReader.decodeFromVideoElement(
-        videoRef.current!,
-        (result, err) => {
-          if (result) {
-            const rawText = result.getText();
-            if (rawText) {
-              handleBarcodeScanned(rawText);
-            }
-          }
-        }
-      );
-      zxingControlsRef.current = controls;
+      // Start continuous scanning engine (Section 2 & 6)
+      startContinuousScanner();
     } catch (err: any) {
-      console.warn('Camera initialization error:', err);
+      console.warn('Camera initialization or permission error:', err);
       setCameraActive(false);
       setCameraLoading(false);
+      // Section 3: Do NOT permanently mark camera as unavailable!
+      setPermissionDenied(true);
       setCameraError(
-        err.name === 'NotAllowedError'
+        err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
           ? 'Camera permission was denied. Please allow camera access in your browser settings.'
-          : 'Unable to start camera. Please verify your camera device or use manual barcode input below.'
+          : err?.message || 'Please allow camera access to start scanning.'
       );
     }
   };
 
   const stopCamera = () => {
+    if (barcodeIntervalRef.current) {
+      clearInterval(barcodeIntervalRef.current);
+      barcodeIntervalRef.current = null;
+    }
     if (zxingControlsRef.current) {
       try {
         zxingControlsRef.current.stop();
@@ -491,8 +552,95 @@ export const ImportDataView: React.FC<{
     setCameraLoading(false);
   };
 
+  // Section 2: Real Barcode Scanning Library with Code 39, Code 128, etc. explicitly enabled
+  const startContinuousScanner = () => {
+    if (barcodeIntervalRef.current) {
+      clearInterval(barcodeIntervalRef.current);
+      barcodeIntervalRef.current = null;
+    }
+    if (zxingControlsRef.current) {
+      try {
+        zxingControlsRef.current.stop();
+      } catch (e) {}
+      zxingControlsRef.current = null;
+    }
+
+    // Preferred approach: BarcodeDetector API (Section 2)
+    if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
+      try {
+        const detector = new (window as any).BarcodeDetector({
+          formats: [
+            'code_39',
+            'code_128',
+            'ean_13',
+            'ean_8',
+            'itf',
+            'upc_a',
+            'upc_e',
+            'qr_code',
+          ],
+        });
+
+        barcodeIntervalRef.current = setInterval(async () => {
+          if (isProcessingRef.current) return;
+          if (!videoRef.current || videoRef.current.readyState < 2) return;
+          try {
+            const detected = await detector.detect(videoRef.current);
+            if (detected && detected.length > 0 && detected[0].rawValue) {
+              handleBarcodeScanned(detected[0].rawValue);
+            }
+          } catch (e) {
+            // Frame skip
+          }
+        }, 85);
+        return;
+      } catch (nativeErr) {
+        console.warn('Native BarcodeDetector initialization note, using ZXing fallback:', nativeErr);
+      }
+    }
+
+    // Fallback approach: ZXing BrowserMultiFormatReader (Section 2)
+    try {
+      const hints = new Map<DecodeHintType, any>();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.CODE_39,
+        BarcodeFormat.CODE_128,
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.EAN_8,
+        BarcodeFormat.ITF,
+        BarcodeFormat.UPC_A,
+        BarcodeFormat.UPC_E,
+        BarcodeFormat.QR_CODE,
+      ]);
+      hints.set(DecodeHintType.TRY_HARDER, true);
+
+      const codeReader = new BrowserMultiFormatReader(hints);
+      zxingReaderRef.current = codeReader;
+
+      if (videoRef.current) {
+        codeReader
+          .decodeFromVideoElement(videoRef.current, (result, err) => {
+            if (result) {
+              const rawText = result.getText();
+              if (rawText) {
+                handleBarcodeScanned(rawText);
+              }
+            }
+          })
+          .then(controls => {
+            zxingControlsRef.current = controls;
+          })
+          .catch(err => {
+            console.warn('ZXing decode loop note:', err);
+          });
+      }
+    } catch (zxingErr) {
+      console.warn('ZXing initialization note:', zxingErr);
+    }
+  };
+
   // ----------------------------------------------------------------------------
-  // BARCODE PROCESSING & MATCHING ENGINE (Section 12, 13, 14, 15, 20)
+  // BARCODE PROCESSING & MATCHING ENGINE (Section 7, 8, 9, 10, 11, 12, 13, 15)
   // ----------------------------------------------------------------------------
   const handleBarcodeScanned = async (rawCode: string) => {
     const trimmed = rawCode.trim();
@@ -512,31 +660,68 @@ export const ImportDataView: React.FC<{
     lastScannedCodeRef.current = trimmed;
     lastScannedTimeRef.current = now;
 
+    // Section 7: Extract first 4 characters for Class ID: const classId = barcodeValue.substring(0, 4);
+    const detectedClassId = trimmed.length >= 4 ? trimmed.substring(0, 4) : trimmed;
+    setActiveClassId(detectedClassId);
+
     try {
+      // Section 8 & 10: Query Supabase / imported table and update record to 'started'
       const result = await importedService.processBarcode(trimmed);
 
       if (result.success) {
+        // Section 11: AUDIO & VISUAL FEEDBACK
         playScanSuccessSound();
+        const displayMember = result.member_id || (trimmed.length > 4 ? trimmed.substring(4) : '—');
+        setLastSuccessfulScan({
+          barcode: trimmed,
+          class_id: result.class_id || detectedClassId,
+          member_id: displayMember,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+        setScanSuccessFlash({
+          barcode: trimmed,
+          class_id: result.class_id || detectedClassId,
+          member_id: displayMember,
+        });
+        setTimeout(() => setScanSuccessFlash(null), 1200);
+
         setScannerNotification({
           type: 'success',
           title: `Class ${result.class_id} • Verified`,
-          message: `Scanned Barcode: ${trimmed} → Assigned to Member ${result.member_id}`,
+          message: `Scanned Barcode: ${trimmed} → Assigned to Member ${displayMember} (Status: Started)`,
         });
       } else {
         playScanWarningSound();
         if (result.isDuplicate) {
+          // Section 12: DUPLICATE SCAN HANDLING
+          setScanWarningFlash({
+            title: 'Barcode Already Scanned',
+            message: `Barcode: ${trimmed}`,
+          });
+          setTimeout(() => setScanWarningFlash(null), 1600);
           setScannerNotification({
             type: 'warning',
             title: 'Duplicate Barcode Scanned',
-            message: result.message,
+            message: `Barcode Already Scanned: ${trimmed}`,
           });
         } else if (result.isUnknownClass) {
+          // Section 13: UNRECOGNIZED BARCODE HANDLING
+          setScanWarningFlash({
+            title: `Unknown Class ID: ${detectedClassId}`,
+            message: `No imported records found for this Class ID.`,
+          });
+          setTimeout(() => setScanWarningFlash(null), 1600);
           setScannerNotification({
             type: 'error',
-            title: 'Unrecognized Class ID',
-            message: result.message,
+            title: `Unknown Class ID: ${detectedClassId}`,
+            message: `No imported records found for this Class ID.`,
           });
         } else {
+          setScanWarningFlash({
+            title: 'Scan Alert',
+            message: result.message,
+          });
+          setTimeout(() => setScanWarningFlash(null), 1600);
           setScannerNotification({
             type: 'warning',
             title: 'Scan Alert',
@@ -554,9 +739,10 @@ export const ImportDataView: React.FC<{
         message: e?.message || 'Failed processing barcode',
       });
     } finally {
+      // Section 6: Continue camera scanning for next barcode
       setTimeout(() => {
         isProcessingRef.current = false;
-      }, 500);
+      }, 350);
     }
   };
 
@@ -572,6 +758,10 @@ export const ImportDataView: React.FC<{
     selectedClassFilter === 'all'
       ? classSummaries
       : classSummaries.filter(s => s.class_id === selectedClassFilter);
+
+  // Dynamic Active Class ID Statistics (Section 9 & 15)
+  const currentActiveId = activeClassId || (classSummaries.length > 0 ? classSummaries[0].class_id : null);
+  const activeClassStats = currentActiveId ? importedService.getClassStats(currentActiveId) : null;
 
   // Pagination for preview table
   const PAGE_SIZE = 15;
@@ -597,32 +787,58 @@ export const ImportDataView: React.FC<{
             </p>
           </div>
 
-          {/* Mode Switcher */}
-          <div className="flex items-center p-1 bg-[#F1F5F9] rounded-xl self-start sm:self-auto border border-[#E2E8F0]">
-            <button
-              type="button"
-              onClick={() => setActiveTab('import')}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'import'
-                  ? 'bg-white text-[#1565D8] shadow-xs'
-                  : 'text-[#64748B] hover:text-[#172033]'
-              }`}
-            >
-              <Upload className="h-3.5 w-3.5" />
-              <span>Import Excel</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('scanner')}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'scanner'
-                  ? 'bg-[#1565D8] text-white shadow-xs'
-                  : 'text-[#64748B] hover:text-[#172033]'
-              }`}
-            >
-              <Scan className="h-3.5 w-3.5" />
-              <span>Scanning Dashboard ({dbStats.scan_started}/{dbStats.total_imported})</span>
-            </button>
+          {/* Mode Switcher & Cloud Status */}
+          <div className="flex flex-wrap items-center gap-2">
+            {remoteStatus.isConfigured && (
+              <>
+                {remoteStatus.isRemoteTableAvailable ? (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 text-xs font-semibold rounded-lg border border-emerald-200">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>Supabase Cloud Synced</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSyncVerificationResult(null);
+                      setShowSqlMigrationModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold rounded-lg border border-amber-200 transition-colors shadow-2xs"
+                    title="Click to view SQL schema for Supabase cloud sync"
+                  >
+                    <Database className="h-3.5 w-3.5 text-amber-600" />
+                    <span>Local Cache Active • Cloud SQL</span>
+                  </button>
+                )}
+              </>
+            )}
+
+            <div className="flex items-center p-1 bg-[#F1F5F9] rounded-xl self-start sm:self-auto border border-[#E2E8F0]">
+              <button
+                type="button"
+                onClick={() => setActiveTab('import')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  activeTab === 'import'
+                    ? 'bg-white text-[#1565D8] shadow-xs'
+                    : 'text-[#64748B] hover:text-[#172033]'
+                }`}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                <span>Import Excel</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('scanner')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  activeTab === 'scanner'
+                    ? 'bg-[#1565D8] text-white shadow-xs'
+                    : 'text-[#64748B] hover:text-[#172033]'
+                }`}
+              >
+                <Scan className="h-3.5 w-3.5" />
+                <span>Scanning Dashboard ({dbStats.scan_started}/{dbStats.total_imported})</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1037,7 +1253,122 @@ export const ImportDataView: React.FC<{
             </div>
           </div>
 
-          {/* Section 10 & 11: DIRECT CAMERA SCANNER VIEW */}
+          {/* Section 9 & 15: DYNAMIC ACTIVE CLASS ID STATISTICS CARD */}
+          {activeClassStats && (
+            <div className="bg-white rounded-xl border-2 border-[#1565D8] p-4 sm:p-5 shadow-xs space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#E2E8F0] pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-[#64748B]">
+                    Active Class ID:
+                  </span>
+                  <span className="text-lg sm:text-xl font-black font-mono text-[#1565D8] bg-[#EAF2FF] px-2.5 py-0.5 rounded-lg">
+                    {activeClassStats.class_id}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                    Auto-Detected
+                  </span>
+                </div>
+                <div className="text-xs text-[#64748B] flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Real-time Class Inwarding</span>
+                </div>
+              </div>
+
+              {/* Section 9 Stats Layout */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* Total Members */}
+                <div className="p-3 bg-[#F8FAFC] rounded-xl border border-[#CBD5E1]">
+                  <span className="text-[11px] font-semibold text-[#64748B] block">Total Members</span>
+                  <span className="text-2xl font-black text-[#172033] mt-1 block font-mono">
+                    {activeClassStats.total_members.toLocaleString()}
+                  </span>
+                  <span className="text-[10px] text-[#64748B]">Imported rows for Class {activeClassStats.class_id}</span>
+                </div>
+
+                {/* Total Scanned */}
+                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+                  <span className="text-[11px] font-bold text-emerald-800 block">Total Scanned</span>
+                  <span className="text-2xl font-black text-emerald-700 mt-1 block font-mono">
+                    {activeClassStats.total_scanned.toLocaleString()}
+                  </span>
+                  <span className="text-[10px] text-emerald-700/80">Status: started</span>
+                </div>
+
+                {/* Pending */}
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
+                  <span className="text-[11px] font-bold text-amber-800 block">Pending</span>
+                  <span className="text-2xl font-black text-amber-700 mt-1 block font-mono">
+                    {activeClassStats.pending.toLocaleString()}
+                  </span>
+                  <span className="text-[10px] text-amber-700/80">Total - Scanned</span>
+                </div>
+
+                {/* Progress */}
+                <div className="p-3 bg-blue-50 rounded-xl border border-blue-200">
+                  <span className="text-[11px] font-bold text-[#1565D8] block">Progress</span>
+                  <span className="text-2xl font-black text-[#1565D8] mt-1 block font-mono">
+                    {activeClassStats.progress_percentage}%
+                  </span>
+                  <span className="text-[10px] text-[#1565D8]/80">Completion rate</span>
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="space-y-1 pt-1">
+                <div className="flex items-center justify-between text-[11px] font-medium text-[#64748B]">
+                  <span>Class {activeClassStats.class_id} Inward Progress</span>
+                  <span className="font-mono font-bold text-[#172033]">
+                    {activeClassStats.total_scanned} / {activeClassStats.total_members} booklets
+                  </span>
+                </div>
+                <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-600 transition-all duration-300 rounded-full"
+                    style={{ width: `${activeClassStats.progress_percentage}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Section 11: Real-time Last Scanned Result Banner */}
+          {lastSuccessfulScan && (
+            <div className="p-3.5 bg-emerald-50 border-2 border-emerald-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start sm:items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Check className="h-5 w-5 stroke-[2.5]" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-emerald-950 uppercase tracking-wide">
+                      Last Scanned Booklet:
+                    </span>
+                    <span className="text-xs font-mono font-black text-emerald-900 bg-white px-2 py-0.5 rounded border border-emerald-200 shadow-2xs">
+                      {lastSuccessfulScan.barcode}
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-200/70 px-2 py-0.5 rounded-full">
+                      Started
+                    </span>
+                  </div>
+                  <div className="text-xs text-emerald-800 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span>Class ID: <strong className="font-mono font-bold">{lastSuccessfulScan.class_id}</strong></span>
+                    <span>•</span>
+                    <span>Member ID: <strong className="font-mono font-bold">{lastSuccessfulScan.member_id}</strong></span>
+                    <span>•</span>
+                    <span>Status: <strong className="text-emerald-700">Started</strong></span>
+                    <span>•</span>
+                    <span>Time: <span className="font-mono">{lastSuccessfulScan.timestamp}</span></span>
+                  </div>
+                </div>
+              </div>
+              <div className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1 shrink-0 self-end sm:self-auto">
+                <CheckCircle2 className="h-4 w-4" />
+                <span>Ready for Next Scan</span>
+              </div>
+            </div>
+          )}
+
+          {/* Section 5, 10 & 11: LIVE CAMERA SCANNER VIEW */}
           <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden shadow-xs">
             <div className="px-4 py-3 bg-[#172033] text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -1052,7 +1383,7 @@ export const ImportDataView: React.FC<{
                   <button
                     type="button"
                     onClick={stopCamera}
-                    className="flex items-center gap-1 px-2.5 py-1 bg-white/10 hover:bg-white/20 rounded text-[11px] font-semibold text-slate-200"
+                    className="flex items-center gap-1 px-2.5 py-1 bg-white/10 hover:bg-white/20 rounded text-[11px] font-semibold text-slate-200 cursor-pointer active:scale-95 transition-all"
                   >
                     <CameraOff className="h-3 w-3" />
                     <span>Pause</span>
@@ -1061,7 +1392,7 @@ export const ImportDataView: React.FC<{
                   <button
                     type="button"
                     onClick={startCamera}
-                    className="flex items-center gap-1 px-2.5 py-1 bg-[#1565D8] hover:bg-[#0D47A1] rounded text-[11px] font-semibold text-white"
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#1565D8] hover:bg-[#0D47A1] rounded text-[11px] font-semibold text-white cursor-pointer active:scale-95 transition-all"
                   >
                     <Camera className="h-3 w-3" />
                     <span>Start Camera</span>
@@ -1100,69 +1431,188 @@ export const ImportDataView: React.FC<{
                 <button
                   type="button"
                   onClick={() => setScannerNotification(null)}
-                  className="opacity-70 hover:opacity-100 p-0.5"
+                  className="opacity-70 hover:opacity-100 p-0.5 cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
             )}
 
-            {/* Camera Viewport */}
-            <div className="relative w-full bg-black min-h-[360px] sm:min-h-[420px] flex items-center justify-center overflow-hidden">
+            {/* Camera Viewport (Section 5) */}
+            <div className="relative w-full bg-black min-h-[380px] sm:min-h-[440px] flex items-center justify-center overflow-hidden">
               <video
                 ref={videoRef}
-                className="w-full h-full object-cover min-h-[360px] sm:min-h-[420px]"
+                className="w-full h-full object-cover min-h-[380px] sm:min-h-[440px]"
                 playsInline
                 muted
                 autoPlay
               />
 
-              {/* Viewfinder Target Guide Overlay */}
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div className="relative w-72 sm:w-96 h-40 sm:h-52 border-2 border-emerald-400/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]">
+              {/* Viewfinder Target Guide Overlay (Section 5) */}
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                <div className="relative w-72 sm:w-96 h-40 sm:h-52 border-2 border-emerald-400/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.50)]">
                   {/* Four Corner Accents */}
                   <div className="absolute -top-1.5 -left-1.5 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg" />
                   <div className="absolute -top-1.5 -right-1.5 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg" />
                   <div className="absolute -bottom-1.5 -left-1.5 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-lg" />
                   <div className="absolute -bottom-1.5 -right-1.5 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-lg" />
 
-                  {/* Pulsing Red Laser Line */}
-                  <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500 shadow-[0_0_10px_#f43f5e] animate-pulse" />
-
-                  {/* Instructions Badge */}
-                  <div className="absolute -bottom-9 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-xs text-white text-[11px] font-bold px-3 py-1 rounded-full whitespace-nowrap border border-white/20">
-                    Align Barcode (e.g. 040322MIS0089)
+                  {/* Target Crosshairs */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-4">
+                    <div className="text-[11px] font-bold text-emerald-300 uppercase tracking-widest bg-black/60 px-3 py-1 rounded-full border border-emerald-400/30">
+                      SCAN BARCODE HERE
+                    </div>
                   </div>
+
+                  {/* Pulsing Red Laser Line (Continuous Scan) */}
+                  <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500 shadow-[0_0_12px_#f43f5e] animate-pulse" />
+                </div>
+
+                {/* Searching indicator */}
+                <div className="mt-4 bg-black/75 backdrop-blur-xs text-white text-[11px] font-semibold px-4 py-1.5 rounded-full flex items-center gap-2 border border-white/20">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>Searching for barcode...</span>
                 </div>
               </div>
 
+              {/* Green Check Flash Overlay (Section 11) */}
+              {scanSuccessFlash && (
+                <div className="absolute inset-0 bg-emerald-600/35 backdrop-blur-xs flex flex-col items-center justify-center text-white z-30 transition-all">
+                  <div className="w-16 h-16 rounded-full bg-emerald-500 text-white flex items-center justify-center mb-3 shadow-xl animate-bounce">
+                    <CheckCircle2 className="h-10 w-10 stroke-[2.5]" />
+                  </div>
+                  <div className="bg-black/85 backdrop-blur-sm px-5 py-3 rounded-2xl text-center shadow-lg border border-emerald-400/40">
+                    <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                      ✓ Verified & Started
+                    </div>
+                    <div className="text-base font-mono font-bold text-white mt-1">
+                      {scanSuccessFlash.barcode}
+                    </div>
+                    <div className="text-xs text-emerald-200 mt-1 flex items-center justify-center gap-3">
+                      <span>Class: <strong>{scanSuccessFlash.class_id}</strong></span>
+                      <span>•</span>
+                      <span>Member: <strong>{scanSuccessFlash.member_id}</strong></span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Amber Warning Flash Overlay (Section 12 & 13) */}
+              {scanWarningFlash && (
+                <div className="absolute inset-0 bg-amber-600/30 backdrop-blur-xs flex flex-col items-center justify-center text-white z-30 transition-all">
+                  <div className="w-16 h-16 rounded-full bg-amber-500 text-white flex items-center justify-center mb-3 shadow-xl animate-pulse">
+                    <AlertTriangle className="h-10 w-10 stroke-[2.5]" />
+                  </div>
+                  <div className="bg-black/90 backdrop-blur-sm px-6 py-3.5 rounded-2xl text-center shadow-lg border border-amber-400/50 max-w-sm mx-4">
+                    <div className="text-xs font-bold text-amber-400 uppercase tracking-wider">
+                      {scanWarningFlash.title}
+                    </div>
+                    <div className="text-xs text-slate-200 mt-1 font-medium">
+                      {scanWarningFlash.message}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Camera Loading Overlay */}
               {cameraLoading && (
-                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center text-white z-20">
+                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center text-white z-20">
                   <RefreshCw className="h-8 w-8 animate-spin text-[#1565D8] mb-2" />
                   <p className="text-xs font-semibold">Initializing Device Camera...</p>
                 </div>
               )}
 
-              {/* Camera Error Message */}
-              {cameraError && !cameraLoading && (
-                <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-center p-6 text-white z-20">
-                  <CameraOff className="h-10 w-10 text-rose-400 mb-3" />
-                  <h4 className="text-sm font-bold text-rose-200">Camera Feed Unavailable</h4>
-                  <p className="text-xs text-slate-300 max-w-sm mt-1">{cameraError}</p>
-                  <button
-                    type="button"
-                    onClick={startCamera}
-                    className="mt-4 px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-bold transition-colors"
-                  >
-                    Retry Camera
-                  </button>
+              {/* Section 3: Proper Camera Permission Handling Overlay */}
+              {(permissionDenied || cameraError) && !cameraLoading && (
+                <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-xs flex flex-col items-center justify-center text-center p-6 text-white z-20">
+                  <div className="w-14 h-14 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center mb-3">
+                    <Camera className="h-7 w-7" />
+                  </div>
+                  <h4 className="text-base font-bold text-white">Camera Permission Required</h4>
+                  <p className="text-xs text-slate-300 max-w-sm mt-1 mb-5">
+                    Please allow camera access to start scanning.
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={startCamera}
+                      className="px-5 py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <Camera className="h-4 w-4" />
+                      <span>Allow Camera</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={startCamera}
+                      className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all border border-white/20 flex items-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      <span>Retry Camera</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
+            {/* Quick Test Barcodes Simulation Bar */}
+            <div className="px-4 py-2.5 bg-slate-100 border-t border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-[#1565D8]" />
+                <span className="text-[11px] font-bold text-[#172033] uppercase tracking-wider">
+                  Quick Test Barcodes:
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {classSummaries.length > 0 ? (
+                  <>
+                    {classSummaries.slice(0, 3).map(cs => {
+                      const sampleRecord = importedService.getRecords(cs.class_id)[0];
+                      const sampleCode = sampleRecord
+                        ? `${cs.class_id}22${sampleRecord.member_id}`
+                        : `${cs.class_id}22MIS0001`;
+                      return (
+                        <button
+                          key={cs.class_id}
+                          type="button"
+                          onClick={() => handleBarcodeScanned(sampleCode)}
+                          className="px-2.5 py-1 bg-white hover:bg-[#1565D8] hover:text-white text-[#1565D8] rounded-md font-mono text-[11px] font-bold border border-[#CBD5E1] transition-all shadow-2xs cursor-pointer active:scale-95"
+                        >
+                          Scan {sampleCode}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => handleBarcodeScanned('099999UNKNOWN')}
+                      className="px-2.5 py-1 bg-white hover:bg-rose-600 hover:text-white text-rose-600 rounded-md font-mono text-[11px] font-bold border border-rose-200 transition-all shadow-2xs cursor-pointer active:scale-95"
+                      title="Test Unrecognized Class ID"
+                    >
+                      Scan 0999 (Unknown)
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleBarcodeScanned('040322MIS0089')}
+                      className="px-2.5 py-1 bg-white hover:bg-[#1565D8] hover:text-white text-[#1565D8] rounded-md font-mono text-[11px] font-bold border border-[#CBD5E1] transition-all shadow-2xs cursor-pointer active:scale-95"
+                    >
+                      Scan 040322MIS0089
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBarcodeScanned('040422MIS0004')}
+                      className="px-2.5 py-1 bg-white hover:bg-[#1565D8] hover:text-white text-[#1565D8] rounded-md font-mono text-[11px] font-bold border border-[#CBD5E1] transition-all shadow-2xs cursor-pointer active:scale-95"
+                    >
+                      Scan 040422MIS0004
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
             {/* Quick Barcode Scanner Input (USB Gun / Manual Entry) */}
-            <div className="p-4 bg-[#F8FAFC] border-t border-[#E2E8F0]">
+            <div className="p-4 bg-[#F8FAFC]">
               <form onSubmit={handleManualBarcodeSubmit} className="flex gap-2">
                 <div className="relative flex-1">
                   <Scan className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#64748B]" />
@@ -1176,16 +1626,68 @@ export const ImportDataView: React.FC<{
                 </div>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-bold transition-colors shadow-xs"
+                  className="px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-bold transition-colors shadow-xs cursor-pointer active:scale-95"
                 >
                   Verify Barcode
                 </button>
               </form>
               <div className="flex items-center justify-between text-[11px] text-[#64748B] mt-2">
-                <span>First 4 characters automatically detect Class ID (Section 12)</span>
-                <span>Auto-updates database</span>
+                <span>First 4 characters automatically detect Class ID (Section 7 & 12)</span>
+                <span>Auto-updates database status to "started"</span>
               </div>
             </div>
+          </div>
+
+          {/* Section 14: COMPACT SCAN LOG */}
+          <div className="bg-white rounded-xl border border-[#E2E8F0] overflow-hidden shadow-xs">
+            <div className="px-4 py-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[#172033]">
+                  Recent Scans Log
+                </h4>
+                <span className="text-[11px] font-semibold text-[#64748B] bg-slate-200 px-2 py-0.5 rounded-full">
+                  {recentScans.length}
+                </span>
+              </div>
+              <span className="text-[11px] text-[#64748B]">Real-time inwarding audit feed</span>
+            </div>
+
+            {recentScans.length === 0 ? (
+              <div className="py-6 text-center text-xs text-[#64748B]">
+                No barcodes scanned yet. Align a booklet barcode within the camera viewfinder to start inwarding.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#F1F5F9] text-[#64748B] font-semibold border-b border-[#E2E8F0]">
+                    <tr>
+                      <th className="px-4 py-2.5">Class ID</th>
+                      <th className="px-4 py-2.5">Member ID</th>
+                      <th className="px-4 py-2.5">Barcode</th>
+                      <th className="px-4 py-2.5">Scanned At</th>
+                      <th className="px-4 py-2.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E2E8F0]">
+                    {recentScans.map(scan => (
+                      <tr key={scan.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="px-4 py-2.5 font-bold font-mono text-[#172033]">{scan.class_id}</td>
+                        <td className="px-4 py-2.5 font-mono text-[#1565D8] font-semibold">{scan.member_id}</td>
+                        <td className="px-4 py-2.5 font-mono text-[#64748B]">{scan.barcode || '—'}</td>
+                        <td className="px-4 py-2.5 text-[#64748B]">
+                          {scan.scanned_at ? new Date(scan.scanned_at).toLocaleTimeString() : '—'}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                            <Check className="h-3 w-3" /> Started
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Section 16: CLASS ID-WISE SCAN PROGRESS TABLE */}
@@ -1277,34 +1779,6 @@ export const ImportDataView: React.FC<{
               </div>
             )}
           </div>
-
-          {/* Recent Scans Activity Log */}
-          {recentScans.length > 0 && (
-            <div className="bg-white rounded-xl border border-[#E2E8F0] p-4 shadow-xs">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-[#64748B] mb-2">
-                Recent Scans Live Feed
-              </h4>
-              <div className="divide-y divide-[#E2E8F0]">
-                {recentScans.map(scan => (
-                  <div key={scan.id} className="py-2 flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <span className="font-mono font-bold text-[#172033]">
-                        Class {scan.class_id}
-                      </span>
-                      <span className="text-[#64748B]">•</span>
-                      <span className="font-mono text-[#1565D8]">Member {scan.member_id}</span>
-                      <span className="text-[#64748B]">•</span>
-                      <span className="font-mono text-[11px] text-[#64748B]">{scan.barcode}</span>
-                    </div>
-                    <span className="text-[11px] text-[#64748B]">
-                      {scan.scanned_at ? new Date(scan.scanned_at).toLocaleTimeString() : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -1348,6 +1822,168 @@ export const ImportDataView: React.FC<{
               <button
                 type="button"
                 onClick={() => setSelectedGroupModal(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------------
+          MODAL: SUPABASE CLOUD SQL MIGRATION HELPER
+          ------------------------------------------------------------------------ */}
+      {showSqlMigrationModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-xl border border-[#E2E8F0] max-w-2xl w-full p-6 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="p-2 bg-[#EAF2FF] text-[#1565D8] rounded-lg">
+                  <Database className="h-5 w-5" />
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-[#172033]">
+                    Supabase Cloud Sync Setup
+                  </h3>
+                  <p className="text-xs text-[#64748B]">
+                    Enable cloud persistence for the <code className="font-mono text-[#1565D8]">public.imported</code> table
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSqlMigrationModal(false)}
+                className="text-[#64748B] hover:text-[#172033] p-1 rounded-lg"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1 text-xs">
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 leading-relaxed">
+                <p className="font-semibold mb-1">Local Storage is Currently Active</p>
+                <p className="text-blue-800">
+                  All Excel data ingestion, previewing, Class ID grouping, and high-speed camera barcode scanning are already running smoothly with offline resilience.
+                  To synchronize this table with your Supabase cloud project across multiple devices, run this 1-step SQL query in your <strong>Supabase Dashboard → SQL Editor</strong>.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-700">Migration SQL Script:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sql = `-- Create the 'imported' table in Supabase
+CREATE TABLE IF NOT EXISTS public.imported (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  class_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100) NOT NULL,
+  barcode VARCHAR(255),
+  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
+  scanned_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_imported_class_id ON public.imported(class_id);
+CREATE INDEX IF NOT EXISTS idx_imported_member_id ON public.imported(member_id);
+CREATE INDEX IF NOT EXISTS idx_imported_barcode ON public.imported(barcode);
+CREATE INDEX IF NOT EXISTS idx_imported_scan_status ON public.imported(scan_status);
+
+ALTER TABLE public.imported ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow anon all on imported" ON public.imported;
+CREATE POLICY "Allow anon all on imported" ON public.imported FOR ALL TO anon USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow authenticated all on imported" ON public.imported;
+CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
+                      navigator.clipboard.writeText(sql);
+                      setHasCopiedSql(true);
+                      setTimeout(() => setHasCopiedSql(false), 2500);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md font-semibold text-xs transition-colors"
+                  >
+                    {hasCopiedSql ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        <span className="text-emerald-700">Copied to Clipboard!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>Copy SQL Query</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <pre className="p-3.5 bg-slate-900 text-slate-100 rounded-lg font-mono text-[11px] leading-relaxed overflow-x-auto max-h-48 border border-slate-800">
+{`CREATE TABLE IF NOT EXISTS public.imported (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  class_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100) NOT NULL,
+  barcode VARCHAR(255),
+  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
+  scanned_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_imported_class_id ON public.imported(class_id);
+CREATE INDEX IF NOT EXISTS idx_imported_member_id ON public.imported(member_id);
+CREATE INDEX IF NOT EXISTS idx_imported_barcode ON public.imported(barcode);
+CREATE INDEX IF NOT EXISTS idx_imported_scan_status ON public.imported(scan_status);
+
+ALTER TABLE public.imported ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow anon all on imported" ON public.imported FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL TO authenticated USING (true) WITH CHECK (true);`}
+                </pre>
+              </div>
+
+              {syncVerificationResult && (
+                <div
+                  className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${
+                    syncVerificationResult.success
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : 'bg-amber-50 border-amber-200 text-amber-900'
+                  }`}
+                >
+                  {syncVerificationResult.success ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  )}
+                  <span>{syncVerificationResult.message}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-[#E2E8F0] flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                disabled={isVerifyingSync}
+                onClick={async () => {
+                  setIsVerifyingSync(true);
+                  setSyncVerificationResult(null);
+                  try {
+                    const res = await importedService.retryCloudSync();
+                    setSyncVerificationResult(res);
+                    if (res.success) {
+                      loadDatabaseData();
+                    }
+                  } finally {
+                    setIsVerifyingSync(false);
+                  }
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50 transition-colors"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isVerifyingSync ? 'animate-spin' : ''}`} />
+                <span>{isVerifyingSync ? 'Checking Connection...' : 'Verify Cloud Connection & Sync'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSqlMigrationModal(false)}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold"
               >
                 Close

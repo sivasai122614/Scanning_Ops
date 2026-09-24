@@ -49,10 +49,17 @@ class ImportedService {
   private listeners: (() => void)[] = [];
   private isLoadedFromRemote = false;
   private realtimeChannel: any = null;
+  private isRemoteTableAvailable = true;
+  private hasCheckedTable = false;
 
   constructor() {
     this.initLocalData();
-    this.initRealtime();
+    this.checkRemoteTable().then(available => {
+      if (available) {
+        this.initRealtime();
+        this.syncFromSupabase();
+      }
+    });
   }
 
   private initLocalData() {
@@ -67,8 +74,51 @@ class ImportedService {
     }
   }
 
+  /**
+   * Check if 'imported' table exists in remote Supabase schema cache
+   */
+  public async checkRemoteTable(): Promise<boolean> {
+    if (!isSupabaseConfigured) {
+      this.isRemoteTableAvailable = false;
+      this.hasCheckedTable = true;
+      return false;
+    }
+
+    try {
+      const { error } = await supabase.from('imported').select('id').limit(1);
+      if (error) {
+        if (
+          error.code === 'PGRST205' ||
+          error.message?.includes('schema cache') ||
+          error.message?.includes('does not exist')
+        ) {
+          this.isRemoteTableAvailable = false;
+          this.hasCheckedTable = true;
+          console.info(
+            '[ImportedService] Supabase "imported" table not yet created in schema cache (PGRST205). Storing in high-performance local storage.'
+          );
+          return false;
+        }
+      }
+      this.isRemoteTableAvailable = true;
+      this.hasCheckedTable = true;
+      return true;
+    } catch {
+      this.isRemoteTableAvailable = false;
+      this.hasCheckedTable = true;
+      return false;
+    }
+  }
+
+  public getRemoteStatus(): { isConfigured: boolean; isRemoteTableAvailable: boolean } {
+    return {
+      isConfigured: isSupabaseConfigured,
+      isRemoteTableAvailable: this.isRemoteTableAvailable,
+    };
+  }
+
   private initRealtime() {
-    if (isSupabaseConfigured && typeof window !== 'undefined') {
+    if (isSupabaseConfigured && this.isRemoteTableAvailable && typeof window !== 'undefined') {
       try {
         this.realtimeChannel = supabase
           .channel('public:imported')
@@ -98,7 +148,7 @@ class ImportedService {
       try {
         cb();
       } catch (e) {
-        console.error('Error in listener callback:', e);
+        console.warn('Error in listener callback:', e);
       }
     });
   }
@@ -108,7 +158,7 @@ class ImportedService {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(this.records));
       this.notify();
     } catch (e) {
-      console.error('Failed to save to localStorage:', e);
+      console.warn('Failed to save to localStorage:', e);
     }
   }
 
@@ -120,6 +170,13 @@ class ImportedService {
       return this.records;
     }
 
+    if (!this.hasCheckedTable) {
+      const available = await this.checkRemoteTable();
+      if (!available) return this.records;
+    } else if (!this.isRemoteTableAvailable) {
+      return this.records;
+    }
+
     try {
       const { data, error } = await supabase
         .from('imported')
@@ -128,7 +185,11 @@ class ImportedService {
         .limit(20000);
 
       if (error) {
-        console.warn('Supabase query error on imported table:', error.message);
+        if (error.code === 'PGRST205' || error.message?.includes('schema cache')) {
+          this.isRemoteTableAvailable = false;
+        } else {
+          console.warn('Supabase query note on imported table:', error.message);
+        }
         return this.records;
       }
 
@@ -147,7 +208,7 @@ class ImportedService {
       }
       return this.records;
     } catch (e) {
-      console.warn('Sync failed, relying on local records:', e);
+      console.warn('Sync note, relying on local records:', e);
       return this.records;
     }
   }
@@ -212,9 +273,34 @@ class ImportedService {
    */
   public getRecords(classId?: string): ImportedRecord[] {
     if (classId) {
-      return this.records.filter(r => r.class_id.trim() === classId.trim());
+      return this.records.filter(r => r.class_id.trim().toLowerCase() === classId.trim().toLowerCase());
     }
     return [...this.records];
+  }
+
+  /**
+   * Get dynamic Class ID specific statistics
+   * Total Members, Total Scanned (started), Pending, Progress %
+   */
+  public getClassStats(classId: string): {
+    class_id: string;
+    total_members: number;
+    total_scanned: number;
+    pending: number;
+    progress_percentage: number;
+  } {
+    const list = this.records.filter(r => r.class_id.trim().toLowerCase() === classId.trim().toLowerCase());
+    const total_members = list.length;
+    const total_scanned = list.filter(r => r.scan_status === 'started' || r.scan_status === 'completed').length;
+    const pending = Math.max(0, total_members - total_scanned);
+    const progress_percentage = total_members > 0 ? Math.round((total_scanned / total_members) * 100) : 0;
+    return {
+      class_id: classId,
+      total_members,
+      total_scanned,
+      pending,
+      progress_percentage,
+    };
   }
 
   /**
@@ -240,12 +326,17 @@ class ImportedService {
       created_at: now,
     }));
 
-    // Update memory & local storage first for instantaneous UX
+    // Update memory & local storage first for instantaneous, reliable UX
     this.records = [...this.records, ...newRecords];
     this.saveLocal();
 
-    // If Supabase is configured, push in batches
-    if (isSupabaseConfigured) {
+    // Check remote table availability if not checked yet
+    if (isSupabaseConfigured && !this.hasCheckedTable) {
+      await this.checkRemoteTable();
+    }
+
+    // If Supabase is configured and table is available, push in batches
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         const total = newRecords.length;
         let processed = 0;
@@ -263,8 +354,20 @@ class ImportedService {
 
           const { error } = await supabase.from('imported').insert(chunk);
           if (error) {
-            console.error('Supabase batch insert error:', error);
-            // Even if Supabase throws (e.g. table not migrated yet), local records remain available
+            if (
+              error.code === 'PGRST205' ||
+              error.message?.includes('schema cache') ||
+              error.message?.includes('does not exist')
+            ) {
+              this.isRemoteTableAvailable = false;
+              console.info(
+                '[ImportedService] Supabase "imported" table not yet created in remote database (PGRST205). Stored safely in local high-speed cache.'
+              );
+              // Break remote sync attempts to avoid noisy errors; local records are already safely preserved
+              break;
+            } else {
+              console.warn('[ImportedService] Supabase batch insert note:', error.message);
+            }
           }
           processed += chunk.length;
           if (onProgress) {
@@ -272,7 +375,7 @@ class ImportedService {
           }
         }
       } catch (err: any) {
-        console.warn('Batch insert to Supabase encountered warning:', err);
+        console.warn('[ImportedService] Batch insert remote warning:', err);
       }
     } else {
       if (onProgress) {
@@ -375,10 +478,10 @@ class ImportedService {
     // Save locally
     this.saveLocal();
 
-    // Sync to Supabase in background
-    if (isSupabaseConfigured) {
+    // Sync to Supabase in background if table is available
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
-        await supabase
+        const { error } = await supabase
           .from('imported')
           .update({
             scan_status: 'started',
@@ -386,8 +489,12 @@ class ImportedService {
             barcode: barcode,
           })
           .eq('id', targetRecord.id);
+
+        if (error && (error.code === 'PGRST205' || error.message?.includes('schema cache'))) {
+          this.isRemoteTableAvailable = false;
+        }
       } catch (err) {
-        console.warn('Failed updating Supabase scan record:', err);
+        console.warn('Sync scan record note:', err);
       }
     }
 
@@ -406,11 +513,11 @@ class ImportedService {
   public async clearAll(): Promise<void> {
     this.records = [];
     this.saveLocal();
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         await supabase.from('imported').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
-        console.warn('Clear remote failed:', e);
+        console.warn('Clear remote note:', e);
       }
     }
   }
@@ -426,15 +533,73 @@ class ImportedService {
       barcode: null,
     }));
     this.saveLocal();
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         await supabase
           .from('imported')
           .update({ scan_status: 'not_started', scanned_at: null, barcode: null })
           .neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
-        console.warn('Reset scans remote failed:', e);
+        console.warn('Reset scans remote note:', e);
       }
+    }
+  }
+
+  /**
+   * Manually check if table is now created in Supabase, and sync any local records up to cloud
+   */
+  public async retryCloudSync(): Promise<{ success: boolean; message: string; syncedCount: number }> {
+    if (!isSupabaseConfigured) {
+      return { success: false, message: 'Supabase credentials not configured.', syncedCount: 0 };
+    }
+
+    this.hasCheckedTable = false;
+    const available = await this.checkRemoteTable();
+
+    if (!available) {
+      return {
+        success: false,
+        message: 'Table "imported" still not detected in Supabase schema cache. Please run the SQL migration in Supabase SQL editor.',
+        syncedCount: 0,
+      };
+    }
+
+    // Table is available! Sync any local records up
+    if (this.records.length === 0) {
+      // Pull remote data
+      await this.syncFromSupabase();
+      this.initRealtime();
+      return { success: true, message: 'Connected to Supabase "imported" table successfully.', syncedCount: 0 };
+    }
+
+    let syncedCount = 0;
+    try {
+      for (let i = 0; i < this.records.length; i += BATCH_SIZE) {
+        const chunk = this.records.slice(i, i + BATCH_SIZE).map(r => ({
+          id: r.id,
+          class_id: r.class_id,
+          member_id: r.member_id,
+          barcode: r.barcode,
+          scan_status: r.scan_status,
+          scanned_at: r.scanned_at,
+          created_at: r.created_at,
+        }));
+
+        const { error } = await supabase.from('imported').upsert(chunk, { onConflict: 'id' });
+        if (error) {
+          console.warn('Retry sync upsert note:', error.message);
+          break;
+        }
+        syncedCount += chunk.length;
+      }
+      this.initRealtime();
+      return {
+        success: true,
+        message: `Successfully synchronized ${syncedCount} records to Supabase cloud database!`,
+        syncedCount,
+      };
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Sync failed', syncedCount };
     }
   }
 }
