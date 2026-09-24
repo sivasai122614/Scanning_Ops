@@ -80,6 +80,7 @@ export const ImportDataView: React.FC<{
   const [selectedGroupModal, setSelectedGroupModal] = useState<ClassGroup | null>(null);
 
   // Import All Execution state
+  const [universityInput, setUniversityInput] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [importSuccessMessage, setImportSuccessMessage] = useState<string | null>(null);
@@ -371,6 +372,15 @@ export const ImportDataView: React.FC<{
   // IMPORT ALL INTO SUPABASE (Section 6 & 7)
   // ----------------------------------------------------------------------------
   const handleImportAll = async () => {
+    const cleanUniversity = universityInput.trim();
+    if (!cleanUniversity) {
+      setValidationError({
+        title: 'University Name Required',
+        message: 'Please enter a valid University Name before importing records.',
+      });
+      return;
+    }
+
     const validToImport = parsedRows
       .filter(r => r.status === 'valid')
       .map(r => ({
@@ -390,25 +400,31 @@ export const ImportDataView: React.FC<{
     setImportProgress({ current: 0, total: validToImport.length });
 
     try {
-      const result = await importedService.bulkInsert(validToImport, (current, total) => {
-        setImportProgress({ current, total });
-      });
+      const result = await importedService.bulkInsert(
+        validToImport,
+        cleanUniversity,
+        excelFile?.name || 'import.xlsx',
+        (current: number, total: number) => {
+          setImportProgress({ current, total });
+        }
+      );
 
       if (result.success) {
         const isCloud = importedService.getRemoteStatus().isRemoteTableAvailable;
         setImportSuccessMessage(
-          `Successfully imported ${result.inserted.toLocaleString()} records across ${classGroups.length} Class IDs ${
+          `Import Completed Successfully! University: ${cleanUniversity}. Imported ${result.inserted.toLocaleString()} records across ${classGroups.length} Class IDs ${
             isCloud ? 'into Supabase Cloud database.' : 'into high-speed storage (Ready for immediate scanning).'
           }`
         );
-        // Clear preview
+        // Clear preview and university input
         setParsedRows([]);
         setExcelFile(null);
         setSummary(null);
         setClassGroups([]);
+        setUniversityInput('');
         loadDatabaseData();
 
-        // Section 10: "After data import, the application should move directly into the scanning workflow."
+        // Move directly to scanning workflow
         setTimeout(() => {
           setActiveTab('scanner');
         }, 1200);
@@ -1058,6 +1074,58 @@ export const ImportDataView: React.FC<{
                 </div>
               </div>
 
+              {/* MANDATORY UNIVERSITY NAME & IMPORT ALL ACTION (Sections 3, 4, 5, 7) */}
+              <div className="bg-linear-to-r from-blue-50/70 via-indigo-50/40 to-slate-50 border-2 border-[#1565D8]/30 rounded-xl p-4 sm:p-5 shadow-xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex-1">
+                    <label className="block text-xs font-bold text-[#172033] uppercase tracking-wider mb-1">
+                      University Name <span className="text-rose-600 font-black">*</span>
+                    </label>
+                    <p className="text-xs text-[#64748B]">
+                      Mandatory: Associate this import batch with an institution before importing records into Supabase.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={universityInput}
+                      onChange={e => setUniversityInput(e.target.value)}
+                      placeholder="e.g. VIT-AP University"
+                      className="w-full sm:w-64 px-3.5 py-2 bg-white border border-[#CBD5E1] rounded-xl text-xs sm:text-sm font-semibold text-[#172033] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1565D8] focus:border-transparent shadow-2xs"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={handleImportAll}
+                      disabled={isImporting || summary.validRecords === 0 || !universityInput.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-xl font-bold text-xs sm:text-sm shadow-sm transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                    >
+                      {isImporting ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span>
+                            Importing ({importProgress?.current || 0}/{importProgress?.total || summary.validRecords})...
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <Database className="h-4 w-4" />
+                          <span>Import All ({summary.validRecords.toLocaleString()} Records)</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {!universityInput.trim() && (
+                  <div className="text-[11px] font-semibold text-amber-700 bg-amber-50/80 px-3 py-1.5 rounded-lg border border-amber-200/60 flex items-center gap-1.5">
+                    <span>⚠</span>
+                    <span>Please enter University Name above to enable "Import All".</span>
+                  </div>
+                )}
+              </div>
+
               {/* Section 5 & 6: CLASS ID WISE DATA GROUPING & CARDS */}
               <div className="bg-white rounded-xl border border-[#E2E8F0] p-4 sm:p-6 shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#E2E8F0] pb-3">
@@ -1069,28 +1137,6 @@ export const ImportDataView: React.FC<{
                       Records automatically separated by Class ID for inward verification
                     </p>
                   </div>
-
-                  {/* Section 6: IMPORT ALL BUTTON */}
-                  <button
-                    type="button"
-                    onClick={handleImportAll}
-                    disabled={isImporting || summary.validRecords === 0}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-xl font-bold text-xs sm:text-sm shadow-sm transition-all disabled:opacity-50"
-                  >
-                    {isImporting ? (
-                      <>
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                        <span>
-                          Importing ({importProgress?.current || 0}/{importProgress?.total || summary.validRecords})...
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <Database className="h-4 w-4" />
-                        <span>Import All ({summary.validRecords.toLocaleString()} Records)</span>
-                      </>
-                    )}
-                  </button>
                 </div>
 
                 {/* Class ID Cards Grid */}

@@ -1,13 +1,26 @@
 // ==============================================================================
-// Imported Data Service (Excel Inwarding & Barcode Scanner Workflow)
-// Table: imported (class_id, member_id, barcode, scan_status, scanned_at)
-// Supports 1,000 to 100,000+ records with batching and local reactivity
+// ExamScan — Production Imported Data Service & Inwarding Reconciliation Engine
+// Supabase Tables: 'import_sessions' & 'imported'
+// Formula: Total Imported = Inwarded (started) + Missing (not_started)
+// Strictly ZERO sample/mock business data. Starts completely empty.
 // ==============================================================================
 
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
+import * as XLSX from 'xlsx';
+
+export interface ImportSession {
+  id: string;
+  university_name: string;
+  source_file_name: string;
+  total_records: number;
+  total_class_ids: number;
+  created_at: string;
+}
 
 export interface ImportedRecord {
   id: string;
+  import_session_id?: string;
+  university_name?: string;
   class_id: string;
   member_id: string;
   barcode: string | null;
@@ -41,8 +54,18 @@ export interface ScanResult {
   isAllScanned?: boolean;
 }
 
-const LOCAL_STORAGE_KEY = 'imported_records_v1';
+const PROD_RECORDS_KEY = 'examscan_imported_records_prod_v2';
+const PROD_SESSIONS_KEY = 'examscan_import_sessions_prod_v2';
+const PROD_ACTIVE_SESSION_KEY = 'examscan_active_session_prod_v2';
 const BATCH_SIZE = 500;
+
+// Clean out any legacy demo or sample storage keys from previous builds
+const LEGACY_KEYS = [
+  'imported_records_v1',
+  'imported_records_v2',
+  'imported_records_prod',
+  'import_sessions_v1',
+];
 
 /**
  * Sanitizes barcode by trimming whitespace and stripping Code 39 start/stop
@@ -51,13 +74,15 @@ const BATCH_SIZE = 500;
 export function sanitizeBarcode(code: string): string {
   if (!code) return '';
   let cleaned = code.trim();
-  // Strip start and stop asterisks common in Code 39 fonts and scanners
+  // Strip start and stop asterisks common in Code 39 fonts and barcode scanners
   cleaned = cleaned.replace(/^\*+|\*+$/g, '').trim();
   return cleaned;
 }
 
 class ImportedService {
   private records: ImportedRecord[] = [];
+  private sessions: ImportSession[] = [];
+  private activeSession: ImportSession | null = null;
   private listeners: (() => void)[] = [];
   private isLoadedFromRemote = false;
   private realtimeChannel: any = null;
@@ -65,6 +90,7 @@ class ImportedService {
   private hasCheckedTable = false;
 
   constructor() {
+    this.cleanLegacyStorage();
     this.initLocalData();
     this.checkRemoteTable().then(available => {
       if (available) {
@@ -74,20 +100,38 @@ class ImportedService {
     });
   }
 
+  private cleanLegacyStorage() {
+    try {
+      LEGACY_KEYS.forEach(key => {
+        localStorage.removeItem(key);
+      });
+    } catch {}
+  }
+
   private initLocalData() {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (raw) {
-        this.records = JSON.parse(raw);
+      const storedSessions = localStorage.getItem(PROD_SESSIONS_KEY);
+      this.sessions = storedSessions ? JSON.parse(storedSessions) : [];
+
+      const storedRecords = localStorage.getItem(PROD_RECORDS_KEY);
+      this.records = storedRecords ? JSON.parse(storedRecords) : [];
+
+      const storedActiveId = localStorage.getItem(PROD_ACTIVE_SESSION_KEY);
+      if (storedActiveId) {
+        this.activeSession = this.sessions.find(s => s.id === storedActiveId) || this.sessions[0] || null;
+      } else {
+        this.activeSession = this.sessions[0] || null;
       }
     } catch (err) {
       console.warn('Failed to load imported records from localStorage', err);
       this.records = [];
+      this.sessions = [];
+      this.activeSession = null;
     }
   }
 
   /**
-   * Check if 'imported' table exists in remote Supabase schema cache
+   * Check if 'imported' and 'import_sessions' tables exist in remote Supabase schema cache
    */
   public async checkRemoteTable(): Promise<boolean> {
     if (!isSupabaseConfigured) {
@@ -106,9 +150,6 @@ class ImportedService {
         ) {
           this.isRemoteTableAvailable = false;
           this.hasCheckedTable = true;
-          console.info(
-            '[ImportedService] Supabase "imported" table not yet created in schema cache (PGRST205). Storing in high-performance local storage.'
-          );
           return false;
         }
       }
@@ -167,7 +208,13 @@ class ImportedService {
 
   private saveLocal() {
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(this.records));
+      localStorage.setItem(PROD_RECORDS_KEY, JSON.stringify(this.records));
+      localStorage.setItem(PROD_SESSIONS_KEY, JSON.stringify(this.sessions));
+      if (this.activeSession) {
+        localStorage.setItem(PROD_ACTIVE_SESSION_KEY, this.activeSession.id);
+      } else {
+        localStorage.removeItem(PROD_ACTIVE_SESSION_KEY);
+      }
       this.notify();
     } catch (e) {
       console.warn('Failed to save to localStorage:', e);
@@ -190,11 +237,36 @@ class ImportedService {
     }
 
     try {
+      // 1. Fetch import sessions if available
+      try {
+        const { data: sessionData } = await supabase
+          .from('import_sessions')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (sessionData && Array.isArray(sessionData) && sessionData.length > 0) {
+          this.sessions = sessionData.map((s: any) => ({
+            id: s.id,
+            university_name: s.university_name || 'General University',
+            source_file_name: s.source_file_name || 'import.xlsx',
+            total_records: s.total_records || 0,
+            total_class_ids: s.total_class_ids || 0,
+            created_at: s.created_at || new Date().toISOString(),
+          }));
+          if (!this.activeSession && this.sessions.length > 0) {
+            this.activeSession = this.sessions[0];
+          }
+        }
+      } catch (sessErr) {
+        // sessions table might be optional
+      }
+
+      // 2. Fetch imported records
       const { data, error } = await supabase
         .from('imported')
         .select('*')
         .order('created_at', { ascending: true })
-        .limit(20000);
+        .limit(50000);
 
       if (error) {
         if (error.code === 'PGRST205' || error.message?.includes('schema cache')) {
@@ -208,6 +280,8 @@ class ImportedService {
       if (data && Array.isArray(data)) {
         this.records = data.map((d: any) => ({
           id: d.id,
+          import_session_id: d.import_session_id,
+          university_name: d.university_name || this.activeSession?.university_name || '',
           class_id: String(d.class_id || '').trim(),
           member_id: String(d.member_id || '').trim(),
           barcode: d.barcode || null,
@@ -227,8 +301,8 @@ class ImportedService {
 
   /**
    * Get 4 Main Statistics
-   * 1. Scan Started
-   * 2. Scan Not Started (Formula: Total Imported Users - Scan Started)
+   * 1. Scan Started (Inwarded)
+   * 2. Scan Not Started (Missing = Total Imported - Scan Started)
    * 3. Imported Users
    * 4. Class ID Count
    */
@@ -247,8 +321,72 @@ class ImportedService {
   }
 
   /**
+   * Get Inwarding vs Missing Statistics & Metadata
+   * Guaranteed: Total Imported = Inwarded + Missing
+   */
+  public getInwardStats(): {
+    totalImported: number;
+    inwarded: number;
+    missing: number;
+    classCount: number;
+    universityName: string;
+    completionRate: number;
+  } {
+    const totalImported = this.records.length;
+    const inwarded = this.records.filter(r => r.scan_status === 'started' || r.scan_status === 'completed').length;
+    const missing = Math.max(0, totalImported - inwarded);
+    const classCount = new Set(this.records.map(r => r.class_id.trim()).filter(Boolean)).size;
+    const universityName = this.activeSession?.university_name || this.records[0]?.university_name || 'General University';
+    const completionRate = totalImported > 0 ? Math.round((inwarded / totalImported) * 100) : 0;
+
+    return {
+      totalImported,
+      inwarded,
+      missing,
+      classCount,
+      universityName,
+      completionRate,
+    };
+  }
+
+  public getActiveSession(): ImportSession | null {
+    return this.activeSession;
+  }
+
+  public getAllSessions(): ImportSession[] {
+    return [...this.sessions];
+  }
+
+  public setActiveSession(session: ImportSession | null) {
+    this.activeSession = session;
+    this.saveLocal();
+  }
+
+  /**
+   * Get Inwarded Records (scan_status = 'started' or 'completed')
+   */
+  public getInwardedRecords(classId?: string): ImportedRecord[] {
+    return this.records.filter(
+      r =>
+        (classId && classId !== 'all' ? r.class_id.toLowerCase() === classId.toLowerCase() : true) &&
+        (r.scan_status === 'started' || r.scan_status === 'completed')
+    );
+  }
+
+  /**
+   * Get Missing Records (scan_status = 'not_started')
+   */
+  public getMissingRecords(classId?: string): ImportedRecord[] {
+    return this.records.filter(
+      r =>
+        (classId && classId !== 'all' ? r.class_id.toLowerCase() === classId.toLowerCase() : true) &&
+        r.scan_status === 'not_started'
+    );
+  }
+
+  /**
    * Get Class ID-Wise Summaries
-   * Class ID | Imported | Scanned | Remaining
+   * Class ID | Imported | Inwarded (Scanned) | Missing (Remaining)
    */
   public getClassIdSummaries(): ClassIdSummary[] {
     const map = new Map<string, { total: number; scanned: number }>();
@@ -284,7 +422,7 @@ class ImportedService {
    * Get all records or filter by Class ID
    */
   public getRecords(classId?: string): ImportedRecord[] {
-    if (classId) {
+    if (classId && classId !== 'all') {
       return this.records.filter(r => r.class_id.trim().toLowerCase() === classId.trim().toLowerCase());
     }
     return [...this.records];
@@ -292,7 +430,7 @@ class ImportedService {
 
   /**
    * Get dynamic Class ID specific statistics
-   * Total Members, Total Scanned (started), Pending, Progress %
+   * Total Members, Total Scanned (started), Pending (Missing), Progress %
    */
   public getClassStats(classId: string): {
     class_id: string;
@@ -317,19 +455,41 @@ class ImportedService {
 
   /**
    * Bulk insert imported records into Supabase and local cache
-   * Handles batching for high performance (1,000 to 100,000+ records)
+   * Requires mandatory University Name (Sections 4, 5, 6, 7)
    */
   public async bulkInsert(
     items: { class_id: string; member_id: string }[],
+    universityName: string,
+    sourceFileName?: string,
     onProgress?: (insertedCount: number, total: number) => void
-  ): Promise<{ success: boolean; inserted: number; error?: string }> {
+  ): Promise<{ success: boolean; inserted: number; error?: string; session?: ImportSession }> {
+    const cleanUniversity = (universityName || '').trim();
+    if (!cleanUniversity) {
+      return { success: false, inserted: 0, error: 'University Name is mandatory before importing.' };
+    }
+
     if (!items || items.length === 0) {
-      return { success: false, inserted: 0, error: 'No records to insert' };
+      return { success: false, inserted: 0, error: 'No valid records to import.' };
     }
 
     const now = new Date().toISOString();
+    const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`;
+
+    // 1. Create Import Session (Section 6)
+    const session: ImportSession = {
+      id: sessionId,
+      university_name: cleanUniversity,
+      source_file_name: sourceFileName || 'import_file.xlsx',
+      total_records: items.length,
+      total_class_ids: new Set(items.map(i => i.class_id.trim())).size,
+      created_at: now,
+    };
+
+    // 2. Prepare Records (Section 6 & 8: scan_status = 'not_started')
     const newRecords: ImportedRecord[] = items.map((item, index) => ({
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_${Date.now()}_${index}`,
+      import_session_id: sessionId,
+      university_name: cleanUniversity,
       class_id: String(item.class_id).trim(),
       member_id: String(item.member_id).trim(),
       barcode: null,
@@ -338,24 +498,44 @@ class ImportedService {
       created_at: now,
     }));
 
-    // Update memory & local storage first for instantaneous, reliable UX
+    // Save session & records locally for instantaneous reliability
+    this.sessions = [session, ...this.sessions];
+    this.activeSession = session;
     this.records = [...this.records, ...newRecords];
     this.saveLocal();
 
-    // Check remote table availability if not checked yet
+    // Check remote table availability
     if (isSupabaseConfigured && !this.hasCheckedTable) {
       await this.checkRemoteTable();
     }
 
-    // If Supabase is configured and table is available, push in batches
+    // Push session and records to Supabase in batches if available
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
+        // Insert session record
+        try {
+          await supabase.from('import_sessions').insert([
+            {
+              id: session.id,
+              university_name: session.university_name,
+              source_file_name: session.source_file_name,
+              total_records: session.total_records,
+              total_class_ids: session.total_class_ids,
+              created_at: session.created_at,
+            },
+          ]);
+        } catch (sessErr) {
+          console.warn('Session insert note:', sessErr);
+        }
+
         const total = newRecords.length;
         let processed = 0;
 
         for (let i = 0; i < total; i += BATCH_SIZE) {
           const chunk = newRecords.slice(i, i + BATCH_SIZE).map(r => ({
             id: r.id,
+            import_session_id: r.import_session_id,
+            university_name: r.university_name,
             class_id: r.class_id,
             member_id: r.member_id,
             barcode: null,
@@ -375,7 +555,6 @@ class ImportedService {
               console.info(
                 '[ImportedService] Supabase "imported" table not yet created in remote database (PGRST205). Stored safely in local high-speed cache.'
               );
-              // Break remote sync attempts to avoid noisy errors; local records are already safely preserved
               break;
             } else {
               console.warn('[ImportedService] Supabase batch insert note:', error.message);
@@ -396,20 +575,19 @@ class ImportedService {
     }
 
     this.notify();
-    return { success: true, inserted: newRecords.length };
+    return { success: true, inserted: newRecords.length, session };
   }
 
   /**
    * Barcode Scanning Engine
    * Matches specification:
-   * 1. Read barcode (e.g. 040322MIS0089)
-   * 2. Extract first 4 characters => Class ID (e.g. 0403)
-   * 3. Fetch imported records for Class ID
-   * 4. Match member record:
-   *    - Check if barcode contains a specific member_id
-   *    - Or assign to next unscanned record in that Class ID
-   * 5. Duplicate scan protection
-   * 6. Update record: scan_status='started', scanned_at=now, barcode=barcode
+   * 1. Read barcode (e.g. 003121MIS0074)
+   * 2. Strip Code 39 asterisks if present (*003121MIS0074* -> 003121MIS0074)
+   * 3. Extract first 4 characters => Class ID (e.g. 0031)
+   * 4. Fetch imported records for Class ID
+   * 5. Match member record
+   * 6. Duplicate scan protection
+   * 7. Update record: scan_status='started', scanned_at=now, barcode=barcode
    */
   public async processBarcode(barcodeInput: string): Promise<ScanResult> {
     const barcode = sanitizeBarcode(barcodeInput);
@@ -459,7 +637,7 @@ class ImportedService {
 
     // 4. Barcode Matching Logic (Section 14)
     // Check if the barcode contains or matches a specific member_id
-    // e.g. "040322MIS0089" -> contains "MIS0089"
+    // e.g. "003121MIS0074" -> contains "MIS0074" or "21MIS0074"
     let targetRecord = classRecords.find(
       r =>
         r.scan_status === 'not_started' &&
@@ -481,7 +659,7 @@ class ImportedService {
       };
     }
 
-    // 5. Update record
+    // 5. Update record to 'started'
     const timestamp = new Date().toISOString();
     targetRecord.scan_status = 'started';
     targetRecord.scanned_at = timestamp;
@@ -520,14 +698,17 @@ class ImportedService {
   }
 
   /**
-   * Reset or clear all imported records
+   * Reset or clear all imported records and sessions
    */
   public async clearAll(): Promise<void> {
     this.records = [];
+    this.sessions = [];
+    this.activeSession = null;
     this.saveLocal();
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         await supabase.from('imported').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        await supabase.from('import_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
         console.warn('Clear remote note:', e);
       }
@@ -535,7 +716,7 @@ class ImportedService {
   }
 
   /**
-   * Reset scan status for testing/re-scan
+   * Reset scan status for re-scan testing
    */
   public async resetAllScans(): Promise<void> {
     this.records = this.records.map(r => ({
@@ -558,7 +739,141 @@ class ImportedService {
   }
 
   /**
-   * Manually check if table is now created in Supabase, and sync any local records up to cloud
+   * EXCEL EXPORT WORKFLOW (Sections 11, 12, 13, 14, 15, 16, 17, 18, 19)
+   * Generates a 3-sheet workbook:
+   * Sheet 1: Summary (University, Totals, Class ID Breakdown)
+   * Sheet 2: Inwarded Data (ONLY scanned records: scan_status = started)
+   * Sheet 3: Missing Data (ONLY unscanned records: scan_status = not_started)
+   */
+  public exportInwardingReport(customUniversityName?: string): {
+    success: boolean;
+    filename: string;
+    inwardedCount: number;
+    missingCount: number;
+    totalImported: number;
+  } {
+    const universityName =
+      (customUniversityName || '').trim() ||
+      this.activeSession?.university_name ||
+      this.records[0]?.university_name ||
+      'VIT-AP University';
+
+    const totalImported = this.records.length;
+    const inwardedRecords = this.records.filter(
+      r => r.scan_status === 'started' || r.scan_status === 'completed'
+    );
+    const missingRecords = this.records.filter(r => r.scan_status === 'not_started');
+    const classSummaries = this.getClassIdSummaries();
+    const now = new Date();
+    const formattedDate = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    // -------------------------------------------------------------------------
+    // SHEET 1: Summary (Section 15)
+    // -------------------------------------------------------------------------
+    const summaryData: any[][] = [
+      ['EXAMSCAN INWARDING & RECONCILIATION SUMMARY REPORT', ''],
+      ['', ''],
+      ['Field', 'Value'],
+      ['University', universityName],
+      ['Total Imported', totalImported],
+      ['Total Inwarded', inwardedRecords.length],
+      ['Total Missing', missingRecords.length],
+      ['Class IDs', classSummaries.length],
+      ['Completion Rate', `${totalImported > 0 ? ((inwardedRecords.length / totalImported) * 100).toFixed(1) : 0}%`],
+      ['Export Generated', formattedDate],
+      ['', ''],
+      ['CLASS ID-WISE SUMMARY', '', '', ''],
+      ['Class ID', 'Imported', 'Inwarded', 'Missing'],
+      ...classSummaries.map(c => [c.class_id, c.total_imported, c.scanned_count, c.remaining_count]),
+    ];
+
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+    wsSummary['!cols'] = [{ wch: 25 }, { wch: 20 }, { wch: 15 }, { wch: 15 }];
+
+    // -------------------------------------------------------------------------
+    // SHEET 2: Inwarded Data (Section 12: ONLY successfully scanned records)
+    // -------------------------------------------------------------------------
+    const inwardedData: any[][] = [
+      ['University Name', 'Class ID', 'Member ID', 'Barcode', 'Scan Status', 'Scanned At'],
+    ];
+
+    if (inwardedRecords.length > 0) {
+      inwardedRecords.forEach(r => {
+        inwardedData.push([
+          r.university_name || universityName,
+          r.class_id,
+          r.member_id,
+          r.barcode || '—',
+          'Started',
+          r.scanned_at ? new Date(r.scanned_at).toLocaleString() : '—',
+        ]);
+      });
+    } else {
+      inwardedData.push(['No inwarded records yet', '', '', '', '', '']);
+    }
+
+    const wsInwarded = XLSX.utils.aoa_to_sheet(inwardedData);
+    wsInwarded['!cols'] = [
+      { wch: 24 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 20 },
+      { wch: 14 },
+      { wch: 22 },
+    ];
+
+    // -------------------------------------------------------------------------
+    // SHEET 3: Missing Data (Section 13 & 19: ONLY imported records not scanned)
+    // -------------------------------------------------------------------------
+    const missingData: any[][] = [
+      ['University Name', 'Class ID', 'Member ID', 'Barcode', 'Status'],
+    ];
+
+    if (missingRecords.length > 0) {
+      missingRecords.forEach(r => {
+        missingData.push([
+          r.university_name || universityName,
+          r.class_id,
+          r.member_id,
+          '', // Blank barcode cell as specified in Section 13
+          'Missing',
+        ]);
+      });
+    } else {
+      // Section 19: If 0 missing records, show 'No missing records'
+      missingData.push(['No missing records', '', '', '', '']);
+    }
+
+    const wsMissing = XLSX.utils.aoa_to_sheet(missingData);
+    wsMissing['!cols'] = [{ wch: 24 }, { wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 14 }];
+
+    // -------------------------------------------------------------------------
+    // WORKBOOK COMPILATION & SANITIZED FILENAME (Section 14)
+    // -------------------------------------------------------------------------
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+    XLSX.utils.book_append_sheet(wb, wsInwarded, 'Inwarded Data');
+    XLSX.utils.book_append_sheet(wb, wsMissing, 'Missing Data');
+
+    const cleanUniFilename = universityName
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_');
+    const filename = `${cleanUniFilename || 'ExamScan'}_Inwarding_Report.xlsx`;
+
+    XLSX.writeFile(wb, filename);
+
+    return {
+      success: true,
+      filename,
+      inwardedCount: inwardedRecords.length,
+      missingCount: missingRecords.length,
+      totalImported,
+    };
+  }
+
+  /**
+   * Manually check if table is now created in Supabase, and sync local records to cloud
    */
   public async retryCloudSync(): Promise<{ success: boolean; message: string; syncedCount: number }> {
     if (!isSupabaseConfigured) {
@@ -578,7 +893,6 @@ class ImportedService {
 
     // Table is available! Sync any local records up
     if (this.records.length === 0) {
-      // Pull remote data
       await this.syncFromSupabase();
       this.initRealtime();
       return { success: true, message: 'Connected to Supabase "imported" table successfully.', syncedCount: 0 };
@@ -589,6 +903,8 @@ class ImportedService {
       for (let i = 0; i < this.records.length; i += BATCH_SIZE) {
         const chunk = this.records.slice(i, i + BATCH_SIZE).map(r => ({
           id: r.id,
+          import_session_id: r.import_session_id,
+          university_name: r.university_name,
           class_id: r.class_id,
           member_id: r.member_id,
           barcode: r.barcode,

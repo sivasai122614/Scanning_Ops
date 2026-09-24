@@ -918,8 +918,8 @@ export const BarcodeScannerView: React.FC<{
               </button>
             </div>
 
-            {/* EXPANDED 4:1 Wide Horizontal Viewfinder Target Frame (V3 1D Barcode Optimized) */}
-            <div className="relative z-10 w-[92%] sm:w-[86%] max-w-[660px] h-[100px] sm:h-[130px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2.5 transition-all duration-300">
+            {/* EXPANDED Wide Horizontal Viewfinder Target Frame (V3 1D Barcode Optimized) */}
+            <div className="relative z-10 w-[94%] sm:w-[88%] max-w-[660px] h-[80%] max-h-[120px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2 transition-all duration-300">
               {/* Bold Corner Reticle Brackets */}
               <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-[#16A34A] rounded-tl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
               <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-[#16A34A] rounded-tr-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
