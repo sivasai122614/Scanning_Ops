@@ -865,45 +865,18 @@ export const BarcodeScannerView: React.FC<{
               )}
             </div>
 
-            {/* Viewfinder Target Frame with Corner Brackets */}
-            <div className="relative z-10 w-60 h-40 sm:w-72 sm:h-44 rounded-lg border border-white/30 flex flex-col items-center justify-center p-3 backdrop-blur-[1px]">
-              {/* Corner Brackets */}
-              <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-[#16A34A] rounded-tl" />
-              <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-[#16A34A] rounded-tr" />
-              <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-[#16A34A] rounded-bl" />
-              <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-[#16A34A] rounded-br" />
+            {/* Clean, Plain Viewfinder Target Frame (100% transparent live camera view) */}
+            <div className="relative z-10 w-64 h-36 sm:w-80 sm:h-44 rounded-lg border border-white/25 pointer-events-none flex flex-col items-center justify-between p-2">
+              {/* Corner Reticle Brackets */}
+              <div className="absolute -top-0.5 -left-0.5 w-6 h-6 border-t-2 border-l-2 border-[#16A34A] rounded-tl" />
+              <div className="absolute -top-0.5 -right-0.5 w-6 h-6 border-t-2 border-r-2 border-[#16A34A] rounded-tr" />
+              <div className="absolute -bottom-0.5 -left-0.5 w-6 h-6 border-b-2 border-l-2 border-[#16A34A] rounded-bl" />
+              <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-2 border-r-2 border-[#16A34A] rounded-br" />
 
-              {/* Barcode Laser Guide Line */}
+              {/* Laser Scan Line */}
               {isScanning && (
-                <div className="absolute inset-x-2 h-0.5 bg-[#16A34A] shadow-[0_0_12px_#16A34A] animate-pulse" />
+                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-[#16A34A]/90 shadow-[0_0_10px_#16A34A] animate-pulse" />
               )}
-
-              {/* Barcode Target Visual Box */}
-              <div className="w-full bg-white/95 rounded p-2 text-slate-900 flex flex-col items-center justify-center shadow-md">
-                <div className="text-[10px] font-bold tracking-wider text-slate-700 uppercase truncate max-w-[200px]">
-                  {currentSchedule?.subject || 'EXAM SCRIPT'}
-                </div>
-
-                {/* Barcode pattern */}
-                <div className="w-full h-8 my-1 flex items-center justify-center gap-1 overflow-hidden opacity-90">
-                  <span className="w-0.5 h-full bg-slate-900" />
-                  <span className="w-1.5 h-full bg-slate-900" />
-                  <span className="w-1 h-full bg-slate-900" />
-                  <span className="w-0.5 h-full bg-slate-900" />
-                  <span className="w-2 h-full bg-slate-900" />
-                  <span className="w-1 h-full bg-slate-900" />
-                  <span className="w-0.5 h-full bg-slate-900" />
-                  <span className="w-1.5 h-full bg-slate-900" />
-                  <span className="w-2 h-full bg-slate-900" />
-                  <span className="w-0.5 h-full bg-slate-900" />
-                  <span className="w-1.5 h-full bg-slate-900" />
-                  <span className="w-1 h-full bg-slate-900" />
-                </div>
-
-                <div className="text-[11px] font-mono font-semibold tracking-wider text-[#1565D8]">
-                  {lastScanned?.student_id || 'ALIGN BARCODE IN FRAME'}
-                </div>
-              </div>
             </div>
 
             {/* STRICT REQUIREMENT 4 & 7: Green Check Confirmation Overlay directly on Camera View */}
