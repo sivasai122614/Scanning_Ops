@@ -26,6 +26,7 @@ import {
   ArrowLeft,
   Check,
   Edit3,
+  Maximize2,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore';
 import { InwardSchedule, ScannedScript } from '../../types/exam';
@@ -73,6 +74,11 @@ export const BarcodeScannerView: React.FC<{
   // Available Camera Devices (for multi-camera desktops/mobiles)
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+
+  // Camera Detection Area & Zoom States (Large Viewfinder)
+  const [detectionSize, setDetectionSize] = useState<'wide' | 'ultra-wide'>('ultra-wide');
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [zoomSupported, setZoomSupported] = useState<boolean>(false);
 
   // Quick Setup & Scan Modal State (Requirement 2)
   const [showQuickSetupModal, setShowQuickSetupModal] = useState<boolean>(false);
@@ -203,6 +209,26 @@ export const BarcodeScannerView: React.FC<{
     }, 1600);
   };
 
+  // Apply hardware or digital zoom
+  const applyZoom = useCallback(async (z: number) => {
+    setZoomLevel(z);
+    if (!streamRef.current) return;
+    const track = streamRef.current.getVideoTracks()[0];
+    if (track && 'applyConstraints' in track) {
+      try {
+        const caps: any = track.getCapabilities?.() || {};
+        if (caps.zoom) {
+          const minZ = caps.zoom.min || 1;
+          const maxZ = caps.zoom.max || 5;
+          const clamped = Math.max(minZ, Math.min(maxZ, z));
+          await track.applyConstraints({ advanced: [{ zoom: clamped } as any] });
+        }
+      } catch (e) {
+        console.warn('Hardware zoom application note:', e);
+      }
+    }
+  }, []);
+
   const startCameraStream = useCallback(async (deviceIdOverride?: string) => {
     setCameraLoading(true);
     setCameraError(null);
@@ -217,15 +243,15 @@ export const BarcodeScannerView: React.FC<{
       const activeDevId = deviceIdOverride || selectedCameraId;
       let stream: MediaStream | null = null;
 
-      // Tier 1: Try environment camera (or selected device) with preferred 720p resolution
+      // Tier 1: Try environment camera (or selected device) with preferred 1080p / 720p Full HD resolution
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: activeDevId
             ? { deviceId: { exact: activeDevId } }
             : {
                 facingMode: { ideal: 'environment' },
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
+                width: { ideal: 1920, min: 1280 },
+                height: { ideal: 1080, min: 720 },
               },
           audio: false,
         });
@@ -260,6 +286,15 @@ export const BarcodeScannerView: React.FC<{
         await videoRef.current.play().catch(e => console.warn('Autoplay note:', e));
       }
       setCameraActive(true);
+
+      // Check for hardware zoom support
+      try {
+        const videoTrack = stream.getVideoTracks()[0];
+        const caps: any = videoTrack?.getCapabilities?.() || {};
+        setZoomSupported(Boolean(caps.zoom));
+      } catch (e) {
+        setZoomSupported(false);
+      }
 
       // Refresh list of available cameras
       try {
@@ -785,15 +820,19 @@ export const BarcodeScannerView: React.FC<{
           </div>
         ) : (
         <div className="space-y-3.5">
-          {/* Viewfinder Card with Real-Time Camera Stream (Requirement 3) */}
-          <div className="relative rounded-lg bg-slate-900 border border-slate-800 overflow-hidden shadow-md flex flex-col items-center justify-center min-h-[260px] sm:min-h-[300px] text-center">
+          {/* Viewfinder Card with Real-Time Camera Stream (Requirement 3: Large, Expansive Detection Area) */}
+          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center h-[380px] sm:h-[450px] md:h-[490px] w-full text-center transition-all">
             {/* Real-time HTML5 Camera Video Stream */}
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className={`w-full h-full object-cover absolute inset-0 transition-opacity duration-300 ${
+              style={{
+                transform: zoomLevel > 1 && !zoomSupported ? `scale(${zoomLevel})` : undefined,
+                transformOrigin: 'center center',
+              }}
+              className={`w-full h-full object-cover absolute inset-0 transition-all duration-300 ${
                 cameraActive ? 'opacity-100' : 'opacity-0'
               }`}
             />
@@ -845,38 +884,88 @@ export const BarcodeScannerView: React.FC<{
               </button>
             </div>
 
-            {/* Camera Status Badge (Top-Left) */}
-            <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-medium text-white z-20">
-              {cameraLoading ? (
-                <>
-                  <div className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-                  <span>Starting Camera...</span>
-                </>
-              ) : cameraActive ? (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-[#16A34A] animate-pulse" />
-                  <span>Real-Time Camera Active</span>
-                </>
-              ) : (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  <span>Camera Standby</span>
-                </>
-              )}
+            {/* Camera Status & Detection Area Selector (Top-Left) */}
+            <div className="absolute top-3 left-3 flex flex-wrap items-center gap-2 z-20">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-medium text-white">
+                {cameraLoading ? (
+                  <>
+                    <div className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+                    <span>Starting Camera...</span>
+                  </>
+                ) : cameraActive ? (
+                  <>
+                    <span className="h-2 w-2 rounded-full bg-[#16A34A] animate-pulse" />
+                    <span>Camera Live</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="h-2 w-2 rounded-full bg-amber-500" />
+                    <span>Camera Standby</span>
+                  </>
+                )}
+              </div>
+
+              {/* Area Size Switcher */}
+              <button
+                type="button"
+                onClick={() => setDetectionSize(prev => (prev === 'ultra-wide' ? 'wide' : 'ultra-wide'))}
+                className="px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-[11px] font-medium text-emerald-300 border border-white/20 transition-all flex items-center gap-1 cursor-pointer"
+                title="Toggle Scan Area Width"
+              >
+                <Maximize2 className="h-3 w-3" />
+                <span>{detectionSize === 'ultra-wide' ? 'Full View Area (92%)' : 'Wide Area (80%)'}</span>
+              </button>
             </div>
 
-            {/* Clean, Plain Viewfinder Target Frame (100% transparent live camera view) */}
-            <div className="relative z-10 w-64 h-36 sm:w-80 sm:h-44 rounded-lg border border-white/25 pointer-events-none flex flex-col items-center justify-between p-2">
-              {/* Corner Reticle Brackets */}
-              <div className="absolute -top-0.5 -left-0.5 w-6 h-6 border-t-2 border-l-2 border-[#16A34A] rounded-tl" />
-              <div className="absolute -top-0.5 -right-0.5 w-6 h-6 border-t-2 border-r-2 border-[#16A34A] rounded-tr" />
-              <div className="absolute -bottom-0.5 -left-0.5 w-6 h-6 border-b-2 border-l-2 border-[#16A34A] rounded-bl" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-2 border-r-2 border-[#16A34A] rounded-br" />
+            {/* EXPANDED Viewfinder Target Frame (Large, High-Visibility, 100% Transparent Live View) */}
+            <div
+              className={`relative z-10 rounded-2xl border-2 border-white/25 pointer-events-none flex flex-col items-center justify-between p-3 transition-all duration-300 ${
+                detectionSize === 'ultra-wide'
+                  ? 'w-[94%] sm:w-[90%] max-w-xl h-[78%] sm:h-[82%]'
+                  : 'w-[84%] sm:w-[80%] max-w-lg h-[66%] sm:h-[72%]'
+              }`}
+            >
+              {/* Bold Corner Reticle Brackets */}
+              <div className="absolute -top-1 -left-1 w-9 h-9 border-t-4 border-l-4 border-[#16A34A] rounded-tl-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute -top-1 -right-1 w-9 h-9 border-t-4 border-r-4 border-[#16A34A] rounded-tr-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute -bottom-1 -left-1 w-9 h-9 border-b-4 border-l-4 border-[#16A34A] rounded-bl-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+              <div className="absolute -bottom-1 -right-1 w-9 h-9 border-b-4 border-r-4 border-[#16A34A] rounded-br-xl shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
+
+              {/* Top Guidance Indicator */}
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/50 backdrop-blur-xs text-[11px] font-semibold text-emerald-300">
+                <Scan className="h-3.5 w-3.5 text-emerald-400" />
+                <span>EXPANDED DETECTION AREA</span>
+              </div>
 
               {/* Laser Scan Line */}
               {isScanning && (
-                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-[#16A34A]/90 shadow-[0_0_10px_#16A34A] animate-pulse" />
+                <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-[#16A34A] shadow-[0_0_14px_#16A34A] animate-pulse" />
               )}
+
+              {/* Bottom Framing Note */}
+              <div className="text-[10px] font-mono text-white/80 bg-black/50 px-3 py-1 rounded-full backdrop-blur-xs">
+                Place answer script or barcode anywhere inside this area
+              </div>
+            </div>
+
+            {/* Quick Zoom Controls (Bottom-Left) */}
+            <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg border border-white/20">
+              <span className="text-[10px] font-bold text-slate-300 pr-1 uppercase">Zoom</span>
+              {[1, 1.5, 2].map(z => (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={() => applyZoom(z)}
+                  className={`px-2 py-0.5 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                    zoomLevel === z
+                      ? 'bg-[#1565D8] text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  }`}
+                  title={`Set camera zoom to ${z}x`}
+                >
+                  {z}x
+                </button>
+              ))}
             </div>
 
             {/* STRICT REQUIREMENT 4 & 7: Green Check Confirmation Overlay directly on Camera View */}
