@@ -108,6 +108,9 @@ class ExamStore {
     }
   }
 
+  private sessionUuidCache: Map<string, string> = new Map();
+  private cachedCenterId: string | null = null;
+
   private savePendingSync() {
     try {
       localStorage.setItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(this.pendingSyncQueue));
@@ -123,6 +126,81 @@ class ExamStore {
     }
   }
 
+  private async getOrCreateSupabaseSession(scan: ScannedScript): Promise<string | null> {
+    const key = scan.scheduled_id || scan.class_id;
+    if (this.sessionUuidCache.has(key)) {
+      return this.sessionUuidCache.get(key)!;
+    }
+
+    try {
+      // 1. Ensure a valid center exists in Supabase
+      if (!this.cachedCenterId) {
+        const { data: centerData } = await supabase.from('centers').select('id').limit(1);
+        if (centerData && centerData.length > 0) {
+          this.cachedCenterId = centerData[0].id;
+        } else {
+          // Create default center if table is empty
+          const { data: newCenter } = await supabase
+            .from('centers')
+            .insert({
+              center_code: 'CTR-001',
+              center_name: 'Main Examination Center',
+              location: 'Campus Control',
+            })
+            .select('id')
+            .single();
+          if (newCenter) {
+            this.cachedCenterId = newCenter.id;
+          }
+        }
+      }
+
+      if (!this.cachedCenterId) {
+        return null;
+      }
+
+      // 2. Query exam_sessions by session_code
+      const { data: existingSession } = await supabase
+        .from('exam_sessions')
+        .select('id')
+        .eq('session_code', key)
+        .maybeSingle();
+
+      if (existingSession?.id) {
+        this.sessionUuidCache.set(key, existingSession.id);
+        return existingSession.id;
+      }
+
+      // 3. Create exam session if not exists
+      const { data: insertedSession, error: insertErr } = await supabase
+        .from('exam_sessions')
+        .insert({
+          center_id: this.cachedCenterId,
+          session_code: key,
+          exam_name: scan.subject || 'Examination',
+          exam_code: scan.class_id || key,
+          school_id: scan.school_id || null,
+          class_id: scan.class_id || null,
+          exam_date: new Date().toISOString().split('T')[0],
+          shift: 'Morning',
+          subject: scan.subject || 'General',
+          expected_script_count: 50,
+          received_scripts: 1,
+          status: 'Scanning',
+        })
+        .select('id')
+        .single();
+
+      if (!insertErr && insertedSession?.id) {
+        this.sessionUuidCache.set(key, insertedSession.id);
+        return insertedSession.id;
+      }
+    } catch (e) {
+      console.warn('Supabase session lookup error:', e);
+    }
+    return null;
+  }
+
   public async flushPendingSync(): Promise<number> {
     if (!isSupabaseConfigured || !navigator.onLine || this.pendingSyncQueue.length === 0) {
       return 0;
@@ -134,20 +212,30 @@ class ExamStore {
 
     for (const scan of itemsToSync) {
       try {
-        const { error } = await supabase.from('scripts').upsert({
-          exam_session_id: scan.inward_id || scan.scheduled_id,
-          center_id: '00000000-0000-0000-0000-000000000001',
-          school_id: scan.school_id || null,
-          class_id: scan.class_id || null,
-          script_number: scan.student_id,
-          barcode: scan.barcode || scan.student_id,
-          student_identifier: scan.student_id,
-          received_at: scan.scanned_at,
-          verification_status: scan.status === 'VALID' ? 'verified' : 'pending',
-          script_status: 'received',
-        });
+        const sessionUuid = await this.getOrCreateSupabaseSession(scan);
+        if (!sessionUuid || !this.cachedCenterId) {
+          remainingQueue.push(scan);
+          continue;
+        }
+
+        const { error } = await supabase.from('scripts').upsert(
+          {
+            exam_session_id: sessionUuid,
+            center_id: this.cachedCenterId,
+            school_id: scan.school_id || null,
+            class_id: scan.class_id || null,
+            script_number: scan.student_id,
+            barcode: scan.barcode || scan.student_id,
+            student_identifier: scan.student_id,
+            received_at: scan.scanned_at,
+            verification_status: scan.status === 'VALID' ? 'verified' : 'pending',
+            script_status: 'received',
+          },
+          { onConflict: 'exam_session_id,barcode' }
+        );
 
         if (error) {
+          console.warn('Supabase script sync error:', error.message);
           remainingQueue.push(scan);
         } else {
           syncedCount++;

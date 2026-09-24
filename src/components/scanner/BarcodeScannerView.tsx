@@ -70,6 +70,20 @@ export const BarcodeScannerView: React.FC<{
   const successTimeoutRef = useRef<any>(null);
   const warningTimeoutRef = useRef<any>(null);
 
+  // Available Camera Devices (for multi-camera desktops/mobiles)
+  const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+
+  // Quick Setup & Scan Modal State (Requirement 2)
+  const [showQuickSetupModal, setShowQuickSetupModal] = useState<boolean>(false);
+  const [quickClassId, setQuickClassId] = useState<string>('');
+  const [quickSchoolId, setQuickSchoolId] = useState<string>('');
+  const [quickRoom, setQuickRoom] = useState<string>('Room 1');
+  const [quickSubject, setQuickSubject] = useState<string>('General Subject');
+  const [quickExpected, setQuickExpected] = useState<string>('30');
+  const [quickBundles, setQuickBundles] = useState<string>('1');
+  const [quickError, setQuickError] = useState<string>('');
+
   // Expected Count Exceeded Modal State (Requirement 7)
   const [showExcessModal, setShowExcessModal] = useState<boolean>(false);
   const [pendingScriptId, setPendingScriptId] = useState<string>('');
@@ -189,7 +203,7 @@ export const BarcodeScannerView: React.FC<{
     }, 1600);
   };
 
-  const startCameraStream = useCallback(async () => {
+  const startCameraStream = useCallback(async (deviceIdOverride?: string) => {
     setCameraLoading(true);
     setCameraError(null);
     try {
@@ -200,14 +214,44 @@ export const BarcodeScannerView: React.FC<{
       // Stop any existing stream before starting a new one
       stopCameraStream();
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
+      const activeDevId = deviceIdOverride || selectedCameraId;
+      let stream: MediaStream | null = null;
+
+      // Tier 1: Try environment camera (or selected device) with preferred 720p resolution
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: activeDevId
+            ? { deviceId: { exact: activeDevId } }
+            : {
+                facingMode: { ideal: 'environment' },
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+              },
+          audio: false,
+        });
+      } catch (err1) {
+        console.warn('High-res camera constraints failed, attempting relaxed constraints:', err1);
+        try {
+          // Tier 2: Try relaxed facingMode without width/height
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: activeDevId
+              ? { deviceId: { exact: activeDevId } }
+              : { facingMode: { ideal: 'environment' } },
+            audio: false,
+          });
+        } catch (err2) {
+          console.warn('Environment facingMode failed, falling back to any available video device:', err2);
+          // Tier 3: Universal fallback (standard webcam / USB cam / virtual cam)
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
+      }
+
+      if (!stream) {
+        throw new Error('Could not establish video feed from any camera.');
+      }
 
       streamRef.current = stream;
       if (videoRef.current) {
@@ -216,6 +260,15 @@ export const BarcodeScannerView: React.FC<{
         await videoRef.current.play().catch(e => console.warn('Autoplay note:', e));
       }
       setCameraActive(true);
+
+      // Refresh list of available cameras
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevs = devices.filter(d => d.kind === 'videoinput');
+        setAvailableCameras(videoDevs);
+      } catch (enumErr) {
+        // Enumerate devices may be restricted in some contexts
+      }
     } catch (err: any) {
       console.warn('Real camera error:', err);
       // STRICT REQUIREMENT 9: Exact prompt requirement text
@@ -226,7 +279,7 @@ export const BarcodeScannerView: React.FC<{
     } finally {
       setCameraLoading(false);
     }
-  }, [stopCameraStream]);
+  }, [selectedCameraId, stopCameraStream]);
 
   // Start camera when component mounts or subTab is 'scanner'
   useEffect(() => {
@@ -562,29 +615,48 @@ export const BarcodeScannerView: React.FC<{
   return (
     <div className="space-y-4">
       {/* Schedule Selection & Sub-Tab Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-        {/* Schedule Selector */}
-        <select
-          value={currentSchedule ? currentSchedule.id : ''}
-          onChange={e => {
-            setSelectedScheduleId(e.target.value);
-            setLastScanned(null);
-            setFeedback(null);
-            setForceOpenScanner(false);
-          }}
-          className="h-10 px-3 rounded-lg bg-white border border-[#E2E8F0] text-xs font-semibold text-[#172033] focus:border-[#1565D8] focus:outline-none shadow-xs"
-        >
-          {schedules.map(s => {
-            const sScans = examStore.getScans(s.scheduled_id, s.university, s.id);
-            const valid = sScans.filter(x => x.status === 'VALID').length;
-            const isDone = s.is_completed || (s.expected_scripts > 0 && valid >= s.expected_scripts);
-            return (
-              <option key={s.id} value={s.id}>
-                {s.university ? `[${s.university}] ` : ''}{s.scheduled_id} - {s.subject} ({s.class_id} / Room {s.room_number}) {isDone ? '✓ (Done)' : `(${valid}/${s.expected_scripts})`}
-              </option>
-            );
-          })}
-        </select>
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
+        {/* Schedule Selector & Quick Setup Button */}
+        <div className="flex flex-1 items-center gap-2">
+          <select
+            value={currentSchedule ? currentSchedule.id : ''}
+            onChange={e => {
+              setSelectedScheduleId(e.target.value);
+              setLastScanned(null);
+              setFeedback(null);
+              setForceOpenScanner(false);
+            }}
+            className="flex-1 h-10 px-3 rounded-lg bg-white border border-[#E2E8F0] text-xs font-semibold text-[#172033] focus:border-[#1565D8] focus:outline-none shadow-xs"
+          >
+            {schedules.map(s => {
+              const sScans = examStore.getScans(s.scheduled_id, s.university, s.id);
+              const valid = sScans.filter(x => x.status === 'VALID').length;
+              const isDone = s.is_completed || (s.expected_scripts > 0 && valid >= s.expected_scripts);
+              return (
+                <option key={s.id} value={s.id}>
+                  {s.university ? `[${s.university}] ` : ''}{s.scheduled_id} - {s.subject} ({s.class_id} / Room {s.room_number}) {isDone ? '✓ (Done)' : `(${valid}/${s.expected_scripts})`}
+                </option>
+              );
+            })}
+          </select>
+
+          {/* User Request 2: Quick Details Add & Start Scan */}
+          <button
+            type="button"
+            onClick={() => {
+              setQuickClassId('');
+              setQuickSchoolId('');
+              setQuickError('');
+              setShowQuickSetupModal(true);
+            }}
+            className="h-10 px-3.5 rounded-lg bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+            title="Add details and start scanning immediately"
+          >
+            <Plus className="h-4 w-4" />
+            <span className="hidden sm:inline">Quick Setup & Scan</span>
+            <span className="sm:hidden">New</span>
+          </button>
+        </div>
 
         {/* View Switcher: Scanner (4) | Verification (5) | Missing (6) */}
         <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-[#E2E8F0] shadow-xs">
@@ -728,6 +800,25 @@ export const BarcodeScannerView: React.FC<{
 
             {/* Camera Overlay Controls (Top-Right) */}
             <div className="absolute top-3 right-3 flex items-center gap-2 z-20">
+              {availableCameras.length > 1 && (
+                <select
+                  value={selectedCameraId}
+                  onChange={e => {
+                    const devId = e.target.value;
+                    setSelectedCameraId(devId);
+                    startCameraStream(devId);
+                  }}
+                  className="bg-black/60 backdrop-blur-md text-white text-[11px] px-2 py-1.5 rounded-md border border-white/20 focus:outline-none max-w-[130px] truncate"
+                  title="Switch camera device"
+                >
+                  {availableCameras.map((cam, idx) => (
+                    <option key={cam.deviceId || idx} value={cam.deviceId} className="bg-slate-900 text-white">
+                      {cam.label || `Camera ${idx + 1}`}
+                    </option>
+                  ))}
+                </select>
+              )}
+
               <button
                 type="button"
                 onClick={toggleTorch}
@@ -858,19 +949,56 @@ export const BarcodeScannerView: React.FC<{
                   <CameraOff className="h-7 w-7" />
                 </div>
                 <h3 className="text-sm font-bold text-white mb-2">Camera Permission Required</h3>
-                <p className="text-xs text-slate-300 max-w-xs mb-4 leading-relaxed whitespace-pre-line">
+                <p className="text-xs text-slate-300 max-w-xs mb-3 leading-relaxed whitespace-pre-line">
                   {cameraError}
                 </p>
-                <button
-                  type="button"
-                  onClick={startCameraStream}
-                  className="px-4 py-2 rounded-lg bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  <span>Retry Camera Access</span>
-                </button>
+                <div className="bg-amber-950/40 border border-amber-500/30 text-amber-200 text-[11px] p-2.5 rounded-lg max-w-sm mb-4 text-left">
+                  💡 <strong>Browser Note:</strong> If you just turned ON the Camera toggle in your browser settings (as shown in your lock icon popup), Chrome requires a page reload to apply the permission. Click <strong>Reload App</strong> below!
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => startCameraStream()}
+                    className="px-3.5 py-2 rounded-lg bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>Retry Camera Access</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="px-3.5 py-2 rounded-lg bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Reload App</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(window.location.href, '_blank')}
+                    className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Open Standalone Tab ↗</span>
+                  </button>
+                </div>
               </div>
             )}
+
+            {/* Quick Test Barcode Button for testing without physical camera */}
+            <div className="absolute bottom-2.5 right-2.5 z-20">
+              <button
+                type="button"
+                onClick={() => {
+                  const prefix = currentSchedule ? currentSchedule.class_id.replace(/[^A-Za-z0-9]/g, '') : '1211';
+                  const randomNum = Math.floor(1000 + Math.random() * 9000);
+                  handleAttemptScan(`${prefix}${randomNum}`);
+                }}
+                className="px-2.5 py-1 rounded bg-black/60 hover:bg-black/80 text-white text-[10px] font-mono border border-white/20 transition-all flex items-center gap-1 cursor-pointer"
+                title="Simulate scanning a test barcode"
+              >
+                <Zap className="h-3 w-3 text-amber-400" />
+                <span>Test Barcode</span>
+              </button>
+            </div>
           </div>
 
           {/* Manual Input Bar for Keyboard / Wedge Scanners */}
@@ -1413,6 +1541,174 @@ export const BarcodeScannerView: React.FC<{
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* QUICK SETUP & SCAN MODAL (Feature Request 2) */}
+      {showQuickSetupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="h-9 w-9 rounded-lg bg-[#EAF2FF] text-[#1565D8] flex items-center justify-center">
+                  <Scan className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#172033]">Quick Setup & Start Scan</h3>
+                  <p className="text-[11px] text-[#64748B]">Add exam details and launch real-time scanning</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQuickSetupModal(false)}
+                className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {quickError && (
+              <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>{quickError}</span>
+              </div>
+            )}
+
+            <form
+              onSubmit={e => {
+                e.preventDefault();
+                if (!quickClassId.trim()) {
+                  setQuickError('Class ID is strictly required.');
+                  return;
+                }
+                const exp = parseInt(quickExpected, 10);
+                if (isNaN(exp) || exp <= 0) {
+                  setQuickError('Expected scripts must be greater than 0.');
+                  return;
+                }
+
+                const newSchedule = examStore.addInwardEntry({
+                  session_id: 'CURRENT_BATCH',
+                  scheduled_id: quickClassId.trim().toUpperCase(),
+                  class_id: quickClassId.trim().toUpperCase(),
+                  school_id: quickSchoolId.trim() ? quickSchoolId.trim().toUpperCase() : undefined,
+                  room_number: quickRoom.trim() || 'Room 1',
+                  subject: quickSubject.trim() || 'General Subject',
+                  expected_scripts: exp,
+                  number_of_bundles: parseInt(quickBundles, 10) || 1,
+                  received_by: user?.full_name || 'Operator',
+                  received_time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                  university: 'Standard',
+                  exam_type: 'Regular',
+                });
+
+                refreshData();
+                setSelectedScheduleId(newSchedule.id);
+                setShowQuickSetupModal(false);
+                setSubTab('scanner');
+                setFeedback({
+                  type: 'success',
+                  text: `Ready to scan for Class ${newSchedule.class_id} (Expected: ${newSchedule.expected_scripts} scripts)`,
+                });
+                startCameraStream();
+              }}
+              className="space-y-3.5"
+            >
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">
+                    Class ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={quickClassId}
+                    onChange={e => setQuickClassId(e.target.value)}
+                    placeholder="e.g. 1211"
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs font-mono font-medium text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">
+                    School ID <span className="text-slate-400 font-normal">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={quickSchoolId}
+                    onChange={e => setQuickSchoolId(e.target.value)}
+                    placeholder="e.g. 1211 (can match Class ID)"
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs font-mono font-medium text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">Room Number</label>
+                  <input
+                    type="text"
+                    value={quickRoom}
+                    onChange={e => setQuickRoom(e.target.value)}
+                    placeholder="e.g. Room 101"
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">Subject / Paper</label>
+                  <input
+                    type="text"
+                    value={quickSubject}
+                    onChange={e => setQuickSubject(e.target.value)}
+                    placeholder="e.g. Mathematics"
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">
+                    Expected Scripts <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={quickExpected}
+                    onChange={e => setQuickExpected(e.target.value)}
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs font-semibold text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#172033] mb-1">Bundles</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={quickBundles}
+                    onChange={e => setQuickBundles(e.target.value)}
+                    className="w-full h-9 px-3 rounded-lg border border-[#CBD5E1] text-xs font-semibold text-[#172033] focus:border-[#1565D8] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowQuickSetupModal(false)}
+                  className="px-3.5 h-9 rounded-lg border border-slate-200 text-xs font-semibold text-[#64748B] hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 h-9 rounded-lg bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span>Start Scanning Now</span>
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
