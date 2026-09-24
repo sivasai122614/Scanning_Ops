@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --primary-blue: #1565D8;
+    --primary-dark-blue: #0D47A1;
+    --light-blue: #EAF2FF;
+    --page-bg: #F5F7FA;
+    --surface: #FFFFFF;
+    --border: #E2E8F0;
+    --primary-text: #172033;
+    --secondary-text: #64748B;
+    --success: #16A34A;
+    --success-bg: #DCFCE7;
+    --warning: #F59E0B;
+    --warning-bg: #FEF3C7;
+    --error: #DC2626;
+    --error-bg: #FEE2E2;
+    --info: #2563EB;
+  }
+
+  * {
+    box-sizing: border-box;
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background-color: #F5F7FA;
+    color: #172033;
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  input, button, select, textarea {
+    font-family: inherit;
+  }
+}
+
+/* Custom utility classes matching the exam operations design reference */
+.bg-primary-blue {
+  background-color: #1565D8;
+}
+
+.text-primary-blue {
+  color: #1565D8;
+}
+
+.border-primary-blue {
+  border-color: #1565D8;
+}
+
+.bg-primary-dark-blue {
+  background-color: #0D47A1;
+}
+
+.bg-light-blue {
+  background-color: #EAF2FF;
+}
+
+.text-primary-dark {
+  color: #172033;
+}
+
+.text-secondary-muted {
+  color: #64748B;
+}
+
+.border-subtle {
+  border-color: #E2E8F0;
+}
+
+/* Tabular numerals for counters, metrics, codes */
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
