@@ -5,9 +5,9 @@
 // ==============================================================================
 
 import React from 'react';
-import { Home, Package, Scan, BarChart2, MoreHorizontal } from 'lucide-react';
+import { Home, Package, FileSpreadsheet, BarChart2, MoreHorizontal } from 'lucide-react';
 
-export type MainNavTab = 'home' | 'sessions' | 'scan' | 'reports' | 'more';
+export type MainNavTab = 'home' | 'import-data' | 'sessions' | 'reports' | 'more';
 
 interface BottomNavigationProps {
   activeTab: MainNavTab;
@@ -16,11 +16,11 @@ interface BottomNavigationProps {
 
 export const BottomNavigation: React.FC<BottomNavigationProps> = ({ activeTab, onSelectTab }) => {
   const tabs = [
-    { id: 'home' as const, label: 'Home', icon: Home },
-    { id: 'sessions' as const, label: 'Inward', icon: Package },
-    { id: 'scan' as const, label: 'Scan', icon: Scan },
+    { id: 'home' as const, label: 'Dashboard', icon: Home },
+    { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet },
+    { id: 'sessions' as const, label: 'Manual Inward', icon: Package },
     { id: 'reports' as const, label: 'Reports', icon: BarChart2 },
-    { id: 'more' as const, label: 'More', icon: MoreHorizontal },
+    { id: 'more' as const, label: 'Settings', icon: MoreHorizontal },
   ];
 
   return (

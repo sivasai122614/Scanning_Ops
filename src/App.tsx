@@ -17,6 +17,7 @@ import { SessionsManagerView } from './components/sessions/SessionsManagerView';
 import { BarcodeScannerView } from './components/scanner/BarcodeScannerView';
 import { ReportsView } from './components/reports/ReportsView';
 import { SettingsView } from './components/settings/SettingsView';
+import { ImportDataView } from './components/importData/ImportDataView';
 import { UserManagementView } from './components/users/UserManagementView';
 import { RolePermissionsMatrixModal } from './components/matrix/RolePermissionsMatrixModal';
 import { AuditLogViewer } from './components/audit/AuditLogViewer';
@@ -27,6 +28,7 @@ import { PageContainer } from './components/ui/Elements';
 
 type ActiveView =
   | 'home'
+  | 'import-data'
   | 'sessions'
   | 'scan'
   | 'reports'
@@ -55,8 +57,10 @@ const AuthenticatedApp: React.FC = () => {
     switch (activeView) {
       case 'home':
         return { title: 'ExamScan', isRoot: true };
+      case 'import-data':
+        return { title: 'Import Data for Inwarding', isRoot: true };
       case 'sessions':
-        return { title: 'Bundle Inward', isRoot: true };
+        return { title: 'Manual Inwarding', isRoot: true };
       case 'scan':
         return { title: 'Scan Scripts', isRoot: true };
       case 'reports':
@@ -86,7 +90,8 @@ const AuthenticatedApp: React.FC = () => {
     activeView === 'role-permissions' ||
     activeView === 'audit-logs' ||
     activeView === 'test-suite' ||
-    activeView === 'my-profile'
+    activeView === 'my-profile' ||
+    activeView === 'scan'
       ? 'more'
       : (activeView as MainNavTab);
 
@@ -129,7 +134,14 @@ const AuthenticatedApp: React.FC = () => {
               />
             )}
 
-            {/* FRAMES 2 & 3: EXAM SESSIONS & INWARD INTAKE */}
+            {/* NEW SECTION 2: IMPORT DATA FOR INWARDING & BARCODE SCANNER */}
+            {activeView === 'import-data' && (
+              <ImportDataView
+                onNavigateToManualInward={() => navigateTo('sessions')}
+              />
+            )}
+
+            {/* FRAMES 2 & 3: EXAM SESSIONS & MANUAL INWARD INTAKE */}
             {activeView === 'sessions' && (
               <SessionsManagerView
                 initialMode={sessionsInitialMode}

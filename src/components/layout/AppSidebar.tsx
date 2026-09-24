@@ -20,6 +20,7 @@ import { useAuth } from '../../context/AuthContext';
 
 export type DesktopNavTarget =
   | 'home'
+  | 'import-data'
   | 'sessions'
   | 'scan'
   | 'reports'
@@ -41,7 +42,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
 
   const primaryNav = [
     { id: 'home' as const, label: 'Dashboard', icon: Home },
-    { id: 'sessions' as const, label: 'Bundle Inward', icon: Package },
+    { id: 'import-data' as const, label: 'Import Data for Inwarding', icon: FileSpreadsheet },
+    { id: 'sessions' as const, label: 'Manual Inward', icon: Package },
     { id: 'scan' as const, label: 'Barcode Scanner', icon: Scan },
     { id: 'reports' as const, label: 'Reports & Export', icon: BarChart2 },
   ];
