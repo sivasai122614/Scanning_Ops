@@ -17,6 +17,15 @@ export interface ImportSession {
   created_at: string;
 }
 
+export interface StagedScanItem {
+  id: string;
+  recordId: string;
+  classId: string;
+  memberId: string;
+  barcode: string;
+  scannedAt: string;
+}
+
 export interface ImportedRecord {
   id: string;
   import_session_id?: string;
@@ -50,14 +59,93 @@ export interface ScanResult {
   class_id?: string;
   member_id?: string;
   isDuplicate?: boolean;
+  isDuplicateInStaging?: boolean;
   isUnknownClass?: boolean;
   isAllScanned?: boolean;
+  item?: StagedScanItem;
 }
+
+// SQL Script for clean 2-table architecture requested by user:
+// 1. imported_inward_data
+// 2. manual_inward_data
+export const EXAMSCAN_2TABLES_SQL = `-- ==============================================================================
+-- ExamScan — Clean 2-Table Database Architecture
+-- Drops older legacy tables and establishes ONLY 2 operational tables:
+-- 1. imported_inward_data (Excel imported students & inwarding status)
+-- 2. manual_inward_data   (Manual bundle & script inward intake)
+-- ==============================================================================
+
+-- 1. Drop existing tables safely
+DROP TABLE IF EXISTS public.imported CASCADE;
+DROP TABLE IF EXISTS public.import_sessions CASCADE;
+DROP TABLE IF EXISTS public.scanned_scripts CASCADE;
+DROP TABLE IF EXISTS public.inward_schedules CASCADE;
+DROP TABLE IF EXISTS public.exam_sessions CASCADE;
+DROP TABLE IF EXISTS public.centers CASCADE;
+DROP TABLE IF EXISTS public.imported_inward_data CASCADE;
+DROP TABLE IF EXISTS public.manual_inward_data CASCADE;
+
+-- 2. Table: imported_inward_data
+CREATE TABLE public.imported_inward_data (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  import_session_id VARCHAR(100),
+  university_name VARCHAR(255) NOT NULL,
+  class_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100) NOT NULL,
+  barcode VARCHAR(255),
+  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
+  scanned_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Fast lookup indexes
+CREATE INDEX idx_imp_inward_class_id ON public.imported_inward_data(class_id);
+CREATE INDEX idx_imp_inward_member_id ON public.imported_inward_data(member_id);
+CREATE INDEX idx_imp_inward_barcode ON public.imported_inward_data(barcode);
+CREATE INDEX idx_imp_inward_scan_status ON public.imported_inward_data(scan_status);
+CREATE INDEX idx_imp_inward_session_id ON public.imported_inward_data(import_session_id);
+
+-- Enable RLS and public access policies
+ALTER TABLE public.imported_inward_data ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all on imported_inward_data" ON public.imported_inward_data;
+CREATE POLICY "Allow all on imported_inward_data" ON public.imported_inward_data FOR ALL TO public USING (true) WITH CHECK (true);
+
+-- 3. Table: manual_inward_data
+CREATE TABLE public.manual_inward_data (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_code VARCHAR(100),
+  bundle_code VARCHAR(100),
+  class_id VARCHAR(100),
+  school_id VARCHAR(100),
+  room_number VARCHAR(100),
+  subject_name VARCHAR(255),
+  booklet_barcode VARCHAR(255),
+  roll_number VARCHAR(100),
+  status VARCHAR(50) NOT NULL DEFAULT 'inwarded',
+  inwarded_by VARCHAR(255),
+  notes TEXT,
+  scanned_at TIMESTAMPTZ DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Fast lookup indexes
+CREATE INDEX idx_manual_inward_class_id ON public.manual_inward_data(class_id);
+CREATE INDEX idx_manual_inward_barcode ON public.manual_inward_data(booklet_barcode);
+CREATE INDEX idx_manual_inward_roll ON public.manual_inward_data(roll_number);
+CREATE INDEX idx_manual_inward_session ON public.manual_inward_data(session_code);
+
+-- Enable RLS and public access policies
+ALTER TABLE public.manual_inward_data ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all on manual_inward_data" ON public.manual_inward_data;
+CREATE POLICY "Allow all on manual_inward_data" ON public.manual_inward_data FOR ALL TO public USING (true) WITH CHECK (true);`;
 
 const PROD_RECORDS_KEY = 'examscan_imported_records_prod_v2';
 const PROD_SESSIONS_KEY = 'examscan_import_sessions_prod_v2';
 const PROD_ACTIVE_SESSION_KEY = 'examscan_active_session_prod_v2';
 const BATCH_SIZE = 500;
+
+const PRIMARY_TABLE = 'imported_inward_data';
+const FALLBACK_TABLE = 'imported';
 
 // Clean out any legacy demo or sample storage keys from previous builds
 const LEGACY_KEYS = [
@@ -88,6 +176,7 @@ class ImportedService {
   private realtimeChannel: any = null;
   private isRemoteTableAvailable = true;
   private hasCheckedTable = false;
+  private tableName: string = PRIMARY_TABLE;
 
   constructor() {
     this.cleanLegacyStorage();
@@ -131,7 +220,7 @@ class ImportedService {
   }
 
   /**
-   * Check if 'imported' and 'import_sessions' tables exist in remote Supabase schema cache
+   * Check if 'imported_inward_data' (or fallback 'imported') exists in remote Supabase schema
    */
   public async checkRemoteTable(): Promise<boolean> {
     if (!isSupabaseConfigured) {
@@ -141,43 +230,61 @@ class ImportedService {
     }
 
     try {
-      const { error } = await supabase.from('imported').select('id').limit(1);
-      if (error) {
-        if (
-          error.code === 'PGRST205' ||
-          error.message?.includes('schema cache') ||
-          error.message?.includes('does not exist')
-        ) {
-          this.isRemoteTableAvailable = false;
+      // 1. Try PRIMARY_TABLE: 'imported_inward_data'
+      const { error: primaryErr } = await supabase.from(PRIMARY_TABLE).select('id').limit(1);
+      if (!primaryErr) {
+        this.tableName = PRIMARY_TABLE;
+        this.isRemoteTableAvailable = true;
+        this.hasCheckedTable = true;
+        return true;
+      }
+
+      // If primary table doesn't exist yet, check fallback table: 'imported'
+      if (
+        primaryErr.code === 'PGRST205' ||
+        primaryErr.message?.includes('schema cache') ||
+        primaryErr.message?.includes('does not exist')
+      ) {
+        const { error: fallbackErr } = await supabase.from(FALLBACK_TABLE).select('id').limit(1);
+        if (!fallbackErr) {
+          this.tableName = FALLBACK_TABLE;
+          this.isRemoteTableAvailable = true;
           this.hasCheckedTable = true;
-          return false;
+          return true;
         }
       }
-      this.isRemoteTableAvailable = true;
+
+      this.tableName = PRIMARY_TABLE;
+      this.isRemoteTableAvailable = false;
       this.hasCheckedTable = true;
-      return true;
+      return false;
     } catch {
+      this.tableName = PRIMARY_TABLE;
       this.isRemoteTableAvailable = false;
       this.hasCheckedTable = true;
       return false;
     }
   }
 
-  public getRemoteStatus(): { isConfigured: boolean; isRemoteTableAvailable: boolean } {
+  public getRemoteStatus(): { isConfigured: boolean; isRemoteTableAvailable: boolean; tableName: string } {
     return {
       isConfigured: isSupabaseConfigured,
       isRemoteTableAvailable: this.isRemoteTableAvailable,
+      tableName: this.tableName,
     };
   }
 
   private initRealtime() {
     if (isSupabaseConfigured && this.isRemoteTableAvailable && typeof window !== 'undefined') {
       try {
+        if (this.realtimeChannel) {
+          supabase.removeChannel(this.realtimeChannel);
+        }
         this.realtimeChannel = supabase
-          .channel('public:imported')
+          .channel(`public:${this.tableName}`)
           .on(
             'postgres_changes',
-            { event: '*', schema: 'public', table: 'imported' },
+            { event: '*', schema: 'public', table: this.tableName },
             () => {
               this.syncFromSupabase();
             }
@@ -263,16 +370,16 @@ class ImportedService {
 
       // 2. Fetch imported records
       const { data, error } = await supabase
-        .from('imported')
+        .from(this.tableName)
         .select('*')
         .order('created_at', { ascending: true })
         .limit(50000);
 
       if (error) {
-        if (error.code === 'PGRST205' || error.message?.includes('schema cache')) {
+        if (error.code === 'PGRST205' || error.message?.includes('schema cache') || error.message?.includes('does not exist')) {
           this.isRemoteTableAvailable = false;
         } else {
-          console.warn('Supabase query note on imported table:', error.message);
+          console.warn(`Supabase query note on ${this.tableName} table:`, error.message);
         }
         return this.records;
       }
@@ -544,7 +651,7 @@ class ImportedService {
             created_at: r.created_at,
           }));
 
-          const { error } = await supabase.from('imported').insert(chunk);
+          const { error } = await supabase.from(this.tableName).insert(chunk);
           if (error) {
             if (
               error.code === 'PGRST205' ||
@@ -553,7 +660,7 @@ class ImportedService {
             ) {
               this.isRemoteTableAvailable = false;
               console.info(
-                '[ImportedService] Supabase "imported" table not yet created in remote database (PGRST205). Stored safely in local high-speed cache.'
+                `[ImportedService] Supabase "${this.tableName}" table not yet created in remote database (PGRST205). Stored safely in local high-speed cache.`
               );
               break;
             } else {
@@ -672,7 +779,7 @@ class ImportedService {
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         const { error } = await supabase
-          .from('imported')
+          .from(this.tableName)
           .update({
             scan_status: 'started',
             scanned_at: timestamp,
@@ -698,6 +805,201 @@ class ImportedService {
   }
 
   /**
+   * Validate and Stage a Barcode (Req 1, 2, 3, 6):
+   * Stages scanned barcode into in-memory list under the camera scanner.
+   * Performs airtight duplicate detection:
+   * 1. Check if barcode is already in currently staged (unsaved) list
+   * 2. Check if barcode is already saved in database
+   * 3. Extract Class ID (first 4 characters)
+   * 4. Match available unscanned member in that Class ID
+   * 5. Returns staged item without mutating DB until user clicks 'Save Inward Data'
+   */
+  public validateAndStageBarcode(
+    barcodeInput: string,
+    stagedList: StagedScanItem[] = []
+  ): ScanResult {
+    const barcode = sanitizeBarcode(barcodeInput);
+    if (!barcode || barcode.length < 4) {
+      return {
+        success: false,
+        message: `Barcode "${barcodeInput}" is invalid. Minimum 4 characters required.`,
+      };
+    }
+
+    // 1. DUPLICATE CHECK: In current unsaved scan batch (Req 6)
+    const dupInStaged = stagedList.find(
+      s => sanitizeBarcode(s.barcode).toLowerCase() === barcode.toLowerCase()
+    );
+    if (dupInStaged) {
+      return {
+        success: false,
+        isDuplicate: true,
+        isDuplicateInStaging: true,
+        class_id: dupInStaged.classId,
+        member_id: dupInStaged.memberId,
+        message: `Barcode "${barcode}" is already in your current unsaved scan list! (Class ${dupInStaged.classId} • Member ${dupInStaged.memberId})`,
+      };
+    }
+
+    // 2. DUPLICATE CHECK: In database (saved records) (Req 6)
+    const dupInDb = this.records.find(
+      r =>
+        r.barcode &&
+        sanitizeBarcode(r.barcode).toLowerCase() === barcode.toLowerCase() &&
+        (r.scan_status === 'started' || r.scan_status === 'completed')
+    );
+    if (dupInDb) {
+      return {
+        success: false,
+        isDuplicate: true,
+        record: dupInDb,
+        class_id: dupInDb.class_id,
+        member_id: dupInDb.member_id,
+        message: `Barcode "${barcode}" has already been saved in database for Class ${dupInDb.class_id} (Member ${dupInDb.member_id})`,
+      };
+    }
+
+    // 3. Class ID Detection (First 4 characters)
+    const detectedClassId = barcode.substring(0, 4);
+    const classRecords = this.records.filter(
+      r => r.class_id.trim().toLowerCase() === detectedClassId.toLowerCase()
+    );
+
+    if (classRecords.length === 0) {
+      return {
+        success: false,
+        isUnknownClass: true,
+        class_id: detectedClassId,
+        message: `No imported records found for Class ID "${detectedClassId}". Please import Class ${detectedClassId} data first.`,
+      };
+    }
+
+    // Set of member IDs already staged in current session for this class
+    const stagedMemberIds = new Set(
+      stagedList
+        .filter(s => s.classId.toLowerCase() === detectedClassId.toLowerCase())
+        .map(s => s.memberId.toLowerCase())
+    );
+
+    // 4. Match member record (prefer exact member_id in barcode string, else next unscanned member)
+    let targetRecord = classRecords.find(
+      r =>
+        r.scan_status === 'not_started' &&
+        !stagedMemberIds.has(r.member_id.toLowerCase()) &&
+        r.member_id &&
+        barcode.toLowerCase().includes(r.member_id.toLowerCase())
+    );
+
+    if (!targetRecord) {
+      targetRecord = classRecords.find(
+        r => r.scan_status === 'not_started' && !stagedMemberIds.has(r.member_id.toLowerCase())
+      );
+    }
+
+    if (!targetRecord) {
+      return {
+        success: false,
+        isAllScanned: true,
+        class_id: detectedClassId,
+        message: `All ${classRecords.length} records for Class ID "${detectedClassId}" have already been scanned or are in your staging list!`,
+      };
+    }
+
+    const stagedItem: StagedScanItem = {
+      id: `staged_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      recordId: targetRecord.id,
+      classId: targetRecord.class_id,
+      memberId: targetRecord.member_id,
+      barcode,
+      scannedAt: new Date().toLocaleTimeString(),
+    };
+
+    return {
+      success: true,
+      message: `Verified: Class ${targetRecord.class_id} • Member ${targetRecord.member_id}`,
+      record: targetRecord,
+      class_id: targetRecord.class_id,
+      member_id: targetRecord.member_id,
+      item: stagedItem,
+    };
+  }
+
+  /**
+   * Commit Staged Scans to Backend (Req 3):
+   * Commits all verified scans from the staging list to localStorage & Supabase.
+   */
+  public async commitStagedScans(
+    stagedList: StagedScanItem[]
+  ): Promise<{ success: boolean; count: number; error?: string }> {
+    if (!stagedList || stagedList.length === 0) {
+      return { success: false, count: 0, error: 'No scanned records to save.' };
+    }
+
+    const now = new Date().toISOString();
+    let savedCount = 0;
+
+    for (const item of stagedList) {
+      const target = this.records.find(r => r.id === item.recordId);
+      if (target) {
+        target.scan_status = 'started';
+        target.scanned_at = now;
+        target.barcode = item.barcode;
+        savedCount++;
+      }
+    }
+
+    this.saveLocal();
+
+    // Push to Supabase if configured and available
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        for (const item of stagedList) {
+          const { error } = await supabase
+            .from(this.tableName)
+            .update({
+              scan_status: 'started',
+              scanned_at: now,
+              barcode: item.barcode,
+            })
+            .eq('id', item.recordId);
+
+          if (error && (error.code === 'PGRST205' || error.message?.includes('schema cache'))) {
+            this.isRemoteTableAvailable = false;
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn('Sync commit staged scans note:', err);
+      }
+    }
+
+    this.notify();
+    return { success: true, count: savedCount };
+  }
+
+  /**
+   * Get Pending (Unscanned) Member IDs / Records for Preview (Req 5)
+   */
+  public getPendingMembers(classId?: string): ImportedRecord[] {
+    return this.records.filter(
+      r =>
+        (classId && classId !== 'all' ? r.class_id.toLowerCase() === classId.toLowerCase() : true) &&
+        r.scan_status === 'not_started'
+    );
+  }
+
+  /**
+   * Get Scanned Records for Preview (Req 5)
+   */
+  public getScannedMembers(classId?: string): ImportedRecord[] {
+    return this.records.filter(
+      r =>
+        (classId && classId !== 'all' ? r.class_id.toLowerCase() === classId.toLowerCase() : true) &&
+        (r.scan_status === 'started' || r.scan_status === 'completed')
+    );
+  }
+
+  /**
    * Reset or clear all imported records and sessions
    */
   public async clearAll(): Promise<void> {
@@ -707,7 +1009,7 @@ class ImportedService {
     this.saveLocal();
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
-        await supabase.from('imported').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        await supabase.from(this.tableName).delete().neq('id', '00000000-0000-0000-0000-000000000000');
         await supabase.from('import_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
         console.warn('Clear remote note:', e);
@@ -729,7 +1031,7 @@ class ImportedService {
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         await supabase
-          .from('imported')
+          .from(this.tableName)
           .update({ scan_status: 'not_started', scanned_at: null, barcode: null })
           .neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
@@ -913,7 +1215,7 @@ class ImportedService {
           created_at: r.created_at,
         }));
 
-        const { error } = await supabase.from('imported').upsert(chunk, { onConflict: 'id' });
+        const { error } = await supabase.from(this.tableName).upsert(chunk, { onConflict: 'id' });
         if (error) {
           console.warn('Retry sync upsert note:', error.message);
           break;
