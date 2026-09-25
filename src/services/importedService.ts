@@ -98,9 +98,12 @@ export interface ScanResult {
   isDuplicate?: boolean;
   isDuplicateInStaging?: boolean;
   isUnknownClass?: boolean;
+  isUnknownMember?: boolean;
   isWrongClass?: boolean;
   currentClassId?: string;
   detectedClassId?: string;
+  detectedMemberId?: string;
+  barcode?: string;
   isAllScanned?: boolean;
   isComplete?: boolean;
   bundle?: ClassBundle;
@@ -939,6 +942,225 @@ class ImportedService {
     }
 
     return code;
+  }
+
+  /**
+   * Parse barcode content into Class ID and Member ID
+   */
+  public parseBarcodeContent(barcodeInput: string): {
+    rawBarcode: string;
+    detectedClassId: string | null;
+    detectedMemberId: string | null;
+  } {
+    const raw = sanitizeBarcode(barcodeInput);
+    if (!raw) return { rawBarcode: '', detectedClassId: null, detectedMemberId: null };
+
+    // 1. Direct match with any known member_id in imported records
+    const exactMemberMatch = this.records.find(
+      r => r.member_id.toLowerCase() === raw.toLowerCase()
+    );
+    if (exactMemberMatch) {
+      return {
+        rawBarcode: raw,
+        detectedClassId: exactMemberMatch.class_id,
+        detectedMemberId: exactMemberMatch.member_id,
+      };
+    }
+
+    // 2. Check if raw barcode starts with any known imported Class ID
+    const knownClassIds = Array.from(new Set(this.records.map(r => r.class_id.trim()))).sort(
+      (a, b) => b.length - a.length
+    );
+
+    for (const cid of knownClassIds) {
+      if (raw.toLowerCase().startsWith(cid.toLowerCase())) {
+        const remainder = raw.substring(cid.length).replace(/^[-_/ ]+/, '').trim();
+        return {
+          rawBarcode: raw,
+          detectedClassId: cid,
+          detectedMemberId: remainder || null,
+        };
+      }
+    }
+
+    // 3. Delimiter split: e.g. 0099-MEM001 or 0021_MEM001
+    const parts = raw.split(/[-_/ ]+/);
+    if (parts.length > 1) {
+      return {
+        rawBarcode: raw,
+        detectedClassId: parts[0],
+        detectedMemberId: parts.slice(1).join('-') || null,
+      };
+    }
+
+    // 4. Default 4-character prefix (e.g. 0099MEM001 -> 0099 and MEM001)
+    if (raw.length > 4) {
+      const candidateCid = raw.substring(0, 4);
+      const candidateMid = raw.substring(4);
+      return {
+        rawBarcode: raw,
+        detectedClassId: candidateCid,
+        detectedMemberId: candidateMid || null,
+      };
+    }
+
+    // 5. Fallback
+    return {
+      rawBarcode: raw,
+      detectedClassId: raw,
+      detectedMemberId: null,
+    };
+  }
+
+  /**
+   * Process Scanning on the Scanning Dashboard (Sections 16, 17, 18, 19, 20)
+   * Validates Class ID and Member ID against imported Excel records.
+   * If Class ID not imported -> isUnknownClass: true
+   * If Member ID not imported -> isUnknownMember: true
+   * If Duplicate -> isDuplicate: true
+   * If Valid -> Marks record scanned, updates Class Bundle, persists to Supabase.
+   */
+  public async processScanningDashboardScan(barcodeInput: string): Promise<ScanResult> {
+    const rawCode = sanitizeBarcode(barcodeInput);
+    if (!rawCode) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    const { detectedClassId, detectedMemberId } = this.parseBarcodeContent(rawCode);
+
+    if (!detectedClassId) {
+      return {
+        success: false,
+        message: 'Could not extract Class ID from barcode.',
+        barcode: rawCode,
+      };
+    }
+
+    // SECTION 17: Check whether Class ID exists in imported Excel data
+    const classRecords = this.records.filter(
+      r => r.class_id.trim().toLowerCase() === detectedClassId.toLowerCase()
+    );
+
+    if (classRecords.length === 0) {
+      return {
+        success: false,
+        isUnknownClass: true,
+        detectedClassId,
+        detectedMemberId: detectedMemberId || undefined,
+        barcode: rawCode,
+        message: `⚠ CLASS ID NOT IMPORTED\n\nScanned Class ID: ${detectedClassId}\nThis Class ID does not exist in the imported Excel data.\n\nThis booklet cannot be added to the current scanning session.`,
+      };
+    }
+
+    const actualClassId = classRecords[0].class_id;
+
+    // SECTION 19: Check whether Member ID exists under that Class ID
+    let targetRecord: ImportedRecord | undefined;
+
+    if (detectedMemberId) {
+      targetRecord = classRecords.find(
+        r =>
+          r.member_id.toLowerCase() === detectedMemberId.toLowerCase() ||
+          r.member_id.toLowerCase() === rawCode.toLowerCase() ||
+          (r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === rawCode.toLowerCase())
+      );
+
+      if (!targetRecord) {
+        return {
+          success: false,
+          isUnknownMember: true,
+          detectedClassId: actualClassId,
+          detectedMemberId,
+          barcode: rawCode,
+          message: `⚠ MEMBER ID NOT IMPORTED\n\nClass ID: ${actualClassId}\nMember ID: ${detectedMemberId}\n\nThis Member ID was not found in the imported Excel data.`,
+        };
+      }
+    } else {
+      // If no specific member was in the barcode, find first unscanned record in this class
+      targetRecord = classRecords.find(r => r.scan_status === 'not_started');
+      if (!targetRecord) {
+        return {
+          success: false,
+          isAllScanned: true,
+          class_id: actualClassId,
+          barcode: rawCode,
+          message: `All ${classRecords.length} booklets for Class ${actualClassId} have already been scanned!`,
+        };
+      }
+    }
+
+    // SECTION 20: Duplicate scan protection
+    if (targetRecord.scan_status === 'started' || targetRecord.scan_status === 'completed') {
+      return {
+        success: false,
+        isDuplicate: true,
+        class_id: actualClassId,
+        member_id: targetRecord.member_id,
+        barcode: rawCode,
+        record: targetRecord,
+        message: `⚠ DUPLICATE BOOKLET\n\nMember ${targetRecord.member_id} has already been scanned in Class ${actualClassId}.`,
+      };
+    }
+
+    // SECTION 18: VALID CLASS + VALID MEMBER -> Process Scan
+    const now = new Date().toISOString();
+    targetRecord.scan_status = 'started';
+    targetRecord.scanned_at = now;
+    targetRecord.barcode = rawCode;
+
+    // Update Class Bundle in memory
+    this.reconcileBundlesWithRecords();
+    const updatedBundle = this.getClassBundle(actualClassId);
+    if (updatedBundle) {
+      if (updatedBundle.status === 'NOT STARTED') {
+        updatedBundle.status = 'IN PROGRESS';
+      }
+      updatedBundle.updatedAt = now;
+    }
+
+    this.saveLocal();
+
+    // Persist to Supabase in background
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        await supabase
+          .from(this.tableName)
+          .update({ scan_status: 'started', scanned_at: now, barcode: rawCode })
+          .eq('id', targetRecord.id);
+
+        if (updatedBundle) {
+          try {
+            await supabase.from('class_bundles').upsert({
+              id: updatedBundle.id,
+              session_id: updatedBundle.sessionId,
+              university_name: updatedBundle.universityName,
+              class_id: updatedBundle.classId,
+              expected_count: updatedBundle.expectedCount,
+              received_count: updatedBundle.receivedCount,
+              missing_count: updatedBundle.missingCount,
+              status: updatedBundle.status,
+              is_saved: updatedBundle.isSaved,
+              is_completed: updatedBundle.isCompleted,
+              saved_at: updatedBundle.savedAt,
+              updated_at: now,
+            });
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('Sync scan note:', e);
+      }
+    }
+
+    this.notify();
+
+    return {
+      success: true,
+      class_id: actualClassId,
+      member_id: targetRecord.member_id,
+      record: targetRecord,
+      bundle: updatedBundle || undefined,
+      message: `✓ Scanned ${targetRecord.member_id} for Class ${actualClassId}`,
+    };
   }
 
   /**

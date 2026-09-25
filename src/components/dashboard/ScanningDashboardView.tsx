@@ -1,11 +1,20 @@
 // ==============================================================================
-// ExamScan — Scanning Dashboard View (Sections 4, 5, 6, 7, 8, 9, 10, 11, 14)
-// The MAIN OPERATIONAL SCREEN for the exam inwarding workflow.
-// - Reuses existing Home visual language (Date, University, Statistics)
-// - Class-wise data showing every imported Class ID, counts, progress, and statuses
-// - Camera embedded BELOW the class-wise data with a controlled rectangular frame
-// - Instant redirect to dedicated Bundle Statistics screen when a valid class is scanned
-// - "CLASS ID NOT IMPORTED" warning when a foreign/unimported barcode is scanned
+// ExamScan — Scanning Dashboard View (Sections 1, 2, 3, 4, 5, 13, 14, 15, 16-25, 29)
+// The PRIMARY OPERATIONAL SCREEN for ExamScan.
+// 1. Session Info (Date, University)
+// 2. Overall Statistics (Total Classes, Expected / Imported, Scanned, Not Scanned, Progress)
+// 3. Class-Wise Cards (One card per UNIQUE Class ID with Imported, Scanned, Not Scanned, Progress, Status)
+//    - Entire card is clickable to open Class Bundle Detail screen!
+// 4. Camera Preview (Below Class Cards)
+//    - Green dashed rectangular scan boundary
+//    - Red horizontal center line
+//    - Clear instruction: "HOLD BOOKLET BARCODE HORIZONTALLY INSIDE THE GREEN RECTANGLE"
+//    - Preserves natural camera aspect ratio with object-fit: cover
+// 5. Barcode Scan Protection & Flow:
+//    - Class ID Not Imported warning (Section 17)
+//    - Member ID Not Imported warning (Section 19)
+//    - Duplicate Booklet warning (Section 20)
+//    - Valid first booklet opens Class Bundle screen immediately (Section 16)
 // ==============================================================================
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -20,23 +29,22 @@ import {
   ShieldCheck,
   ChevronRight,
   ArrowRight,
-  Maximize2,
-  RotateCcw,
   Flashlight,
   FlashlightOff,
   SwitchCamera,
   CameraOff,
   Upload,
   Layers,
-  Sparkles,
   AlertOctagon,
   X,
+  Check,
 } from 'lucide-react';
 import {
   importedService,
   ClassBundle,
   SessionSummary,
   sanitizeBarcode,
+  ScanResult,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BundleStatisticsView } from '../bundles/BundleStatisticsView';
@@ -60,17 +68,33 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
 
-  // Active Class Bundle (when not null, renders the dedicated Bundle Statistics screen without camera)
+  // Active Class Bundle (when set, opens Class Bundle Detail screen without camera)
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
 
-  // Modal / Notifications
+  // Session Summary Modal & Notifications
   const [isSessionSummaryOpen, setIsSessionSummaryOpen] = useState(false);
   const [exportNotification, setExportNotification] = useState<string | null>(null);
+  const [scanSuccessToast, setScanSuccessToast] = useState<string | null>(null);
 
-  // Section 11: "CLASS ID NOT IMPORTED" Modal State
-  const [unrecognizedClassError, setUnrecognizedClassError] = useState<{
+  // Scan Error Modals
+  // Section 17: CLASS ID NOT IMPORTED
+  const [unknownClassModal, setUnknownClassModal] = useState<{
     barcode: string;
-    detectedClassId: string;
+    classId: string;
+  } | null>(null);
+
+  // Section 19: MEMBER ID NOT IMPORTED
+  const [unknownMemberModal, setUnknownMemberModal] = useState<{
+    barcode: string;
+    classId: string;
+    memberId: string;
+  } | null>(null);
+
+  // Section 20: DUPLICATE BOOKLET
+  const [duplicateModal, setDuplicateModal] = useState<{
+    barcode: string;
+    memberId: string;
+    classId: string;
   } | null>(null);
 
   // Camera States
@@ -82,7 +106,6 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [manualInput, setManualInput] = useState('');
-  const [scanFeedback, setScanFeedback] = useState<{ text: string; type: 'success' | 'warning' } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const cameraResultRef = useRef<CameraStreamResult | null>(null);
@@ -113,7 +136,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     year: 'numeric',
   });
 
-  // Camera lifecycle: start when on Scanning Dashboard, stop when inside Bundle Statistics screen
+  // Camera lifecycle: start when on Scanning Dashboard, stop when inside Class Bundle screen
   useEffect(() => {
     if (!activeClassId) {
       startCamera();
@@ -149,7 +172,6 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   const startCamera = async () => {
     setCameraLoading(true);
     setCameraError(null);
-    setScanFeedback(null);
 
     try {
       stopCamera();
@@ -181,15 +203,15 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       setCameraActive(true);
       setCameraLoading(false);
     } catch (err: any) {
-      console.warn('Camera error:', err);
+      console.warn('Camera start error:', err);
       setCameraLoading(false);
       setCameraActive(false);
-      setCameraError(err?.message || 'Camera standby. Enter barcode manually below.');
+      setCameraError(err?.message || 'Camera is in standby. Enter barcodes manually below.');
     }
   };
 
   /**
-   * Barcode -> Class ID Detection logic (Sections 9, 10, 11)
+   * Barcode Scan Handling on Scanning Dashboard (Sections 16, 17, 18, 19, 20)
    */
   const handleBarcodeScan = async (rawCode: string) => {
     const code = sanitizeBarcode(rawCode);
@@ -207,36 +229,54 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     lastScannedTimeRef.current = now;
 
     try {
-      // 1. Detect Class ID from code
-      const detectedClassId = importedService.detectClassId(code);
-      const allBundles = importedService.getClassBundles();
-      const matchingBundle = allBundles.find(
-        b => detectedClassId && b.classId.toLowerCase() === detectedClassId.toLowerCase()
-      );
+      const result: ScanResult = await importedService.processScanningDashboardScan(code);
 
-      // SECTION 11: IMPORTED CLASS ID NOT FOUND
-      if (!detectedClassId || !matchingBundle) {
+      // Section 17: CLASS ID NOT IMPORTED
+      if (result.isUnknownClass) {
         playScanWarningSound();
-        setUnrecognizedClassError({
+        setUnknownClassModal({
           barcode: code,
-          detectedClassId: detectedClassId || 'UNKNOWN',
+          classId: result.detectedClassId || 'UNKNOWN',
         });
         return;
       }
 
-      // SECTION 10: IMPORTED CLASS ID FOUND!
-      // Immediately open BUNDLE STATISTICS — CLASS {classId}
-      playScanSuccessSound();
-      stopCamera();
+      // Section 19: MEMBER ID NOT IMPORTED
+      if (result.isUnknownMember) {
+        playScanWarningSound();
+        setUnknownMemberModal({
+          barcode: code,
+          classId: result.detectedClassId || result.class_id || 'UNKNOWN',
+          memberId: result.detectedMemberId || 'UNKNOWN',
+        });
+        return;
+      }
 
-      // Process first booklet scan for this class if record matches
-      try {
-        await importedService.processFirstBooklet(code);
-      } catch {}
+      // Section 20: DUPLICATE BOOKLET
+      if (result.isDuplicate) {
+        playScanWarningSound();
+        setDuplicateModal({
+          barcode: code,
+          memberId: result.member_id || code,
+          classId: result.class_id || 'UNKNOWN',
+        });
+        return;
+      }
 
-      setActiveClassId(matchingBundle.classId);
+      // Section 16 & 18: VALID SCAN
+      if (result.success && result.class_id) {
+        playScanSuccessSound();
+        setScanSuccessToast(`✓ Scanned Member ${result.member_id} for Class ${result.class_id}`);
+        setTimeout(() => setScanSuccessToast(null), 3500);
+
+        // Section 16: Automatically redirect to Class Bundle screen, camera disappears!
+        stopCamera();
+        setActiveClassId(result.class_id);
+      } else {
+        playScanWarningSound();
+      }
     } catch (err) {
-      console.warn('Barcode scan error:', err);
+      console.warn('Scan process error:', err);
     } finally {
       isProcessingRef.current = false;
     }
@@ -288,8 +328,8 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     }
   };
 
-  // If operator has drilled down into a specific Class Bundle, render dedicated screen (Section 4 & 12)
-  // CAMERA MUST NOT APPEAR ON THIS SCREEN
+  // If operator has selected a Class Bundle card or scanned a valid booklet,
+  // render the dedicated Class Bundle Detail screen WITHOUT camera (Section 6, 7, 15)
   if (activeClassId) {
     return (
       <BundleStatisticsView
@@ -303,11 +343,12 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     );
   }
 
+  // Calculate real-time overall statistics (Section 4)
   const totalClasses = sessionSummary?.totalClasses || bundles.length;
   const totalExpected = sessionSummary?.totalExpected || 0;
-  const totalReceived = sessionSummary?.totalReceived || 0;
-  const totalMissing = sessionSummary?.totalMissing || 0;
-  const completionRate = sessionSummary?.overallCompletion || 0;
+  const totalScanned = sessionSummary?.totalReceived || 0;
+  const totalNotScanned = sessionSummary?.totalMissing || 0;
+  const overallProgress = sessionSummary?.overallCompletion || 0;
   const universityName = sessionSummary?.universityName || 'General University';
 
   // Quick test sample barcodes from current imported bundles
@@ -316,13 +357,14 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     const firstUnscanned = recs.find(r => r.scan_status === 'not_started');
     return {
       classId: b.classId,
-      code: firstUnscanned ? firstUnscanned.member_id : `${b.classId}MEM001`,
+      code: firstUnscanned ? `${b.classId}${firstUnscanned.member_id}` : `${b.classId}MEM001`,
+      memberOnly: firstUnscanned ? firstUnscanned.member_id : 'MEM001',
     };
   });
 
   return (
     <div className="space-y-4 font-sans max-w-5xl mx-auto pb-12">
-      {/* 1. Header Toolbar (Section 5) */}
+      {/* 1. Header Toolbar (Section 3 & 29) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 h-9 px-3 bg-[#F8FAFC] border border-[#E2E8F0] text-xs font-semibold text-[#172033]">
@@ -357,7 +399,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Export Alert */}
+      {/* Alerts / Toasts */}
       {exportNotification && (
         <div className="p-3 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-xs font-bold flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
@@ -365,67 +407,83 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         </div>
       )}
 
-      {/* 2. KPI Statistics Grid (Section 5) */}
+      {scanSuccessToast && (
+        <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] text-[#1565D8] text-xs font-bold flex items-center gap-2 animate-in fade-in">
+          <Check className="h-4 w-4 shrink-0 text-[#16A34A]" />
+          <span>{scanSuccessToast}</span>
+        </div>
+      )}
+
+      {/* 2. OVERALL STATISTICS (Section 4 & 29) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">Total Classes</div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalClasses}</div>
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
+            TOTAL CLASSES
+          </div>
+          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">
+            {totalClasses}
+          </div>
           <div className="text-[11px] text-[#64748B] mt-0.5">Imported Sessions</div>
         </div>
 
         <div className="bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">Expected Booklets</div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalExpected}</div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">Calculated from Excel</div>
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
+            EXPECTED / IMPORTED
+          </div>
+          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">
+            {totalExpected}
+          </div>
+          <div className="text-[11px] text-[#64748B] mt-0.5">Booklets from Excel</div>
         </div>
 
         <div className="bg-white p-3.5 border border-[#BFDBFE] shadow-xs bg-[#F8FAFC]">
-          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">Received Booklets</div>
-          <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">{totalReceived}</div>
+          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
+            SCANNED
+          </div>
+          <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">
+            {totalScanned}
+          </div>
           <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">Inwarded / Verified</div>
         </div>
 
         <div className="bg-white p-3.5 border border-[#FECACA] shadow-xs">
-          <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">Missing Booklets</div>
-          <div className="text-2xl font-black text-[#DC2626] font-tabular mt-1">{totalMissing}</div>
+          <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">
+            NOT SCANNED
+          </div>
+          <div className="text-2xl font-black text-[#DC2626] font-tabular mt-1">
+            {totalNotScanned}
+          </div>
           <div className="text-[11px] text-[#DC2626] mt-0.5 font-medium">Remaining to Inward</div>
         </div>
       </div>
 
-      {/* 3. Today's Progress Card (Section 5) */}
+      {/* OVERALL PROGRESS BAR */}
       <div className="bg-white p-4 border border-[#CBD5E1] shadow-xs">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">Today's Progress</span>
-          <span className="text-sm font-black font-tabular text-[#16A34A]">{completionRate}%</span>
+          <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">
+            Overall Progress ({totalScanned} / {totalExpected} Scanned)
+          </span>
+          <span className="text-sm font-black font-tabular text-[#16A34A]">
+            {overallProgress}%
+          </span>
         </div>
 
         <div className="mt-2 h-2.5 w-full bg-slate-100 overflow-hidden border border-[#CBD5E1]">
           <div
             className="h-full bg-[#16A34A] transition-all duration-300"
-            style={{ width: `${Math.min(100, completionRate)}%` }}
+            style={{ width: `${Math.min(100, overallProgress)}%` }}
           />
-        </div>
-
-        <div className="mt-2 text-xs font-tabular text-[#64748B] flex items-center justify-between">
-          <span>
-            <strong className="text-[#172033] font-black">{totalReceived}</strong> / {totalExpected} scanned
-          </span>
-          <span className="text-[11px] font-semibold text-[#64748B]">
-            {bundles.filter(b => b.status === 'COMPLETED').length} of {bundles.length} Classes Completed
-          </span>
         </div>
       </div>
 
-      {/* 4. CLASS-WISE SCANNING DATA (Section 6 & 14) */}
+      {/* 3. CLASS-WISE CARDS (Section 2, 5, 25, 29) */}
       <div className="bg-white border border-[#CBD5E1] shadow-xs overflow-hidden">
-        <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between">
-          <div>
-            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
-              Scanning Dashboard — Class-Wise
-            </h2>
-            <div className="text-[11px] text-[#64748B]">
-              Class ID | Expected | Received | Remaining | Progress | Status
-            </div>
+        <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0]">
+          <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
+            SCANNING DASHBOARD — CLASS WISE
+          </h2>
+          <div className="text-[11px] text-[#64748B]">
+            One card per unique Class ID. Click any card to inspect and manage that class bundle.
           </div>
         </div>
 
@@ -449,11 +507,8 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             )}
           </div>
         ) : (
-          <div className="divide-y divide-[#E2E8F0]">
+          <div className="p-3.5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             {bundles.map(b => {
-              const isStarted = b.receivedCount > 0 && b.status !== 'NOT STARTED';
-              const isCompleted = b.status === 'COMPLETED';
-
               let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
               if (b.status === 'COMPLETED') {
                 badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
@@ -466,78 +521,56 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
               return (
                 <div
                   key={b.classId}
-                  className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors"
+                  onClick={() => setActiveClassId(b.classId)}
+                  className="bg-white border-2 border-[#CBD5E1] hover:border-[#1565D8] p-4 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group"
                 >
-                  <div className="flex items-start sm:items-center gap-3">
-                    <div className="px-3 py-1 bg-slate-100 border border-slate-300 font-mono font-bold text-sm text-[#172033]">
-                      Class {b.classId}
+                  {/* Card Header: CLASS ID */}
+                  <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
+                    <div className="font-mono font-black text-sm text-[#172033] group-hover:text-[#1565D8] transition-colors">
+                      CLASS {b.classId}
                     </div>
-
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-tabular">
-                      <div>
-                        <span className="text-[#64748B] text-[11px] block">Expected</span>
-                        <span className="font-bold text-[#172033]">{b.expectedCount}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#64748B] text-[11px] block">Received</span>
-                        <span className="font-bold text-[#1565D8]">{b.receivedCount}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#64748B] text-[11px] block">Remaining</span>
-                        <span className="font-bold text-[#DC2626]">{b.missingCount}</span>
-                      </div>
-                      <div className="min-w-[70px]">
-                        <span className="text-[#64748B] text-[11px] block">Progress</span>
-                        <div className="flex items-center gap-1.5">
-                          <div className="h-1.5 w-12 bg-slate-200 overflow-hidden">
-                            <div
-                              className="h-full bg-[#16A34A]"
-                              style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
-                            />
-                          </div>
-                          <span className="font-bold text-[#16A34A] text-[11px]">
-                            {b.progressPercentage}%
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
                     <span
-                      className={`px-2.5 py-1 border text-[10px] font-bold uppercase tracking-wider ${badgeColor}`}
+                      className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider ${badgeColor}`}
                     >
                       {b.status}
                     </span>
+                  </div>
 
-                    {/* SECTION 6 & 14: ALREADY STARTED CLASS WORKFLOW */}
-                    {isStarted && !isCompleted ? (
-                      <button
-                        type="button"
-                        onClick={() => setActiveClassId(b.classId)}
-                        className="px-3 py-1.5 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider hover:bg-[#0D47A1] transition-colors flex items-center gap-1"
-                      >
-                        <span>Continue Bundle</span>
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </button>
-                    ) : isCompleted ? (
-                      <button
-                        type="button"
-                        onClick={() => setActiveClassId(b.classId)}
-                        className="px-3 py-1.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider hover:bg-slate-100 transition-colors flex items-center gap-1"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5 text-[#16A34A]" />
-                        <span>View Bundle</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setActiveClassId(b.classId)}
-                        className="px-3 py-1.5 bg-slate-100 border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider hover:bg-[#1565D8] hover:text-white transition-colors"
-                      >
-                        Open Bundle
-                      </button>
-                    )}
+                  {/* Card Counts: Imported, Scanned, Not Scanned */}
+                  <div className="py-3 space-y-1.5 text-xs font-tabular">
+                    <div className="flex items-center justify-between text-[#64748B]">
+                      <span>Imported</span>
+                      <span className="font-bold text-[#172033] text-sm">{b.expectedCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#1565D8]">
+                      <span>Scanned</span>
+                      <span className="font-bold text-sm">{b.receivedCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#DC2626]">
+                      <span>Not Scanned</span>
+                      <span className="font-bold text-sm">{b.missingCount}</span>
+                    </div>
+                  </div>
+
+                  {/* Card Progress */}
+                  <div className="pt-2 border-t border-[#E2E8F0]">
+                    <div className="flex items-center justify-between text-[11px] mb-1">
+                      <span className="text-[#64748B] font-bold">Progress</span>
+                      <span className="font-bold font-tabular text-[#16A34A]">{b.progressPercentage}%</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-slate-100 overflow-hidden border border-slate-200">
+                      <div
+                        className="h-full bg-[#16A34A]"
+                        style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Click affordance indicator */}
+                  <div className="mt-3 pt-2 text-right">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#1565D8] group-hover:underline inline-flex items-center gap-1">
+                      Open Bundle Detail <ArrowRight className="h-3 w-3" />
+                    </span>
                   </div>
                 </div>
               );
@@ -546,17 +579,16 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         )}
       </div>
 
-      {/* 5. CAMERA PREVIEW MUST BE INSIDE SCANNING DASHBOARD (Section 7 & 8) */}
-      {/* Placed BELOW the imported statistics and class-wise data */}
+      {/* 4. CAMERA SCANNER SECTION (Below Class-Wise Cards) (Sections 13, 14, 15, 29) */}
       <div className="bg-white border border-[#CBD5E1] shadow-xs overflow-hidden">
-        {/* Camera Header Banner */}
+        {/* Camera Section Header */}
         <div className="p-3.5 bg-[#1565D8] text-white flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Scan className="h-5 w-5" />
             <div>
-              <div className="text-xs font-bold uppercase tracking-wider">Scan Booklet</div>
+              <div className="text-xs font-bold uppercase tracking-wider">SCAN BOOKLET</div>
               <div className="text-[11px] text-white/80">
-                Scan first booklet to detect Class ID and immediately open Bundle Statistics
+                Hold booklet barcode horizontally inside the green rectangle
               </div>
             </div>
           </div>
@@ -586,7 +618,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           </div>
         </div>
 
-        {/* Viewfinder Container: Controlled frame, centered, object-fit: cover, responsive width (Section 8) */}
+        {/* Viewfinder: Preserving natural aspect ratio with object-fit: cover, no distortion (Section 13 & 14) */}
         <div className="relative bg-black w-full aspect-16/10 sm:aspect-16/9 min-h-[260px] max-h-[420px] flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
@@ -598,17 +630,17 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           {cameraLoading && (
             <div className="text-center text-white px-4">
               <div className="h-9 w-9 border-3 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-2" />
-              <div className="text-xs font-bold uppercase tracking-wider">Activating Scanner Viewfinder...</div>
-              <div className="text-[11px] text-white/70 mt-1">Calibrating wide barcode reader</div>
+              <div className="text-xs font-bold uppercase tracking-wider">Initializing Camera...</div>
+              <div className="text-[11px] text-white/70 mt-1">Calibrating horizontal barcode scanner</div>
             </div>
           )}
 
           {!cameraActive && !cameraLoading && (
             <div className="text-center text-white/80 p-6">
               <CameraOff className="h-10 w-10 mx-auto mb-2 text-white/50" />
-              <div className="text-sm font-bold text-white mb-1">Camera Standby</div>
+              <div className="text-sm font-bold text-white mb-1">Camera Feed Paused</div>
               <div className="text-xs text-white/70 max-w-sm mx-auto mb-3">
-                {cameraError || 'Camera feed is paused. You can restart or enter barcodes below.'}
+                {cameraError || 'Camera is in standby. Click below to start scanning or enter barcode manually.'}
               </div>
               <button
                 type="button"
@@ -620,26 +652,28 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             </div>
           )}
 
-          {/* Guide Reticle: Clear scan boundary optimized for horizontal 1D barcodes (Section 8) */}
+          {/* Guide Reticle: Section 13 & 14 WIDE HORIZONTAL BARCODE ALIGNMENT AREA */}
           {cameraActive && (
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              {/* Horizontal Rectangular Scan Frame */}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-4">
+              {/* Green Dashed Rectangular Scan Boundary */}
               <div className="w-[88%] sm:w-[82%] h-[32%] sm:h-[28%] border-2 border-dashed border-[#22C55E] relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
-                {/* 4 Sharp Corner Brackets */}
+                {/* 4 Corner Markers */}
                 <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-white" />
                 <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-white" />
                 <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-white" />
                 <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-white" />
 
-                {/* Sweeping Laser Line across full horizontal width */}
+                {/* Red Horizontal Center Line */}
                 <div className="absolute left-2 right-2 h-0.5 bg-red-500 shadow-[0_0_12px_#ef4444] animate-pulse" />
 
                 <span className="text-[10px] sm:text-[11px] font-bold text-white bg-black/75 px-2.5 py-0.5 uppercase tracking-widest border border-white/30">
-                  SCAN BOOKLET BARCODE HERE
+                  WIDE BARCODE ALIGNMENT ZONE
                 </span>
               </div>
-              <div className="text-[10px] text-white/80 font-medium mt-3 bg-black/60 px-3 py-1 uppercase tracking-wider">
-                Align booklet barcode horizontally inside the green rectangle
+
+              {/* Instructional Text */}
+              <div className="text-[10px] sm:text-xs text-white font-bold mt-3 bg-black/70 px-3 py-1 uppercase tracking-wider border border-white/20">
+                HOLD BOOKLET BARCODE HORIZONTALLY INSIDE THE GREEN RECTANGLE
               </div>
             </div>
           )}
@@ -652,7 +686,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
               type="text"
               value={manualInput}
               onChange={e => setManualInput(e.target.value)}
-              placeholder="Or enter barcode e.g. 1211MEM001, 1211-001..."
+              placeholder="Or enter barcode e.g. 0021MEM001, 0021-001..."
               className="flex-1 px-3 py-2 border border-[#CBD5E1] text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8] font-mono"
             />
             <button
@@ -697,16 +731,16 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           )}
 
           <div className="text-[11px] text-[#64748B] mt-1.5">
-            Scanning detects Class ID. If valid, opens Bundle Statistics immediately.
+            Valid scan moves member from Not Scanned → Scanned and opens Class Bundle Detail screen.
           </div>
         </div>
       </div>
 
-      {/* SECTION 11: CLASS ID NOT IMPORTED WARNING MODAL */}
-      {unrecognizedClassError && (
+      {/* SECTION 17: CLASS ID NOT IMPORTED WARNING MODAL */}
+      {unknownClassModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white rounded-none border border-[#FECACA] shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-none bg-[#EF4444] text-white mx-auto mb-3">
+          <div className="w-full max-w-md bg-white border border-[#FECACA] shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white mx-auto mb-3">
               <AlertOctagon className="h-7 w-7" />
             </div>
 
@@ -715,35 +749,109 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             </div>
 
             <div className="text-xs text-[#7F1D1D] mt-2 leading-relaxed">
-              The scanned Class ID:{' '}
-              <span className="font-mono font-bold text-[#172033] bg-[#FEE2E2] px-1.5 py-0.5">
-                {unrecognizedClassError.detectedClassId}
-              </span>{' '}
-              was not found in the imported Excel data.
+              Scanned Class ID:{' '}
+              <span className="font-mono font-bold text-[#172033] bg-[#FEE2E2] px-2 py-0.5 border border-[#FECACA]">
+                {unknownClassModal.classId}
+              </span>
             </div>
 
             <div className="text-xs font-mono text-[#64748B] bg-slate-100 p-2 border border-slate-200 mt-2">
-              Barcode: {unrecognizedClassError.barcode}
+              Barcode: {unknownClassModal.barcode}
             </div>
 
-            <div className="text-[11px] text-[#64748B] mt-2 mb-5">
-              This booklet cannot be added to the current scanning session.
+            <div className="text-xs text-[#7F1D1D] mt-2 mb-4 font-medium">
+              This Class ID does not exist in the imported Excel data. This booklet cannot be added to the current scanning session.
             </div>
 
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setUnrecognizedClassError(null)}
+                onClick={() => setUnknownClassModal(null)}
                 className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider"
               >
-                Scan Again
+                SCAN AGAIN
               </button>
               <button
                 type="button"
-                onClick={() => setUnrecognizedClassError(null)}
+                onClick={() => setUnknownClassModal(null)}
                 className="flex-1 py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider"
               >
-                Back to Dashboard
+                BACK TO DASHBOARD
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 19: MEMBER ID NOT IMPORTED WARNING MODAL */}
+      {unknownMemberModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-[#FECACA] shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white mx-auto mb-3">
+              <AlertTriangle className="h-7 w-7" />
+            </div>
+
+            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
+              ⚠ MEMBER ID NOT IMPORTED
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 my-3 text-xs">
+              <div className="bg-slate-50 p-2 border border-slate-200">
+                <span className="text-[#64748B] block text-[10px] uppercase font-bold">Class ID</span>
+                <span className="font-mono font-bold text-[#172033]">{unknownMemberModal.classId}</span>
+              </div>
+              <div className="bg-[#FEE2E2] p-2 border border-[#FECACA]">
+                <span className="text-[#991B1B] block text-[10px] uppercase font-bold">Member ID</span>
+                <span className="font-mono font-bold text-[#991B1B]">{unknownMemberModal.memberId}</span>
+              </div>
+            </div>
+
+            <div className="text-xs text-[#7F1D1D] mb-4">
+              This Member ID was not found in the imported Excel data.
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setUnknownMemberModal(null)}
+              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider"
+            >
+              SCAN AGAIN
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 20: DUPLICATE BOOKLET WARNING MODAL */}
+      {duplicateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-[#FDE68A] shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#F59E0B] text-white mx-auto mb-3">
+              <AlertTriangle className="h-7 w-7" />
+            </div>
+
+            <div className="text-base font-extrabold tracking-wide uppercase text-[#B45309]">
+              ⚠ DUPLICATE BOOKLET
+            </div>
+
+            <div className="text-xs text-[#78350F] mt-2 mb-4 leading-relaxed">
+              Member <strong className="font-mono text-sm text-[#172033] font-bold">{duplicateModal.memberId}</strong> has already been scanned in Class{' '}
+              <strong className="font-mono text-sm text-[#172033] font-bold">{duplicateModal.classId}</strong>.
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setDuplicateModal(null)}
+                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider"
+              >
+                DISMISS
+              </button>
+              <button
+                type="button"
+                onClick={() => setDuplicateModal(null)}
+                className="flex-1 py-2.5 bg-[#D97706] text-white text-xs font-bold hover:bg-[#B45309] transition-colors uppercase tracking-wider"
+              >
+                SCAN ANOTHER
               </button>
             </div>
           </div>
