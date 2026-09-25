@@ -34,6 +34,9 @@ import { PrimaryButton, StatusBadge, EmptyState } from '../ui/Elements';
 import { useAuth } from '../../context/AuthContext';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { importedService, ClassBundle } from '../../services/importedService';
+import { BundleStatisticsView } from '../bundles/BundleStatisticsView';
+import { FirstBookletScannerModal } from '../bundles/FirstBookletScannerModal';
 
 export const BarcodeScannerView: React.FC<{
   initialScheduleId?: string;
@@ -43,6 +46,9 @@ export const BarcodeScannerView: React.FC<{
   const { user } = useAuth();
   const [subTab, setSubTab] = useState<'scanner' | 'verification' | 'missing'>('scanner');
   const [schedules, setSchedules] = useState<InwardSchedule[]>([]);
+  const [classBundles, setClassBundles] = useState<ClassBundle[]>([]);
+  const [activeClassBundleId, setActiveClassBundleId] = useState<string | null>(null);
+  const [isFirstScannerOpen, setIsFirstScannerOpen] = useState(false);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string>(initialScheduleId || '');
   const [isScanning, setIsScanning] = useState<boolean>(true);
   const [torchOn, setTorchOn] = useState<boolean>(false);
@@ -117,12 +123,20 @@ export const BarcodeScannerView: React.FC<{
         return pending ? pending.id : list[0].id;
       });
     }
+    const bList = importedService.getClassBundles();
+    setClassBundles(bList);
   }, []);
 
   useEffect(() => {
     refreshData();
     const unsub = examStore.subscribe(refreshData);
-    return () => unsub();
+    const unsubImported = importedService.subscribe(() => {
+      setClassBundles(importedService.getClassBundles());
+    });
+    return () => {
+      unsub();
+      unsubImported();
+    };
   }, [refreshData]);
 
   const currentSchedule = schedules.find(

@@ -17,6 +17,40 @@ export interface ImportSession {
   created_at: string;
 }
 
+export type BundleStatus = 'NOT STARTED' | 'IN PROGRESS' | 'PARTIAL / SAVED' | 'COMPLETED';
+
+export interface ClassBundle {
+  id: string;
+  sessionId: string;
+  universityName: string;
+  classId: string;
+  expectedCount: number;
+  receivedCount: number;
+  missingCount: number;
+  remainingCount: number;
+  progressPercentage: number;
+  status: BundleStatus;
+  isSaved: boolean;
+  isCompleted: boolean;
+  savedAt: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface SessionSummary {
+  universityName: string;
+  totalClasses: number;
+  completedClasses: number;
+  partialClasses: number;
+  inProgressClasses: number;
+  notStartedClasses: number;
+  totalExpected: number;
+  totalReceived: number;
+  totalMissing: number;
+  overallCompletion: number;
+  bundles: ClassBundle[];
+}
+
 export interface StagedScanItem {
   id: string;
   recordId: string;
@@ -29,12 +63,14 @@ export interface StagedScanItem {
 export interface ImportedRecord {
   id: string;
   import_session_id?: string;
+  bundle_id?: string;
   university_name?: string;
   class_id: string;
   member_id: string;
   barcode: string | null;
   scan_status: 'not_started' | 'started' | 'completed';
   scanned_at: string | null;
+  saved_at?: string | null;
   created_at: string;
 }
 
@@ -43,6 +79,7 @@ export interface ClassIdSummary {
   total_imported: number;
   scanned_count: number;
   remaining_count: number;
+  bundle_status?: BundleStatus;
 }
 
 export interface ImportedStats {
@@ -61,7 +98,12 @@ export interface ScanResult {
   isDuplicate?: boolean;
   isDuplicateInStaging?: boolean;
   isUnknownClass?: boolean;
+  isWrongClass?: boolean;
+  currentClassId?: string;
+  detectedClassId?: string;
   isAllScanned?: boolean;
+  isComplete?: boolean;
+  bundle?: ClassBundle;
   item?: StagedScanItem;
 }
 
@@ -139,9 +181,10 @@ ALTER TABLE public.manual_inward_data ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow all on manual_inward_data" ON public.manual_inward_data;
 CREATE POLICY "Allow all on manual_inward_data" ON public.manual_inward_data FOR ALL TO public USING (true) WITH CHECK (true);`;
 
-const PROD_RECORDS_KEY = 'examscan_imported_records_prod_v2';
-const PROD_SESSIONS_KEY = 'examscan_import_sessions_prod_v2';
-const PROD_ACTIVE_SESSION_KEY = 'examscan_active_session_prod_v2';
+const PROD_RECORDS_KEY = 'examscan_imported_records_prod_v3';
+const PROD_SESSIONS_KEY = 'examscan_import_sessions_prod_v3';
+const PROD_ACTIVE_SESSION_KEY = 'examscan_active_session_prod_v3';
+const PROD_BUNDLES_KEY = 'examscan_class_bundles_prod_v4';
 const BATCH_SIZE = 500;
 
 const PRIMARY_TABLE = 'imported_inward_data';
@@ -153,6 +196,9 @@ const LEGACY_KEYS = [
   'imported_records_v2',
   'imported_records_prod',
   'import_sessions_v1',
+  'examscan_imported_records_prod_v2',
+  'examscan_import_sessions_prod_v2',
+  'examscan_active_session_prod_v2',
 ];
 
 /**
@@ -170,6 +216,7 @@ export function sanitizeBarcode(code: string): string {
 class ImportedService {
   private records: ImportedRecord[] = [];
   private sessions: ImportSession[] = [];
+  private bundles: ClassBundle[] = [];
   private activeSession: ImportSession | null = null;
   private listeners: (() => void)[] = [];
   private isLoadedFromRemote = false;
@@ -205,16 +252,22 @@ class ImportedService {
       const storedRecords = localStorage.getItem(PROD_RECORDS_KEY);
       this.records = storedRecords ? JSON.parse(storedRecords) : [];
 
+      const storedBundles = localStorage.getItem(PROD_BUNDLES_KEY);
+      this.bundles = storedBundles ? JSON.parse(storedBundles) : [];
+
       const storedActiveId = localStorage.getItem(PROD_ACTIVE_SESSION_KEY);
       if (storedActiveId) {
         this.activeSession = this.sessions.find(s => s.id === storedActiveId) || this.sessions[0] || null;
       } else {
         this.activeSession = this.sessions[0] || null;
       }
+
+      this.reconcileBundlesWithRecords();
     } catch (err) {
       console.warn('Failed to load imported records from localStorage', err);
       this.records = [];
       this.sessions = [];
+      this.bundles = [];
       this.activeSession = null;
     }
   }
@@ -317,6 +370,7 @@ class ImportedService {
     try {
       localStorage.setItem(PROD_RECORDS_KEY, JSON.stringify(this.records));
       localStorage.setItem(PROD_SESSIONS_KEY, JSON.stringify(this.sessions));
+      localStorage.setItem(PROD_BUNDLES_KEY, JSON.stringify(this.bundles));
       if (this.activeSession) {
         localStorage.setItem(PROD_ACTIVE_SESSION_KEY, this.activeSession.id);
       } else {
@@ -394,8 +448,35 @@ class ImportedService {
           barcode: d.barcode || null,
           scan_status: d.scan_status || 'not_started',
           scanned_at: d.scanned_at || null,
+          saved_at: d.saved_at || null,
           created_at: d.created_at || new Date().toISOString(),
         }));
+
+        // Fetch remote class_bundles if available
+        try {
+          const { data: bData } = await supabase.from('class_bundles').select('*');
+          if (bData && Array.isArray(bData) && bData.length > 0) {
+            this.bundles = bData.map((b: any) => ({
+              id: b.id,
+              sessionId: b.session_id || this.activeSession?.id || 'default_session',
+              universityName: b.university_name || this.activeSession?.university_name || 'General University',
+              classId: String(b.class_id || '').trim(),
+              expectedCount: Number(b.expected_count) || 0,
+              receivedCount: Number(b.received_count) || 0,
+              missingCount: Number(b.missing_count) || 0,
+              remainingCount: Number(b.missing_count) || 0,
+              progressPercentage: Number(b.expected_count) > 0 ? Math.round((Number(b.received_count) / Number(b.expected_count)) * 100) : 0,
+              status: (b.status || 'NOT STARTED') as BundleStatus,
+              isSaved: Boolean(b.is_saved),
+              isCompleted: Boolean(b.is_completed),
+              savedAt: b.saved_at || null,
+              updatedAt: b.updated_at || new Date().toISOString(),
+              createdAt: b.created_at || new Date().toISOString(),
+            }));
+          }
+        } catch {}
+
+        this.reconcileBundlesWithRecords();
         this.isLoadedFromRemote = true;
         this.saveLocal();
       }
@@ -492,37 +573,115 @@ class ImportedService {
   }
 
   /**
+   * Reconcile bundles state with records in memory
+   * Ensures every unique class_id in records has a corresponding ClassBundle,
+   * and calculates expected, received, missing, and status accurately.
+   */
+  public reconcileBundlesWithRecords(): ClassBundle[] {
+    const classMap = new Map<string, { total: number; scanned: number }>();
+    for (const r of this.records) {
+      const cid = r.class_id.trim();
+      if (!cid) continue;
+      if (!classMap.has(cid)) {
+        classMap.set(cid, { total: 0, scanned: 0 });
+      }
+      const item = classMap.get(cid)!;
+      item.total += 1;
+      if (r.scan_status === 'started' || r.scan_status === 'completed') {
+        item.scanned += 1;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const existingBundlesMap = new Map<string, ClassBundle>();
+    for (const b of this.bundles) {
+      existingBundlesMap.set(b.classId.toLowerCase(), b);
+    }
+
+    const updatedBundles: ClassBundle[] = [];
+    const sessionId = this.activeSession?.id || 'default_session';
+    const uniName = this.activeSession?.university_name || this.records[0]?.university_name || 'General University';
+
+    for (const [classId, stats] of classMap.entries()) {
+      const existing = existingBundlesMap.get(classId.toLowerCase());
+      const expectedCount = stats.total;
+      const receivedCount = stats.scanned;
+      const remainingCount = Math.max(0, expectedCount - receivedCount);
+      const progressPercentage = expectedCount > 0 ? Math.round((receivedCount / expectedCount) * 100) : 0;
+
+      // Status resolution
+      let status: BundleStatus = 'NOT STARTED';
+      let isCompleted = existing?.isCompleted || false;
+      let isSaved = existing?.isSaved || false;
+
+      if (isCompleted || (isSaved && expectedCount > 0 && receivedCount === expectedCount)) {
+        status = 'COMPLETED';
+        isCompleted = true;
+      } else if (isSaved) {
+        status = 'PARTIAL / SAVED';
+      } else if (receivedCount > 0) {
+        status = 'IN PROGRESS';
+      } else {
+        status = 'NOT STARTED';
+      }
+
+      const bundle: ClassBundle = {
+        id: existing?.id || `bundle_${sessionId}_${classId}`,
+        sessionId: existing?.sessionId || sessionId,
+        universityName: existing?.universityName || uniName,
+        classId,
+        expectedCount,
+        receivedCount,
+        missingCount: remainingCount,
+        remainingCount,
+        progressPercentage,
+        status,
+        isSaved,
+        isCompleted,
+        savedAt: existing?.savedAt || null,
+        updatedAt: now,
+        createdAt: existing?.createdAt || now,
+      };
+
+      updatedBundles.push(bundle);
+    }
+
+    // Sort by classId
+    updatedBundles.sort((a, b) => a.classId.localeCompare(b.classId));
+    this.bundles = updatedBundles;
+    return this.bundles;
+  }
+
+  /**
+   * Get all Class Bundles
+   */
+  public getClassBundles(): ClassBundle[] {
+    return this.reconcileBundlesWithRecords();
+  }
+
+  /**
+   * Get specific Class Bundle
+   */
+  public getClassBundle(classId: string): ClassBundle | null {
+    if (!classId) return null;
+    const clean = classId.trim().toLowerCase();
+    const bundles = this.getClassBundles();
+    return bundles.find(b => b.classId.toLowerCase() === clean) || null;
+  }
+
+  /**
    * Get Class ID-Wise Summaries
    * Class ID | Imported | Inwarded (Scanned) | Missing (Remaining)
    */
   public getClassIdSummaries(): ClassIdSummary[] {
-    const map = new Map<string, { total: number; scanned: number }>();
-
-    for (const r of this.records) {
-      const cid = r.class_id.trim();
-      if (!cid) continue;
-      if (!map.has(cid)) {
-        map.set(cid, { total: 0, scanned: 0 });
-      }
-      const entry = map.get(cid)!;
-      entry.total += 1;
-      if (r.scan_status === 'started' || r.scan_status === 'completed') {
-        entry.scanned += 1;
-      }
-    }
-
-    const summaries: ClassIdSummary[] = [];
-    for (const [class_id, stats] of map.entries()) {
-      summaries.push({
-        class_id,
-        total_imported: stats.total,
-        scanned_count: stats.scanned,
-        remaining_count: Math.max(0, stats.total - stats.scanned),
-      });
-    }
-
-    // Sort by class_id
-    return summaries.sort((a, b) => a.class_id.localeCompare(b.class_id));
+    const bundles = this.getClassBundles();
+    return bundles.map(b => ({
+      class_id: b.classId,
+      total_imported: b.expectedCount,
+      scanned_count: b.receivedCount,
+      remaining_count: b.missingCount,
+      bundle_status: b.status,
+    }));
   }
 
   /**
@@ -562,7 +721,13 @@ class ImportedService {
 
   /**
    * Bulk insert imported records into Supabase and local cache
-   * Requires mandatory University Name (Sections 4, 5, 6, 7)
+   * Section 1:
+   * 1. Remove all sample/demo data completely.
+   * 2. Import actual Excel records.
+   * 3. Validate imported records.
+   * 4. Store University Name with imported scanning session.
+   * 5. Detect and calculate class-wise expected booklet/member counts.
+   * 6. Show imported classes in Scanning Dashboard.
    */
   public async bulkInsert(
     items: { class_id: string; member_id: string }[],
@@ -592,7 +757,7 @@ class ImportedService {
       created_at: now,
     };
 
-    // 2. Prepare Records (Section 6 & 8: scan_status = 'not_started')
+    // 2. Prepare Records (scan_status = 'not_started')
     const newRecords: ImportedRecord[] = items.map((item, index) => ({
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_${Date.now()}_${index}`,
       import_session_id: sessionId,
@@ -602,13 +767,43 @@ class ImportedService {
       barcode: null,
       scan_status: 'not_started',
       scanned_at: null,
+      saved_at: null,
       created_at: now,
     }));
 
-    // Save session & records locally for instantaneous reliability
-    this.sessions = [session, ...this.sessions];
+    // 3. Calculate class-wise expected counts and initialize bundles
+    const classCountMap = new Map<string, number>();
+    for (const it of items) {
+      const cid = String(it.class_id).trim();
+      classCountMap.set(cid, (classCountMap.get(cid) || 0) + 1);
+    }
+
+    const newBundles: ClassBundle[] = [];
+    for (const [classId, expectedCount] of classCountMap.entries()) {
+      newBundles.push({
+        id: `bundle_${sessionId}_${classId}`,
+        sessionId,
+        universityName: cleanUniversity,
+        classId,
+        expectedCount,
+        receivedCount: 0,
+        missingCount: expectedCount,
+        remainingCount: expectedCount,
+        progressPercentage: 0,
+        status: 'NOT STARTED',
+        isSaved: false,
+        isCompleted: false,
+        savedAt: null,
+        updatedAt: now,
+        createdAt: now,
+      });
+    }
+
+    // Wipe previous session/demo data completely (Req 1.1)
+    this.sessions = [session];
     this.activeSession = session;
-    this.records = [...this.records, ...newRecords];
+    this.records = newRecords;
+    this.bundles = newBundles;
     this.saveLocal();
 
     // Check remote table availability
@@ -616,7 +811,7 @@ class ImportedService {
       await this.checkRemoteTable();
     }
 
-    // Push session and records to Supabase in batches if available
+    // Push session, bundles, and records to Supabase in batches if available
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         // Insert session record
@@ -635,6 +830,29 @@ class ImportedService {
           console.warn('Session insert note:', sessErr);
         }
 
+        // Insert bundles into class_bundles table if present
+        try {
+          await supabase.from('class_bundles').upsert(
+            newBundles.map(b => ({
+              id: b.id,
+              session_id: b.sessionId,
+              university_name: b.universityName,
+              class_id: b.classId,
+              expected_count: b.expectedCount,
+              received_count: b.receivedCount,
+              missing_count: b.missingCount,
+              status: b.status,
+              is_saved: b.isSaved,
+              is_completed: b.isCompleted,
+              saved_at: b.savedAt,
+              created_at: b.createdAt,
+              updated_at: b.updatedAt,
+            }))
+          );
+        } catch (bErr) {
+          console.warn('class_bundles upsert note:', bErr);
+        }
+
         const total = newRecords.length;
         let processed = 0;
 
@@ -648,6 +866,7 @@ class ImportedService {
             barcode: null,
             scan_status: 'not_started',
             scanned_at: null,
+            saved_at: null,
             created_at: r.created_at,
           }));
 
@@ -683,6 +902,479 @@ class ImportedService {
 
     this.notify();
     return { success: true, inserted: newRecords.length, session };
+  }
+
+  /**
+   * Detect Class ID from Barcode input
+   */
+  public detectClassId(barcodeInput: string): string | null {
+    const code = sanitizeBarcode(barcodeInput);
+    if (!code) return null;
+
+    const bundles = this.getClassBundles();
+    const knownIds = bundles.map(b => b.classId);
+
+    // 1. Direct prefix match with known class IDs
+    for (const cid of knownIds) {
+      if (code.toLowerCase().startsWith(cid.toLowerCase())) {
+        return cid;
+      }
+    }
+
+    // 2. Delimiter split match (e.g. 1211-MEM001 -> 1211)
+    const parts = code.split(/[-_/ ]+/);
+    if (parts.length > 1) {
+      for (const p of parts) {
+        const match = knownIds.find(cid => cid.toLowerCase() === p.toLowerCase());
+        if (match) return match;
+      }
+    }
+
+    // 3. First 4 characters
+    if (code.length >= 4) {
+      const candidate = code.substring(0, 4);
+      const match = knownIds.find(cid => cid.toLowerCase() === candidate.toLowerCase());
+      if (match) return match;
+      return candidate;
+    }
+
+    return code;
+  }
+
+  /**
+   * Process First Booklet Scan (Universal or Dashboard Scan)
+   * Section 3:
+   * 1. Detect Class ID.
+   * 2. Identify corresponding class.
+   * 3. Immediately redirect user to dedicated Bundle Statistics screen for that Class ID.
+   * 4. Do NOT keep camera visible on Bundle Statistics screen.
+   */
+  public async processFirstBooklet(barcodeInput: string): Promise<ScanResult> {
+    const barcode = sanitizeBarcode(barcodeInput);
+    if (!barcode) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    // 1. Duplicate check across all received booklets
+    const existingScanned = this.records.find(
+      r => r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === barcode.toLowerCase()
+    );
+    if (existingScanned) {
+      return {
+        success: false,
+        isDuplicate: true,
+        class_id: existingScanned.class_id,
+        member_id: existingScanned.member_id,
+        message: `⚠ DUPLICATE BOOKLET DETECTED\n\nMember ${existingScanned.member_id} has already been received in Class ${existingScanned.class_id}.`,
+        record: existingScanned,
+      };
+    }
+
+    // 2. Detect Class ID
+    const detectedClassId = this.detectClassId(barcode);
+    if (!detectedClassId) {
+      return { success: false, message: `Could not detect Class ID from barcode "${barcode}". Minimum 4 characters required.` };
+    }
+
+    // 3. Find imported records for this Class ID
+    const classRecords = this.records.filter(
+      r => r.class_id.trim().toLowerCase() === detectedClassId.toLowerCase()
+    );
+
+    if (classRecords.length === 0) {
+      return {
+        success: false,
+        isUnknownClass: true,
+        class_id: detectedClassId,
+        message: `⚠ UNKNOWN CLASS DETECTED\n\nNo imported records found for Class ID "${detectedClassId}". Please import Class ${detectedClassId} data first.`,
+      };
+    }
+
+    // 4. Find matching unscanned record (prefer exact member_id match in barcode, else next unscanned)
+    let targetRecord = classRecords.find(
+      r => r.scan_status === 'not_started' && r.member_id && barcode.toLowerCase().includes(r.member_id.toLowerCase())
+    );
+    if (!targetRecord) {
+      targetRecord = classRecords.find(r => r.scan_status === 'not_started');
+    }
+
+    if (!targetRecord) {
+      return {
+        success: false,
+        isAllScanned: true,
+        class_id: detectedClassId,
+        message: `All ${classRecords.length} records for Class ID "${detectedClassId}" have already been received!`,
+      };
+    }
+
+    // 5. Update record
+    const now = new Date().toISOString();
+    targetRecord.scan_status = 'started';
+    targetRecord.scanned_at = now;
+    targetRecord.barcode = barcode;
+
+    // 6. Update Bundle
+    this.reconcileBundlesWithRecords();
+    const updatedBundle = this.getClassBundle(detectedClassId);
+    if (updatedBundle) {
+      if (updatedBundle.status === 'NOT STARTED') {
+        updatedBundle.status = 'IN PROGRESS';
+      }
+      updatedBundle.updatedAt = now;
+    }
+
+    this.saveLocal();
+
+    // Sync to Supabase in background
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        await supabase
+          .from(this.tableName)
+          .update({ scan_status: 'started', scanned_at: now, barcode: barcode })
+          .eq('id', targetRecord.id);
+
+        if (updatedBundle) {
+          try {
+            await supabase.from('class_bundles').upsert({
+              id: updatedBundle.id,
+              session_id: updatedBundle.sessionId,
+              university_name: updatedBundle.universityName,
+              class_id: updatedBundle.classId,
+              expected_count: updatedBundle.expectedCount,
+              received_count: updatedBundle.receivedCount,
+              missing_count: updatedBundle.missingCount,
+              status: updatedBundle.status,
+              is_saved: updatedBundle.isSaved,
+              is_completed: updatedBundle.isCompleted,
+              saved_at: updatedBundle.savedAt,
+              updated_at: now,
+            });
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('Sync first booklet note:', e);
+      }
+    }
+
+    return {
+      success: true,
+      class_id: targetRecord.class_id,
+      member_id: targetRecord.member_id,
+      record: targetRecord,
+      bundle: updatedBundle || undefined,
+      message: `Detected Class ${targetRecord.class_id} • Booklet Received for Member ${targetRecord.member_id}`,
+    };
+  }
+
+  /**
+   * Process Booklet Scan Inside an Active Class Bundle Workflow (Section 10 & 11)
+   * 1. Duplicate Scan Protection (Section 10)
+   * 2. Wrong Class Protection (Section 11)
+   * 3. Match Member Record
+   * 4. Update Stats & Detect 100% Completion (Section 8)
+   */
+  public async processBundleBooklet(currentClassId: string, barcodeInput: string): Promise<ScanResult> {
+    const barcode = sanitizeBarcode(barcodeInput);
+    if (!barcode) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    const cleanCurrentClass = currentClassId.trim().toLowerCase();
+
+    // 1. Duplicate Scan Protection (Section 10)
+    const dupRecord = this.records.find(
+      r => r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === barcode.toLowerCase()
+    );
+    if (dupRecord) {
+      return {
+        success: false,
+        isDuplicate: true,
+        class_id: dupRecord.class_id,
+        member_id: dupRecord.member_id,
+        message: `⚠ DUPLICATE BOOKLET DETECTED\n\nMember ${dupRecord.member_id} has already been received in Class ${dupRecord.class_id}.`,
+        record: dupRecord,
+      };
+    }
+
+    // 2. Wrong Class Protection (Section 11)
+    const detectedClassId = this.detectClassId(barcode);
+    if (detectedClassId && detectedClassId.toLowerCase() !== cleanCurrentClass) {
+      // Check if this detected class exists in database
+      const isOtherKnownClass = this.records.some(r => r.class_id.trim().toLowerCase() === detectedClassId.toLowerCase());
+      if (isOtherKnownClass) {
+        return {
+          success: false,
+          isWrongClass: true,
+          currentClassId,
+          detectedClassId,
+          message: `⚠ WRONG CLASS DETECTED\n\nCurrent Bundle: Class ${currentClassId}\nDetected Class: Class ${detectedClassId}\n\nThis booklet belongs to Class ${detectedClassId}, not Class ${currentClassId}.`,
+        };
+      }
+    }
+
+    // 3. Match member record in active Class ID
+    const classRecords = this.records.filter(r => r.class_id.trim().toLowerCase() === cleanCurrentClass);
+    if (classRecords.length === 0) {
+      return {
+        success: false,
+        isUnknownClass: true,
+        class_id: currentClassId,
+        message: `No records found for active Class ${currentClassId}.`,
+      };
+    }
+
+    // Match exact member ID if inside barcode, else next unscanned
+    let targetRecord = classRecords.find(
+      r => r.scan_status === 'not_started' && r.member_id && barcode.toLowerCase().includes(r.member_id.toLowerCase())
+    );
+    if (!targetRecord) {
+      targetRecord = classRecords.find(r => r.scan_status === 'not_started');
+    }
+
+    if (!targetRecord) {
+      return {
+        success: false,
+        isAllScanned: true,
+        class_id: currentClassId,
+        message: `All ${classRecords.length} booklets for Class ${currentClassId} have already been received!`,
+      };
+    }
+
+    // 4. Update record
+    const now = new Date().toISOString();
+    targetRecord.scan_status = 'started';
+    targetRecord.scanned_at = now;
+    targetRecord.barcode = barcode;
+
+    // 5. Update bundle
+    this.reconcileBundlesWithRecords();
+    const updatedBundle = this.getClassBundle(currentClassId);
+    const isComplete = updatedBundle ? updatedBundle.receivedCount >= updatedBundle.expectedCount : false;
+
+    this.saveLocal();
+
+    // 6. Push to Supabase
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        await supabase
+          .from(this.tableName)
+          .update({ scan_status: 'started', scanned_at: now, barcode: barcode })
+          .eq('id', targetRecord.id);
+
+        if (updatedBundle) {
+          try {
+            await supabase.from('class_bundles').upsert({
+              id: updatedBundle.id,
+              session_id: updatedBundle.sessionId,
+              university_name: updatedBundle.universityName,
+              class_id: updatedBundle.classId,
+              expected_count: updatedBundle.expectedCount,
+              received_count: updatedBundle.receivedCount,
+              missing_count: updatedBundle.missingCount,
+              status: updatedBundle.status,
+              is_saved: updatedBundle.isSaved,
+              is_completed: updatedBundle.isCompleted,
+              saved_at: updatedBundle.savedAt,
+              updated_at: now,
+            });
+          } catch {}
+        }
+      } catch (err) {
+        console.warn('Sync bundle booklet note:', err);
+      }
+    }
+
+    return {
+      success: true,
+      class_id: targetRecord.class_id,
+      member_id: targetRecord.member_id,
+      record: targetRecord,
+      bundle: updatedBundle || undefined,
+      isComplete,
+      message: `Verified: Member ${targetRecord.member_id} received for Class ${targetRecord.class_id}`,
+    };
+  }
+
+  /**
+   * Save Class Bundle (Sections 7, 8, 9, 13)
+   * Handles Partial Bundle Save or Complete Bundle Save.
+   * Persists bundle state to Supabase, updates status to PARTIAL / SAVED or COMPLETED.
+   */
+  public async saveBundle(
+    classId: string,
+    forceComplete: boolean = false
+  ): Promise<{ success: boolean; bundle?: ClassBundle; error?: string }> {
+    const cleanClassId = classId.trim();
+    const bundle = this.getClassBundle(cleanClassId);
+    if (!bundle) {
+      return { success: false, error: `Bundle for Class ${cleanClassId} not found.` };
+    }
+
+    const now = new Date().toISOString();
+    const isCompleted = forceComplete || (bundle.expectedCount > 0 && bundle.receivedCount >= bundle.expectedCount);
+
+    bundle.isSaved = true;
+    bundle.savedAt = now;
+    bundle.updatedAt = now;
+
+    if (isCompleted) {
+      bundle.isCompleted = true;
+      bundle.status = 'COMPLETED';
+    } else {
+      bundle.isCompleted = false;
+      bundle.status = 'PARTIAL / SAVED';
+    }
+
+    // Update records in this class with saved_at
+    for (const r of this.records) {
+      if (r.class_id.trim().toLowerCase() === cleanClassId.toLowerCase()) {
+        r.saved_at = now;
+        if (isCompleted && r.scan_status === 'started') {
+          r.scan_status = 'completed';
+        }
+      }
+    }
+
+    this.saveLocal();
+
+    // Persist to Supabase
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        // Upsert bundle
+        try {
+          await supabase.from('class_bundles').upsert({
+            id: bundle.id,
+            session_id: bundle.sessionId,
+            university_name: bundle.universityName,
+            class_id: bundle.classId,
+            expected_count: bundle.expectedCount,
+            received_count: bundle.receivedCount,
+            missing_count: bundle.missingCount,
+            status: bundle.status,
+            is_saved: bundle.isSaved,
+            is_completed: bundle.isCompleted,
+            saved_at: bundle.savedAt,
+            updated_at: now,
+          });
+        } catch (bErr) {
+          console.warn('class_bundles table note in Supabase:', bErr);
+        }
+
+        // Update records in Supabase
+        await supabase
+          .from(this.tableName)
+          .update({
+            saved_at: now,
+            scan_status: isCompleted ? 'completed' : 'started',
+          })
+          .eq('class_id', cleanClassId)
+          .neq('scan_status', 'not_started');
+      } catch (err: any) {
+        console.warn('Supabase saveBundle sync note:', err);
+      }
+    }
+
+    this.notify();
+    return { success: true, bundle };
+  }
+
+  /**
+   * Reopen Completed Class Bundle (Section 13)
+   * Allows operator to reopen a completed/locked bundle for adjustments.
+   */
+  public async reopenBundle(classId: string): Promise<{ success: boolean; bundle?: ClassBundle; error?: string }> {
+    const cleanClassId = classId.trim();
+    const bundle = this.getClassBundle(cleanClassId);
+    if (!bundle) {
+      return { success: false, error: `Bundle for Class ${cleanClassId} not found.` };
+    }
+
+    const now = new Date().toISOString();
+    bundle.isCompleted = false;
+    bundle.isSaved = false;
+    bundle.status = bundle.receivedCount > 0 ? 'IN PROGRESS' : 'NOT STARTED';
+    bundle.updatedAt = now;
+
+    // Reset records marked 'completed' back to 'started'
+    for (const r of this.records) {
+      if (r.class_id.trim().toLowerCase() === cleanClassId.toLowerCase()) {
+        if (r.scan_status === 'completed') {
+          r.scan_status = 'started';
+        }
+      }
+    }
+
+    this.saveLocal();
+
+    // Sync to Supabase
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        try {
+          await supabase.from('class_bundles').upsert({
+            id: bundle.id,
+            session_id: bundle.sessionId,
+            university_name: bundle.universityName,
+            class_id: bundle.classId,
+            status: bundle.status,
+            is_completed: false,
+            is_saved: false,
+            updated_at: now,
+          });
+        } catch {}
+
+        await supabase
+          .from(this.tableName)
+          .update({ scan_status: 'started' })
+          .eq('class_id', cleanClassId)
+          .eq('scan_status', 'completed');
+      } catch (err) {
+        console.warn('Supabase reopenBundle note:', err);
+      }
+    }
+
+    this.notify();
+    return { success: true, bundle };
+  }
+
+  /**
+   * Session Summary & Final Reconciliation (Section 18 & Operator Sign-off)
+   * Single final screen calculating Total Classes, Completed, Partial, Not Started, Total Expected, Received, Missing.
+   */
+  public getSessionSummary(): SessionSummary {
+    const bundles = this.getClassBundles();
+    const universityName = this.activeSession?.university_name || this.records[0]?.university_name || 'General University';
+
+    const totalClasses = bundles.length;
+    const completedClasses = bundles.filter(b => b.status === 'COMPLETED').length;
+    const partialClasses = bundles.filter(b => b.status === 'PARTIAL / SAVED').length;
+    const inProgressClasses = bundles.filter(b => b.status === 'IN PROGRESS').length;
+    const notStartedClasses = bundles.filter(b => b.status === 'NOT STARTED').length;
+
+    let totalExpected = 0;
+    let totalReceived = 0;
+    let totalMissing = 0;
+
+    for (const b of bundles) {
+      totalExpected += b.expectedCount;
+      totalReceived += b.receivedCount;
+      totalMissing += b.missingCount;
+    }
+
+    const overallCompletion = totalExpected > 0 ? Math.round((totalReceived / totalExpected) * 100) : 0;
+
+    return {
+      universityName,
+      totalClasses,
+      completedClasses,
+      partialClasses,
+      inProgressClasses,
+      notStartedClasses,
+      totalExpected,
+      totalReceived,
+      totalMissing,
+      overallCompletion,
+      bundles,
+    };
   }
 
   /**
@@ -1006,10 +1698,21 @@ class ImportedService {
     this.records = [];
     this.sessions = [];
     this.activeSession = null;
-    this.saveLocal();
+    try {
+      localStorage.removeItem(PROD_RECORDS_KEY);
+      localStorage.removeItem(PROD_SESSIONS_KEY);
+      localStorage.removeItem(PROD_ACTIVE_SESSION_KEY);
+      LEGACY_KEYS.forEach(key => localStorage.removeItem(key));
+    } catch {}
+    this.notify();
     if (isSupabaseConfigured && this.isRemoteTableAvailable) {
       try {
         await supabase.from(this.tableName).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        if (this.tableName !== 'imported') {
+          try {
+            await supabase.from('imported').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          } catch {}
+        }
         await supabase.from('import_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       } catch (e) {
         console.warn('Clear remote note:', e);
@@ -1093,7 +1796,46 @@ class ImportedService {
     wsSummary['!cols'] = [{ wch: 25 }, { wch: 20 }, { wch: 15 }, { wch: 15 }];
 
     // -------------------------------------------------------------------------
-    // SHEET 2: Inwarded Data (Section 12: ONLY successfully scanned records)
+    // SHEET 2: Class-Wise Reconciliation (Section 15 Specification)
+    // Suggested columns:
+    // University Name, Class ID, Member ID, Expected Status, Scan Status, Bundle Status, Scanned At, Saved At
+    // -------------------------------------------------------------------------
+    const bundleMap = new Map<string, ClassBundle>();
+    this.getClassBundles().forEach(b => bundleMap.set(b.classId.toLowerCase(), b));
+
+    const reconciliationRows: any[][] = [
+      ['University Name', 'Class ID', 'Member ID', 'Expected Status', 'Scan Status', 'Bundle Status', 'Scanned At', 'Saved At'],
+    ];
+
+    for (const r of this.records) {
+      const b = bundleMap.get(r.class_id.trim().toLowerCase());
+      const isReceived = r.scan_status === 'started' || r.scan_status === 'completed';
+      reconciliationRows.push([
+        r.university_name || universityName,
+        r.class_id,
+        r.member_id,
+        'EXPECTED',
+        isReceived ? 'RECEIVED' : 'MISSING',
+        b ? b.status : 'NOT STARTED',
+        r.scanned_at ? new Date(r.scanned_at).toLocaleString() : '—',
+        r.saved_at || b?.savedAt ? new Date(r.saved_at || b?.savedAt || '').toLocaleString() : '—',
+      ]);
+    }
+
+    const wsReconciliation = XLSX.utils.aoa_to_sheet(reconciliationRows);
+    wsReconciliation['!cols'] = [
+      { wch: 25 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 18 },
+      { wch: 22 },
+      { wch: 22 },
+    ];
+
+    // -------------------------------------------------------------------------
+    // SHEET 3: Inwarded Data (Section 12: ONLY successfully scanned records)
     // -------------------------------------------------------------------------
     const inwardedData: any[][] = [
       ['University Name', 'Class ID', 'Member ID', 'Barcode', 'Scan Status', 'Scanned At'],
@@ -1125,7 +1867,7 @@ class ImportedService {
     ];
 
     // -------------------------------------------------------------------------
-    // SHEET 3: Missing Data (Section 13 & 19: ONLY imported records not scanned)
+    // SHEET 4: Missing Data (Section 13 & 19: ONLY imported records not scanned)
     // -------------------------------------------------------------------------
     const missingData: any[][] = [
       ['University Name', 'Class ID', 'Member ID', 'Barcode', 'Status'],
@@ -1154,6 +1896,7 @@ class ImportedService {
     // -------------------------------------------------------------------------
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+    XLSX.utils.book_append_sheet(wb, wsReconciliation, 'Class Reconciliation');
     XLSX.utils.book_append_sheet(wb, wsInwarded, 'Inwarded Data');
     XLSX.utils.book_append_sheet(wb, wsMissing, 'Missing Data');
 
@@ -1172,6 +1915,10 @@ class ImportedService {
       missingCount: missingRecords.length,
       totalImported,
     };
+  }
+
+  public exportClassWiseExcel(customUniversityName?: string) {
+    return this.exportInwardingReport(customUniversityName);
   }
 
   /**

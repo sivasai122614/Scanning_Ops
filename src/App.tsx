@@ -138,6 +138,7 @@ const AuthenticatedApp: React.FC = () => {
             {activeView === 'import-data' && (
               <ImportDataView
                 onNavigateToManualInward={() => navigateTo('sessions')}
+                onNavigateToDashboard={() => navigateTo('home')}
               />
             )}
 

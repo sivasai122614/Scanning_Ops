@@ -30,6 +30,10 @@ import {
   ArrowRight,
   Maximize2,
   Copy,
+  Save,
+  Trash2,
+  ListFilter,
+  Layers,
 } from 'lucide-react';
 import {
   importedService,
@@ -37,6 +41,8 @@ import {
   ClassIdSummary,
   ImportedStats,
   sanitizeBarcode,
+  StagedScanItem,
+  EXAMSCAN_2TABLES_SQL,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BrowserMultiFormatReader } from '@zxing/browser';
@@ -58,7 +64,8 @@ interface ClassGroup {
 
 export const ImportDataView: React.FC<{
   onNavigateToManualInward?: () => void;
-}> = ({ onNavigateToManualInward }) => {
+  onNavigateToDashboard?: () => void;
+}> = ({ onNavigateToManualInward, onNavigateToDashboard }) => {
   // Navigation / Mode within Import Data screen
   const [activeTab, setActiveTab] = useState<'import' | 'scanner'>('import');
 
@@ -140,10 +147,28 @@ export const ImportDataView: React.FC<{
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('all');
   const [previewPage, setPreviewPage] = useState<number>(1);
 
+  // Staged Scans (Unsaved buffer directly under camera) - Requirements 1, 2, 3
+  const [stagedScans, setStagedScans] = useState<StagedScanItem[]>([]);
+  const [isSavingStaged, setIsSavingStaged] = useState<boolean>(false);
+  const [stagedSaveSuccess, setStagedSaveSuccess] = useState<string | null>(null);
+
+  // Previews for Pending Roll Numbers and Scanned Data - Requirement 5
+  const [pendingPreviewModal, setPendingPreviewModal] = useState<{
+    isOpen: boolean;
+    classId: string;
+  }>({ isOpen: false, classId: 'all' });
+  const [scannedPreviewModal, setScannedPreviewModal] = useState<{
+    isOpen: boolean;
+    classId: string;
+  }>({ isOpen: false, classId: 'all' });
+  const [previewSearchTerm, setPreviewSearchTerm] = useState('');
+  const [hasCopiedRolls, setHasCopiedRolls] = useState(false);
+
   // Supabase cloud migration & status modal state
-  const [remoteStatus, setRemoteStatus] = useState<{ isConfigured: boolean; isRemoteTableAvailable: boolean }>({
+  const [remoteStatus, setRemoteStatus] = useState<{ isConfigured: boolean; isRemoteTableAvailable: boolean; tableName?: string }>({
     isConfigured: false,
     isRemoteTableAvailable: true,
+    tableName: 'imported_inward_data',
   });
   const [showSqlMigrationModal, setShowSqlMigrationModal] = useState(false);
   const [isVerifyingSync, setIsVerifyingSync] = useState(false);
@@ -446,25 +471,122 @@ export const ImportDataView: React.FC<{
   };
 
   // ----------------------------------------------------------------------------
-  // DOWNLOAD SAMPLE EXCEL TEMPLATE
+  // DOWNLOAD SAMPLE EXCEL TEMPLATE (Classes 1211, 1212, 1213)
   // ----------------------------------------------------------------------------
   const handleDownloadTemplate = () => {
     const templateData = [
       ['Class ID', 'Member ID'],
-      ['0031', '21MIS0074'],
-      ['0031', '22MIS0267'],
-      ['0031', '21MIS0080'],
-      ['0403', 'MIS0089'],
-      ['0403', 'MIS0002'],
-      ['0403', 'MIS0003'],
-      ['0404', 'MIS0004'],
-      ['0404', 'MIS0005'],
+      // Class 1211 (Expected 10 members)
+      ['1211', 'MEM001'],
+      ['1211', 'MEM002'],
+      ['1211', 'MEM003'],
+      ['1211', 'MEM004'],
+      ['1211', 'MEM005'],
+      ['1211', 'MEM006'],
+      ['1211', 'MEM007'],
+      ['1211', 'MEM008'],
+      ['1211', 'MEM009'],
+      ['1211', 'MEM010'],
+      // Class 1212 (Expected 8 members)
+      ['1212', 'MEM011'],
+      ['1212', 'MEM012'],
+      ['1212', 'MEM013'],
+      ['1212', 'MEM014'],
+      ['1212', 'MEM015'],
+      ['1212', 'MEM016'],
+      ['1212', 'MEM017'],
+      ['1212', 'MEM018'],
+      // Class 1213 (Expected 12 members)
+      ['1213', 'MEM019'],
+      ['1213', 'MEM020'],
+      ['1213', 'MEM021'],
+      ['1213', 'MEM022'],
+      ['1213', 'MEM023'],
+      ['1213', 'MEM024'],
+      ['1213', 'MEM025'],
+      ['1213', 'MEM026'],
+      ['1213', 'MEM027'],
+      ['1213', 'MEM028'],
+      ['1213', 'MEM029'],
+      ['1213', 'MEM030'],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(templateData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'InwardData');
     XLSX.writeFile(wb, 'ExamScan_Inward_Sample_Template.xlsx');
+  };
+
+  const handleLoadAcceptanceTestData = () => {
+    setValidationError(null);
+    setUniversityInput('VIT-AP University');
+
+    const acceptanceRows: ParsedRow[] = [
+      // Class 1211 (10)
+      { rowNumber: 2, classId: '1211', memberId: 'MEM001', status: 'valid' },
+      { rowNumber: 3, classId: '1211', memberId: 'MEM002', status: 'valid' },
+      { rowNumber: 4, classId: '1211', memberId: 'MEM003', status: 'valid' },
+      { rowNumber: 5, classId: '1211', memberId: 'MEM004', status: 'valid' },
+      { rowNumber: 6, classId: '1211', memberId: 'MEM005', status: 'valid' },
+      { rowNumber: 7, classId: '1211', memberId: 'MEM006', status: 'valid' },
+      { rowNumber: 8, classId: '1211', memberId: 'MEM007', status: 'valid' },
+      { rowNumber: 9, classId: '1211', memberId: 'MEM008', status: 'valid' },
+      { rowNumber: 10, classId: '1211', memberId: 'MEM009', status: 'valid' },
+      { rowNumber: 11, classId: '1211', memberId: 'MEM010', status: 'valid' },
+      // Class 1212 (8)
+      { rowNumber: 12, classId: '1212', memberId: 'MEM011', status: 'valid' },
+      { rowNumber: 13, classId: '1212', memberId: 'MEM012', status: 'valid' },
+      { rowNumber: 14, classId: '1212', memberId: 'MEM013', status: 'valid' },
+      { rowNumber: 15, classId: '1212', memberId: 'MEM014', status: 'valid' },
+      { rowNumber: 16, classId: '1212', memberId: 'MEM015', status: 'valid' },
+      { rowNumber: 17, classId: '1212', memberId: 'MEM016', status: 'valid' },
+      { rowNumber: 18, classId: '1212', memberId: 'MEM017', status: 'valid' },
+      { rowNumber: 19, classId: '1212', memberId: 'MEM018', status: 'valid' },
+      // Class 1213 (12)
+      { rowNumber: 20, classId: '1213', memberId: 'MEM019', status: 'valid' },
+      { rowNumber: 21, classId: '1213', memberId: 'MEM020', status: 'valid' },
+      { rowNumber: 22, classId: '1213', memberId: 'MEM021', status: 'valid' },
+      { rowNumber: 23, classId: '1213', memberId: 'MEM022', status: 'valid' },
+      { rowNumber: 24, classId: '1213', memberId: 'MEM023', status: 'valid' },
+      { rowNumber: 25, classId: '1213', memberId: 'MEM024', status: 'valid' },
+      { rowNumber: 26, classId: '1213', memberId: 'MEM025', status: 'valid' },
+      { rowNumber: 27, classId: '1213', memberId: 'MEM026', status: 'valid' },
+      { rowNumber: 28, classId: '1213', memberId: 'MEM027', status: 'valid' },
+      { rowNumber: 29, classId: '1213', memberId: 'MEM028', status: 'valid' },
+      { rowNumber: 30, classId: '1213', memberId: 'MEM029', status: 'valid' },
+      { rowNumber: 31, classId: '1213', memberId: 'MEM030', status: 'valid' },
+    ];
+
+    const groups: ClassGroup[] = [
+      {
+        classId: '1211',
+        membersCount: 10,
+        members: ['MEM001', 'MEM002', 'MEM003', 'MEM004', 'MEM005', 'MEM006', 'MEM007', 'MEM008', 'MEM009', 'MEM010'],
+      },
+      {
+        classId: '1212',
+        membersCount: 8,
+        members: ['MEM011', 'MEM012', 'MEM013', 'MEM014', 'MEM015', 'MEM016', 'MEM017', 'MEM018'],
+      },
+      {
+        classId: '1213',
+        membersCount: 12,
+        members: [
+          'MEM019', 'MEM020', 'MEM021', 'MEM022', 'MEM023', 'MEM024',
+          'MEM025', 'MEM026', 'MEM027', 'MEM028', 'MEM029', 'MEM030',
+        ],
+      },
+    ];
+
+    setParsedRows(acceptanceRows);
+    setClassGroups(groups);
+    setSummary({
+      totalRecords: 30,
+      totalClassIds: 3,
+      validRecords: 30,
+      duplicateRecords: 0,
+      invalidRecords: 0,
+    });
   };
 
   // ----------------------------------------------------------------------------
@@ -759,18 +881,22 @@ export const ImportDataView: React.FC<{
     setActiveClassId(detectedClassId);
 
     try {
-      // 4. Query Supabase / imported table and update record to 'started'
-      const result = await importedService.processBarcode(sanitized);
+      // 4. Validate and Stage barcode into current scanning session list (Req 1, 2, 3, 6)
+      const result = importedService.validateAndStageBarcode(sanitized, stagedScans);
 
-      if (result.success) {
+      if (result.success && result.item) {
         // Section 11: AUDIO & VISUAL FEEDBACK
         playScanSuccessSound();
         const displayMember = result.member_id || (sanitized.length > 4 ? sanitized.substring(4) : '—');
+
+        // Add to staged scans list (shows immediately under camera)
+        setStagedScans(prev => [result.item!, ...prev]);
+
         setLastSuccessfulScan({
           barcode: sanitized,
           class_id: result.class_id || detectedClassId,
           member_id: displayMember,
-          timestamp: new Date().toLocaleTimeString(),
+          timestamp: result.item.scannedAt,
         });
         setScanSuccessFlash({
           barcode: sanitized,
@@ -781,25 +907,28 @@ export const ImportDataView: React.FC<{
 
         setScannerNotification({
           type: 'success',
-          title: `Class ${result.class_id} • Verified`,
-          message: `Scanned Barcode: ${sanitized} → Assigned to Member ${displayMember} (Status: Started)`,
+          title: `Class ${result.class_id} • Staged in List`,
+          message: `Scanned Barcode: ${sanitized} (Member ${displayMember}) added to list below. Click "Save Inward Data" when ready to save to database.`,
         });
       } else {
         playScanWarningSound();
         if (result.isDuplicate) {
-          // Section 12 & V3: DUPLICATE SCAN HANDLING (Alert operator once, no frame spam)
+          // DUPLICATE SCAN HANDLING (Req 6)
+          const title = result.isDuplicateInStaging
+            ? 'Duplicate in Current Scan Batch'
+            : 'Barcode Already in Database';
           setScanWarningFlash({
-            title: 'Barcode Already Scanned',
-            message: `Barcode: ${sanitized} (${result.message || 'Already marked as started'})`,
+            title,
+            message: result.message,
           });
-          setTimeout(() => setScanWarningFlash(null), 1800);
+          setTimeout(() => setScanWarningFlash(null), 2000);
           setScannerNotification({
             type: 'warning',
-            title: 'Duplicate Barcode Scanned',
-            message: `Barcode Already Scanned: ${sanitized}`,
+            title,
+            message: result.message,
           });
         } else if (result.isUnknownClass) {
-          // Section 13: UNRECOGNIZED BARCODE HANDLING
+          // UNRECOGNIZED BARCODE HANDLING
           setScanWarningFlash({
             title: `Unknown Class ID: ${detectedClassId}`,
             message: `No imported records found for Class "${detectedClassId}".`,
@@ -823,8 +952,6 @@ export const ImportDataView: React.FC<{
           });
         }
       }
-
-      loadDatabaseData();
     } catch (e: any) {
       playScanWarningSound();
       setScannerNotification({
@@ -837,6 +964,95 @@ export const ImportDataView: React.FC<{
       setTimeout(() => {
         isProcessingRef.current = false;
       }, 350);
+    }
+  };
+
+  // Delete a scanned booklet from the staged list using "X" (Req 2)
+  const handleDeleteStagedScan = (idToDelete: string) => {
+    const item = stagedScans.find(s => s.id === idToDelete);
+    setStagedScans(prev => prev.filter(s => s.id !== idToDelete));
+    if (item) {
+      setScannerNotification({
+        type: 'warning',
+        title: 'Barcode Removed',
+        message: `Removed barcode "${item.barcode}" (Class ${item.classId} • Member ${item.memberId}) from scan list.`,
+      });
+    }
+  };
+
+  // Save all staged scans to backend database (Req 3)
+  const handleSaveStagedScans = async () => {
+    if (stagedScans.length === 0) return;
+    setIsSavingStaged(true);
+    try {
+      const res = await importedService.commitStagedScans(stagedScans);
+      if (res.success) {
+        playScanSuccessSound();
+        const savedCount = res.count;
+        setStagedScans([]);
+        setStagedSaveSuccess(`✓ Successfully saved ${savedCount} scanned booklets to backend database!`);
+        setTimeout(() => setStagedSaveSuccess(null), 5000);
+        loadDatabaseData();
+      } else {
+        playScanWarningSound();
+        setScannerNotification({
+          type: 'error',
+          title: 'Save Failed',
+          message: res.error || 'Failed saving scanned records to backend.',
+        });
+      }
+    } catch (err: any) {
+      playScanWarningSound();
+      setScannerNotification({
+        type: 'error',
+        title: 'Save Error',
+        message: err?.message || 'Error occurred while saving to backend.',
+      });
+    } finally {
+      setIsSavingStaged(false);
+    }
+  };
+
+  // Clear all staged scans with confirmation
+  const handleClearStagedScans = () => {
+    if (stagedScans.length === 0) return;
+    if (window.confirm(`Are you sure you want to clear all ${stagedScans.length} unsaved scanned barcodes from the list?`)) {
+      setStagedScans([]);
+      setScannerNotification({
+        type: 'warning',
+        title: 'Scan List Cleared',
+        message: 'All unsaved barcodes were cleared.',
+      });
+    }
+  };
+
+  // Clear all data completely (Requirement: clear this data completely new)
+  const [isClearingAll, setIsClearingAll] = useState(false);
+
+  const handleClearAllData = async () => {
+    const total = dbStats.total_imported;
+    const confirmed = window.confirm(
+      `Are you sure you want to completely clear all data?\n\nThis will permanently delete all ${total} imported records, Class groups, and scanning progress. The system will start completely empty (0 records) ready for a fresh Excel import.`
+    );
+    if (!confirmed) return;
+
+    setIsClearingAll(true);
+    try {
+      await importedService.clearAll();
+      setStagedScans([]);
+      setActiveClassId(null);
+      setSummary(null);
+      setParsedRows([]);
+      setClassGroups([]);
+      setExcelFile(null);
+      loadDatabaseData();
+      setActiveTab('import');
+      setImportSuccessMessage('✓ All imported records have been completely cleared. System is 100% clean and ready for a new Excel import.');
+      setTimeout(() => setImportSuccessMessage(null), 6000);
+    } catch (e: any) {
+      alert('Failed clearing data: ' + (e?.message || 'Unknown error'));
+    } finally {
+      setIsClearingAll(false);
     }
   };
 
@@ -883,12 +1099,38 @@ export const ImportDataView: React.FC<{
 
           {/* Mode Switcher & Cloud Status */}
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSyncVerificationResult(null);
+                setShowSqlMigrationModal(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1565D8]/10 hover:bg-[#1565D8]/20 text-[#1565D8] text-xs font-bold rounded-lg border border-[#1565D8]/30 transition-colors shadow-2xs cursor-pointer active:scale-95"
+              title="Click to view SQL schema for 2 tables: imported_inward_data & manual_inward_data"
+            >
+              <Database className="h-3.5 w-3.5" />
+              <span>Database SQL Setup (2 Tables)</span>
+            </button>
+
+            {dbStats.total_imported > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAllData}
+                disabled={isClearingAll}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg border border-rose-200 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                title="Completely wipe all existing data and reset to 0"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>{isClearingAll ? 'Clearing...' : `Clear All Data (${dbStats.total_imported})`}</span>
+              </button>
+            )}
+
             {remoteStatus.isConfigured && (
               <>
                 {remoteStatus.isRemoteTableAvailable ? (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 text-xs font-semibold rounded-lg border border-emerald-200">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>Supabase Cloud Synced</span>
+                    <span>Supabase Cloud Synced ({remoteStatus.tableName})</span>
                   </div>
                 ) : (
                   <button
@@ -944,14 +1186,26 @@ export const ImportDataView: React.FC<{
             <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
             <p className="text-xs sm:text-sm font-semibold">{importSuccessMessage}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setActiveTab('scanner')}
-            className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-xs"
-          >
-            <span>Open Scanner</span>
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onNavigateToDashboard && (
+              <button
+                type="button"
+                onClick={onNavigateToDashboard}
+                className="flex items-center gap-1.5 px-3 py-1 bg-[#1565D8] text-white rounded-lg text-xs font-bold hover:bg-[#0D47A1] transition-colors shadow-xs"
+              >
+                <span>Scanning Dashboard</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setActiveTab('scanner')}
+              className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-xs"
+            >
+              <span>Open Scanner</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -990,14 +1244,24 @@ export const ImportDataView: React.FC<{
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={handleDownloadTemplate}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] text-[#1565D8] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-lg text-xs font-semibold transition-colors self-start sm:self-auto"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span>Download Sample Excel</span>
-              </button>
+              <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleLoadAcceptanceTestData}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#EAF2FF] text-[#1565D8] hover:bg-[#D4E4FC] border border-[#BFDBFE] rounded-lg text-xs font-bold transition-colors shadow-xs"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>Pre-load Acceptance Test Data (1211, 1212, 1213)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] text-[#1565D8] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-lg text-xs font-semibold transition-colors"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Download Sample Excel</span>
+                </button>
+              </div>
             </div>
 
             <label className="relative border-2 border-dashed border-[#CBD5E1] hover:border-[#1565D8] rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-[#FAFCFF] group">
@@ -1300,14 +1564,28 @@ export const ImportDataView: React.FC<{
               <h2 className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
                 Scanning Operational Dashboard
               </h2>
-              <button
-                type="button"
-                onClick={loadDatabaseData}
-                className="flex items-center gap-1 text-xs text-[#1565D8] font-semibold hover:underline"
-              >
-                <RefreshCw className="h-3 w-3" />
-                <span>Refresh Counts</span>
-              </button>
+              <div className="flex items-center gap-2.5">
+                {dbStats.total_imported > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllData}
+                    disabled={isClearingAll}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg border border-rose-200 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                    title="Completely wipe all existing data and reset to 0"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>Clear All Data ({dbStats.total_imported})</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={loadDatabaseData}
+                  className="flex items-center gap-1 text-xs text-[#1565D8] font-semibold hover:underline cursor-pointer"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  <span>Refresh Counts</span>
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1410,21 +1688,45 @@ export const ImportDataView: React.FC<{
                 </div>
 
                 {/* Total Scanned */}
-                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
-                  <span className="text-[11px] font-bold text-emerald-800 block">Total Scanned</span>
+                <div
+                  onClick={() => {
+                    setPreviewSearchTerm('');
+                    setScannedPreviewModal({ isOpen: true, classId: activeClassStats.class_id });
+                  }}
+                  className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 cursor-pointer hover:bg-emerald-100 hover:border-emerald-300 transition-all group shadow-2xs"
+                  title="Click to preview scanned data for this Class"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-emerald-800 block">Total Scanned</span>
+                    <Eye className="h-3.5 w-3.5 text-emerald-600 opacity-70 group-hover:opacity-100 group-hover:scale-110 transition-all" />
+                  </div>
                   <span className="text-2xl font-black text-emerald-700 mt-1 block font-mono">
                     {activeClassStats.total_scanned.toLocaleString()}
                   </span>
-                  <span className="text-[10px] text-emerald-700/80">Status: started</span>
+                  <span className="text-[10px] text-emerald-800 underline font-medium block mt-0.5">
+                    Click to view scanned →
+                  </span>
                 </div>
 
                 {/* Pending */}
-                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
-                  <span className="text-[11px] font-bold text-amber-800 block">Pending</span>
+                <div
+                  onClick={() => {
+                    setPreviewSearchTerm('');
+                    setPendingPreviewModal({ isOpen: true, classId: activeClassStats.class_id });
+                  }}
+                  className="p-3 bg-amber-50 rounded-xl border border-amber-200 cursor-pointer hover:bg-amber-100 hover:border-amber-300 transition-all group shadow-2xs"
+                  title="Click to preview pending roll numbers for this Class"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-amber-800 block">Pending</span>
+                    <Eye className="h-3.5 w-3.5 text-amber-600 opacity-70 group-hover:opacity-100 group-hover:scale-110 transition-all" />
+                  </div>
                   <span className="text-2xl font-black text-amber-700 mt-1 block font-mono">
                     {activeClassStats.pending.toLocaleString()}
                   </span>
-                  <span className="text-[10px] text-amber-700/80">Total - Scanned</span>
+                  <span className="text-[10px] text-amber-800 underline font-medium block mt-0.5">
+                    Click to view roll numbers →
+                  </span>
                 </div>
 
                 {/* Progress */}
@@ -1776,9 +2078,178 @@ export const ImportDataView: React.FC<{
               </form>
               <div className="flex items-center justify-between text-[11px] text-[#64748B] mt-2">
                 <span>First 4 characters automatically detect Class ID (Section 7 & 12)</span>
-                <span>Auto-updates database status to "started"</span>
+                <span>Scanned data appears in list below • Press "Save Inward Data" to save</span>
               </div>
             </div>
+          </div>
+
+          {/* REQUIREMENT 1, 2, 3: CURRENT SCANNED DATA LIST (STAGED BUFFER UNDER SCANNER) */}
+          <div className="bg-white rounded-xl border-2 border-[#1565D8]/40 overflow-hidden shadow-xs space-y-0">
+            {/* Header with Save Inward Data and Clear Buttons */}
+            <div className="px-4 py-3.5 bg-gradient-to-r from-slate-900 via-[#172033] to-[#1E293B] text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="p-1.5 bg-[#1565D8] text-white rounded-lg">
+                  <ListFilter className="h-4 w-4" />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-white">
+                      Current Scanned Booklets
+                    </h4>
+                    <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/40">
+                      {stagedScans.length} Ready to Save
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Scanned booklets list. Delete any mistaken barcode with &quot;X&quot;, then click &quot;Save Inward Data&quot; to commit to backend.
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons: Save to Backend & Clear */}
+              <div className="flex items-center gap-2 shrink-0">
+                {stagedScans.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearStagedScans}
+                    disabled={isSavingStaged}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-slate-200 rounded-lg text-xs font-semibold transition-all border border-white/10 cursor-pointer disabled:opacity-50"
+                    title="Clear unsaved scans"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Clear List</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveStagedScans}
+                  disabled={stagedScans.length === 0 || isSavingStaged}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold shadow-md transition-all cursor-pointer ${
+                    stagedScans.length > 0
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-95 ring-2 ring-emerald-400/50'
+                      : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {isSavingStaged ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <span>Saving to Backend...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-3.5 w-3.5" />
+                      <span>Save Inward Data ({stagedScans.length})</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Save Success Banner */}
+            {stagedSaveSuccess && (
+              <div className="p-3 bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center justify-between gap-2 animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>{stagedSaveSuccess}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setStagedSaveSuccess(null)}
+                  className="text-emerald-700 hover:text-emerald-900 p-1 cursor-pointer"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* List / Table of Current Scans */}
+            {stagedScans.length === 0 ? (
+              <div className="py-8 px-4 text-center bg-slate-50/60">
+                <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 text-slate-400 flex items-center justify-center mx-auto mb-2">
+                  <Scan className="h-5 w-5" />
+                </div>
+                <p className="text-xs font-semibold text-[#172033]">
+                  No booklets in current scan list
+                </p>
+                <p className="text-[11px] text-[#64748B] max-w-md mx-auto mt-0.5">
+                  Scan barcodes with the camera above. Each scanned booklet will appear here list-wise. You can delete any wrongly scanned booklet with &quot;X&quot; and then press &quot;Save Inward Data&quot;.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto max-h-[380px] overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#F1F5F9] text-[#64748B] font-semibold border-b border-[#E2E8F0] sticky top-0 z-10">
+                    <tr>
+                      <th className="px-4 py-2.5 w-12 text-center">#</th>
+                      <th className="px-4 py-2.5">Class ID</th>
+                      <th className="px-4 py-2.5">Member ID / Roll Number</th>
+                      <th className="px-4 py-2.5">Scanned Barcode</th>
+                      <th className="px-4 py-2.5">Scan Time</th>
+                      <th className="px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5 text-center w-24">Action (X)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E2E8F0]">
+                    {stagedScans.map((scan, index) => (
+                      <tr key={scan.id} className="hover:bg-amber-50/40 transition-colors">
+                        <td className="px-4 py-2.5 text-center font-mono text-[#64748B] font-semibold">
+                          #{stagedScans.length - index}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="font-bold font-mono text-[#1565D8] bg-[#EAF2FF] px-2 py-0.5 rounded border border-blue-200">
+                            {scan.classId}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 font-mono font-bold text-[#172033] text-sm">
+                          {scan.memberId}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-[#64748B]">
+                          {scan.barcode}
+                        </td>
+                        <td className="px-4 py-2.5 text-[#64748B] font-mono">
+                          {scan.scannedAt}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                            Unsaved (Ready)
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteStagedScan(scan.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white transition-all cursor-pointer border border-rose-200 shadow-2xs font-semibold text-[11px]"
+                            title="Delete this barcode from scan list"
+                          >
+                            <X className="h-3.5 w-3.5 stroke-[2.5]" />
+                            <span>Delete</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Bottom Save Bar (Visible when items exist) */}
+            {stagedScans.length > 0 && (
+              <div className="p-3 bg-slate-50 border-t border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-[#64748B]">
+                  <strong>{stagedScans.length}</strong> booklet{stagedScans.length > 1 ? 's' : ''} scanned. Press <strong>Save Inward Data</strong> to save permanently into backend database.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSaveStagedScans}
+                  disabled={isSavingStaged}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer active:scale-95 transition-all"
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  <span>Save Inward Data Now ({stagedScans.length})</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Section 14: COMPACT SCAN LOG */}
@@ -1896,10 +2367,32 @@ export const ImportDataView: React.FC<{
                             {summary.total_imported.toLocaleString()}
                           </td>
                           <td className="px-4 py-2.5 font-bold text-emerald-700">
-                            {summary.scanned_count.toLocaleString()}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPreviewSearchTerm('');
+                                setScannedPreviewModal({ isOpen: true, classId: summary.class_id });
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold font-mono transition-colors border border-emerald-200 cursor-pointer shadow-2xs group"
+                              title="Click to preview scanned data for this Class"
+                            >
+                              <Eye className="h-3 w-3 group-hover:scale-110 transition-transform text-emerald-600" />
+                              <span>{summary.scanned_count.toLocaleString()}</span>
+                            </button>
                           </td>
                           <td className="px-4 py-2.5 font-bold text-amber-700">
-                            {summary.remaining_count.toLocaleString()}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPreviewSearchTerm('');
+                                setPendingPreviewModal({ isOpen: true, classId: summary.class_id });
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold font-mono transition-colors border border-amber-200 cursor-pointer shadow-2xs group"
+                              title="Click to preview pending roll numbers for this Class"
+                            >
+                              <Eye className="h-3 w-3 group-hover:scale-110 transition-transform text-amber-600" />
+                              <span>{summary.remaining_count.toLocaleString()}</span>
+                            </button>
                           </td>
                           <td className="px-4 py-2.5 min-w-[140px]">
                             <div className="flex items-center gap-2">
@@ -1975,7 +2468,283 @@ export const ImportDataView: React.FC<{
       )}
 
       {/* ------------------------------------------------------------------------
-          MODAL: SUPABASE CLOUD SQL MIGRATION HELPER
+          MODAL: PENDING ROLL NUMBERS PREVIEW (Requirement 5)
+          ------------------------------------------------------------------------ */}
+      {pendingPreviewModal.isOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl border border-[#CBD5E1] max-w-2xl w-full p-5 sm:p-6 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3 mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-amber-100 text-amber-800 rounded-lg">
+                    <AlertTriangle className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-base font-bold text-[#172033]">
+                    Pending Roll Numbers Preview
+                  </h3>
+                  {pendingPreviewModal.classId !== 'all' && (
+                    <span className="px-2 py-0.5 rounded font-mono font-bold text-xs bg-blue-100 text-[#1565D8]">
+                      Class {pendingPreviewModal.classId}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[#64748B] mt-1">
+                  Students not yet scanned (scan_status = not_started)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingPreviewModal({ isOpen: false, classId: 'all' })}
+                className="text-[#64748B] hover:text-[#172033] p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Search and Action Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#64748B]" />
+                <input
+                  type="text"
+                  value={previewSearchTerm}
+                  onChange={e => setPreviewSearchTerm(e.target.value)}
+                  placeholder="Search pending roll numbers / Member ID..."
+                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[#CBD5E1] bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#1565D8]"
+                />
+              </div>
+
+              {/* Copy all roll numbers */}
+              {(() => {
+                const pendingList = importedService
+                  .getPendingMembers(pendingPreviewModal.classId)
+                  .filter(r =>
+                    previewSearchTerm
+                      ? r.member_id.toLowerCase().includes(previewSearchTerm.toLowerCase()) ||
+                        r.class_id.toLowerCase().includes(previewSearchTerm.toLowerCase())
+                      : true
+                  );
+
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = pendingList.map(r => r.member_id).join(', ');
+                      navigator.clipboard.writeText(text);
+                      setHasCopiedRolls(true);
+                      setTimeout(() => setHasCopiedRolls(false), 2000);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer shrink-0"
+                  >
+                    {hasCopiedRolls ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        <span className="text-emerald-700">Copied {pendingList.length} Rolls!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>Copy All ({pendingList.length})</span>
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
+            </div>
+
+            {/* Member List Grid */}
+            <div className="flex-1 overflow-y-auto pr-1">
+              {(() => {
+                const pendingList = importedService
+                  .getPendingMembers(pendingPreviewModal.classId)
+                  .filter(r =>
+                    previewSearchTerm
+                      ? r.member_id.toLowerCase().includes(previewSearchTerm.toLowerCase()) ||
+                        r.class_id.toLowerCase().includes(previewSearchTerm.toLowerCase())
+                      : true
+                  );
+
+                if (pendingList.length === 0) {
+                  return (
+                    <div className="py-12 text-center text-xs text-[#64748B]">
+                      {previewSearchTerm
+                        ? `No pending roll numbers match "${previewSearchTerm}"`
+                        : 'No pending records found! All records for this class have been scanned.'}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                    {pendingList.map((rec, idx) => (
+                      <div
+                        key={rec.id}
+                        className="p-2.5 rounded-lg bg-amber-50/60 border border-amber-200/80 flex flex-col justify-between"
+                      >
+                        <div className="flex items-center justify-between text-[10px] text-[#64748B]">
+                          <span className="font-mono">#{idx + 1}</span>
+                          <span className="font-bold text-[#1565D8] font-mono">Class {rec.class_id}</span>
+                        </div>
+                        <div className="font-mono font-black text-sm text-[#172033] mt-1 tracking-wide">
+                          {rec.member_id}
+                        </div>
+                        <div className="text-[10px] text-amber-700 font-semibold mt-1 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          <span>Not Inwarded</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-[#E2E8F0] flex items-center justify-between">
+              <span className="text-xs text-[#64748B]">
+                Total Remaining:{' '}
+                <strong className="text-amber-700 font-mono">
+                  {importedService.getPendingMembers(pendingPreviewModal.classId).length}
+                </strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setPendingPreviewModal({ isOpen: false, classId: 'all' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------------
+          MODAL: SCANNED DATA PREVIEW (Requirement 5)
+          ------------------------------------------------------------------------ */}
+      {scannedPreviewModal.isOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl border border-[#CBD5E1] max-w-3xl w-full p-5 sm:p-6 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3 mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                    <CheckCircle2 className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-base font-bold text-[#172033]">
+                    Scanned Data Preview
+                  </h3>
+                  {scannedPreviewModal.classId !== 'all' && (
+                    <span className="px-2 py-0.5 rounded font-mono font-bold text-xs bg-blue-100 text-[#1565D8]">
+                      Class {scannedPreviewModal.classId}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[#64748B] mt-1">
+                  Successfully scanned and inwarded booklets (scan_status = started)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setScannedPreviewModal({ isOpen: false, classId: 'all' })}
+                className="text-[#64748B] hover:text-[#172033] p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Search and Action Bar */}
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#64748B]" />
+                <input
+                  type="text"
+                  value={previewSearchTerm}
+                  onChange={e => setPreviewSearchTerm(e.target.value)}
+                  placeholder="Search by Roll Number, Class ID or Barcode..."
+                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[#CBD5E1] bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#1565D8]"
+                />
+              </div>
+            </div>
+
+            {/* Scanned Table */}
+            <div className="flex-1 overflow-y-auto pr-1">
+              {(() => {
+                const scannedList = importedService
+                  .getScannedMembers(scannedPreviewModal.classId)
+                  .filter(r =>
+                    previewSearchTerm
+                      ? r.member_id.toLowerCase().includes(previewSearchTerm.toLowerCase()) ||
+                        r.class_id.toLowerCase().includes(previewSearchTerm.toLowerCase()) ||
+                        (r.barcode && r.barcode.toLowerCase().includes(previewSearchTerm.toLowerCase()))
+                      : true
+                  );
+
+                if (scannedList.length === 0) {
+                  return (
+                    <div className="py-12 text-center text-xs text-[#64748B]">
+                      {previewSearchTerm
+                        ? `No scanned records match "${previewSearchTerm}"`
+                        : 'No barcodes scanned yet for this class.'}
+                    </div>
+                  );
+                }
+
+                return (
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#F1F5F9] text-[#64748B] font-semibold border-b border-[#E2E8F0] sticky top-0 z-10">
+                      <tr>
+                        <th className="px-3 py-2 w-12 text-center">#</th>
+                        <th className="px-3 py-2">Class ID</th>
+                        <th className="px-3 py-2">Roll Number / Member ID</th>
+                        <th className="px-3 py-2">Scanned Barcode</th>
+                        <th className="px-3 py-2">Scanned Time</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E2E8F0]">
+                      {scannedList.map((rec, idx) => (
+                        <tr key={rec.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-3 py-2 text-center font-mono text-[#64748B]">{idx + 1}</td>
+                          <td className="px-3 py-2 font-mono font-bold text-[#1565D8]">{rec.class_id}</td>
+                          <td className="px-3 py-2 font-mono font-bold text-[#172033] text-sm">{rec.member_id}</td>
+                          <td className="px-3 py-2 font-mono text-[#64748B]">{rec.barcode || '—'}</td>
+                          <td className="px-3 py-2 text-[#64748B]">
+                            {rec.scanned_at ? new Date(rec.scanned_at).toLocaleString() : '—'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                              <Check className="h-3 w-3" /> Inwarded
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })()}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-[#E2E8F0] flex items-center justify-between">
+              <span className="text-xs text-[#64748B]">
+                Total Scanned:{' '}
+                <strong className="text-emerald-700 font-mono">
+                  {importedService.getScannedMembers(scannedPreviewModal.classId).length}
+                </strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setScannedPreviewModal({ isOpen: false, classId: 'all' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------------
+          MODAL: SUPABASE CLOUD SQL MIGRATION HELPER (Clean 2-Table Setup)
           ------------------------------------------------------------------------ */}
       {showSqlMigrationModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
@@ -1987,17 +2756,17 @@ export const ImportDataView: React.FC<{
                 </span>
                 <div>
                   <h3 className="text-base font-bold text-[#172033]">
-                    Supabase Cloud Sync Setup
+                    Supabase Database Setup (Clean 2 Tables)
                   </h3>
                   <p className="text-xs text-[#64748B]">
-                    Enable cloud persistence for the <code className="font-mono text-[#1565D8]">public.imported</code> table
+                    Drops legacy tables and creates <code className="font-mono text-[#1565D8]">imported_inward_data</code> &amp; <code className="font-mono text-[#1565D8]">manual_inward_data</code>
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowSqlMigrationModal(false)}
-                className="text-[#64748B] hover:text-[#172033] p-1 rounded-lg"
+                className="text-[#64748B] hover:text-[#172033] p-1 rounded-lg cursor-pointer"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -2005,47 +2774,29 @@ export const ImportDataView: React.FC<{
 
             <div className="flex-1 overflow-y-auto space-y-4 pr-1 text-xs">
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 leading-relaxed">
-                <p className="font-semibold mb-1">Local Storage is Currently Active</p>
+                <p className="font-semibold mb-1">Clean 2-Table Database Architecture (Requirement 4)</p>
                 <p className="text-blue-800">
-                  All Excel data ingestion, previewing, Class ID grouping, and high-speed camera barcode scanning are already running smoothly with offline resilience.
-                  To synchronize this table with your Supabase cloud project across multiple devices, run this 1-step SQL query in your <strong>Supabase Dashboard → SQL Editor</strong>.
+                  This SQL script drops all old demo/sample tables and creates <strong>ONLY 2 tables</strong>:
+                  <br />
+                  1. <strong className="font-mono">imported_inward_data</strong> — For Excel imported student roll numbers, Class IDs &amp; scanning status.
+                  <br />
+                  2. <strong className="font-mono">manual_inward_data</strong> — For manual session bundle and script intake records.
+                  <br />
+                  Copy and run this 1-step SQL query in your <strong>Supabase Dashboard → SQL Editor</strong>.
                 </p>
               </div>
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-700">Migration SQL Script:</span>
+                  <span className="font-semibold text-slate-700">SQL Script (Drop old tables + Create 2 tables):</span>
                   <button
                     type="button"
                     onClick={() => {
-                      const sql = `-- Create the 'imported' table in Supabase
-CREATE TABLE IF NOT EXISTS public.imported (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  class_id VARCHAR(100) NOT NULL,
-  member_id VARCHAR(100) NOT NULL,
-  barcode VARCHAR(255),
-  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
-  scanned_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_imported_class_id ON public.imported(class_id);
-CREATE INDEX IF NOT EXISTS idx_imported_member_id ON public.imported(member_id);
-CREATE INDEX IF NOT EXISTS idx_imported_barcode ON public.imported(barcode);
-CREATE INDEX IF NOT EXISTS idx_imported_scan_status ON public.imported(scan_status);
-
-ALTER TABLE public.imported ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Allow anon all on imported" ON public.imported;
-CREATE POLICY "Allow anon all on imported" ON public.imported FOR ALL TO anon USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Allow authenticated all on imported" ON public.imported;
-CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
-                      navigator.clipboard.writeText(sql);
+                      navigator.clipboard.writeText(EXAMSCAN_2TABLES_SQL);
                       setHasCopiedSql(true);
                       setTimeout(() => setHasCopiedSql(false), 2500);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md font-semibold text-xs transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md font-semibold text-xs transition-colors cursor-pointer"
                   >
                     {hasCopiedSql ? (
                       <>
@@ -2061,25 +2812,8 @@ CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL T
                   </button>
                 </div>
 
-                <pre className="p-3.5 bg-slate-900 text-slate-100 rounded-lg font-mono text-[11px] leading-relaxed overflow-x-auto max-h-48 border border-slate-800">
-{`CREATE TABLE IF NOT EXISTS public.imported (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  class_id VARCHAR(100) NOT NULL,
-  member_id VARCHAR(100) NOT NULL,
-  barcode VARCHAR(255),
-  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
-  scanned_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_imported_class_id ON public.imported(class_id);
-CREATE INDEX IF NOT EXISTS idx_imported_member_id ON public.imported(member_id);
-CREATE INDEX IF NOT EXISTS idx_imported_barcode ON public.imported(barcode);
-CREATE INDEX IF NOT EXISTS idx_imported_scan_status ON public.imported(scan_status);
-
-ALTER TABLE public.imported ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow anon all on imported" ON public.imported FOR ALL TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL TO authenticated USING (true) WITH CHECK (true);`}
+                <pre className="p-3.5 bg-slate-900 text-slate-100 rounded-lg font-mono text-[11px] leading-relaxed overflow-x-auto max-h-56 border border-slate-800">
+{EXAMSCAN_2TABLES_SQL}
                 </pre>
               </div>
 
@@ -2118,7 +2852,7 @@ CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL T
                     setIsVerifyingSync(false);
                   }
                 }}
-                className="flex items-center gap-2 px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50 transition-colors cursor-pointer"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isVerifyingSync ? 'animate-spin' : ''}`} />
                 <span>{isVerifyingSync ? 'Checking Connection...' : 'Verify Cloud Connection & Sync'}</span>
@@ -2127,7 +2861,7 @@ CREATE POLICY "Allow authenticated all on imported" ON public.imported FOR ALL T
               <button
                 type="button"
                 onClick={() => setShowSqlMigrationModal(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#172033] rounded-lg text-xs font-semibold cursor-pointer"
               >
                 Close
               </button>
