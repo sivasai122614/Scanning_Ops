@@ -1,13 +1,14 @@
 // ==============================================================================
 // ExamScan Bottom Navigation (Mobile Touch-First 5-Tab Bar)
-// Matches Reference: Home | Sessions | Scan | Reports | More
+// Matches Redesign Workflow:
+// Dashboard (Monitoring) | Import | Scan (Operational) | Reports | Settings
 // Active: Primary Blue #1565D8, Inactive: Gray #64748B
 // ==============================================================================
 
 import React from 'react';
-import { Home, Package, FileSpreadsheet, BarChart2, MoreHorizontal } from 'lucide-react';
+import { Home, Scan, FileSpreadsheet, BarChart2, MoreHorizontal } from 'lucide-react';
 
-export type MainNavTab = 'home' | 'import-data' | 'sessions' | 'reports' | 'more';
+export type MainNavTab = 'home' | 'import-data' | 'scan' | 'reports' | 'more';
 
 interface BottomNavigationProps {
   activeTab: MainNavTab;
@@ -17,8 +18,8 @@ interface BottomNavigationProps {
 export const BottomNavigation: React.FC<BottomNavigationProps> = ({ activeTab, onSelectTab }) => {
   const tabs = [
     { id: 'home' as const, label: 'Dashboard', icon: Home },
-    { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet },
-    { id: 'sessions' as const, label: 'Manual Inward', icon: Package },
+    { id: 'import-data' as const, label: 'Import', icon: FileSpreadsheet },
+    { id: 'scan' as const, label: 'Scan', icon: Scan },
     { id: 'reports' as const, label: 'Reports', icon: BarChart2 },
     { id: 'more' as const, label: 'Settings', icon: MoreHorizontal },
   ];

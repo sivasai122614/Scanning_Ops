@@ -13,6 +13,7 @@ import { AppHeader } from './components/layout/AppHeader';
 import { AppSidebar, DesktopNavTarget } from './components/layout/AppSidebar';
 import { BottomNavigation, MainNavTab } from './components/layout/BottomNavigation';
 import { DashboardView } from './components/dashboard/DashboardView';
+import { ScanningDashboardView } from './components/dashboard/ScanningDashboardView';
 import { SessionsManagerView } from './components/sessions/SessionsManagerView';
 import { BarcodeScannerView } from './components/scanner/BarcodeScannerView';
 import { ReportsView } from './components/reports/ReportsView';
@@ -58,11 +59,11 @@ const AuthenticatedApp: React.FC = () => {
       case 'home':
         return { title: 'ExamScan', isRoot: true };
       case 'import-data':
-        return { title: 'Import Data for Inwarding', isRoot: true };
+        return { title: 'Import Data', isRoot: true };
       case 'sessions':
         return { title: 'Manual Inwarding', isRoot: true };
       case 'scan':
-        return { title: 'Scan Scripts', isRoot: true };
+        return { title: 'Scanning Dashboard', isRoot: true };
       case 'reports':
         return { title: 'Reports', isRoot: true };
       case 'more':
@@ -91,7 +92,7 @@ const AuthenticatedApp: React.FC = () => {
     activeView === 'audit-logs' ||
     activeView === 'test-suite' ||
     activeView === 'my-profile' ||
-    activeView === 'scan'
+    activeView === 'sessions'
       ? 'more'
       : (activeView as MainNavTab);
 
@@ -134,9 +135,10 @@ const AuthenticatedApp: React.FC = () => {
               />
             )}
 
-            {/* NEW SECTION 2: IMPORT DATA FOR INWARDING & BARCODE SCANNER */}
+            {/* NEW SECTION 2: IMPORT DATA FOR INWARDING */}
             {activeView === 'import-data' && (
               <ImportDataView
+                onNavigateToScan={() => navigateTo('scan')}
                 onNavigateToManualInward={() => navigateTo('sessions')}
                 onNavigateToDashboard={() => navigateTo('home')}
               />
@@ -153,18 +155,11 @@ const AuthenticatedApp: React.FC = () => {
               />
             )}
 
-            {/* FRAMES 4, 5, 6: BARCODE SCANNER, VERIFICATION & MISSING SCRIPTS */}
+            {/* MAIN OPERATIONAL WORKSPACE: SCANNING DASHBOARD */}
             {activeView === 'scan' && (
-              <BarcodeScannerView
-                initialScheduleId={scannerTargetSchedule}
-                onNavigateToSessions={() => {
-                  setSessionsInitialMode('list');
-                  navigateTo('sessions');
-                }}
-                onNavigateToInward={() => {
-                  setSessionsInitialMode('inward');
-                  navigateTo('sessions');
-                }}
+              <ScanningDashboardView
+                onNavigateToImport={() => navigateTo('import-data')}
+                onNavigateToSessions={() => navigateTo('sessions')}
               />
             )}
 

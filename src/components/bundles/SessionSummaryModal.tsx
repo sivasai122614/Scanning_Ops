@@ -26,7 +26,7 @@ import {
 interface SessionSummaryModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelectClass: (classId: string) => void;
+  onSelectClass?: (classId: string) => void;
 }
 
 export const SessionSummaryModal: React.FC<SessionSummaryModalProps> = ({
@@ -211,7 +211,7 @@ export const SessionSummaryModal: React.FC<SessionSummaryModalProps> = ({
                           type="button"
                           onClick={() => {
                             onClose();
-                            onSelectClass(b.classId);
+                            if (onSelectClass) onSelectClass(b.classId);
                           }}
                           className="px-2.5 py-1 bg-white border border-[#CBD5E1] text-[#1565D8] text-[11px] font-bold uppercase tracking-wider hover:bg-[#EAF2FF] transition-colors"
                         >
