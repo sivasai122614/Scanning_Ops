@@ -34,6 +34,7 @@ import { PrimaryButton, StatusBadge, EmptyState } from '../ui/Elements';
 import { useAuth } from '../../context/AuthContext';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { createZXingReader } from '../../utils/universalBarcodeScanner';
 import { importedService, ClassBundle } from '../../services/importedService';
 import { BundleStatisticsView } from '../bundles/BundleStatisticsView';
 import { FirstBookletScannerModal } from '../bundles/FirstBookletScannerModal';
@@ -408,7 +409,7 @@ export const BarcodeScannerView: React.FC<{
       // Fallback for browsers without native BarcodeDetector
       try {
         if (!zxingReaderRef.current) {
-          zxingReaderRef.current = new BrowserMultiFormatReader();
+          zxingReaderRef.current = createZXingReader();
         }
         if (videoRef.current) {
           zxingReaderRef.current
@@ -836,7 +837,7 @@ export const BarcodeScannerView: React.FC<{
         ) : (
         <div className="space-y-3.5">
           {/* Viewfinder Card with Real-Time Camera Stream (Wide Horizontal Container) */}
-          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center aspect-[2.9/1] sm:aspect-[3.2/1] min-h-[110px] max-h-[175px] sm:max-h-[220px] w-full max-w-[720px] mx-auto text-center transition-all">
+          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center aspect-16/10 sm:aspect-16/9 min-h-[240px] max-h-[380px] w-full max-w-[800px] mx-auto text-center transition-all">
             {/* Real-time HTML5 Camera Video Stream */}
             <video
               ref={videoRef}
@@ -847,7 +848,7 @@ export const BarcodeScannerView: React.FC<{
                 transform: zoomLevel > 1 && !zoomSupported ? `scale(${zoomLevel})` : undefined,
                 transformOrigin: 'center center',
               }}
-              className={`w-full h-full object-cover absolute inset-0 transition-all duration-300 ${
+              className={`w-full h-full object-contain absolute inset-0 transition-all duration-300 ${
                 cameraActive ? 'opacity-100' : 'opacity-0'
               }`}
             />
@@ -933,7 +934,7 @@ export const BarcodeScannerView: React.FC<{
             </div>
 
             {/* EXPANDED Wide Horizontal Viewfinder Target Frame (V3 1D Barcode Optimized) */}
-            <div className="relative z-10 w-[94%] sm:w-[88%] max-w-[660px] h-[80%] max-h-[120px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2 transition-all duration-300">
+            <div className="relative z-10 w-[94%] sm:w-[90%] max-w-[700px] h-[42%] sm:h-[36%] max-h-[140px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2 transition-all duration-300">
               {/* Bold Corner Reticle Brackets */}
               <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-[#16A34A] rounded-tl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
               <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-[#16A34A] rounded-tr-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
