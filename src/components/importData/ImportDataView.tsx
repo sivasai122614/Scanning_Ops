@@ -1,14 +1,11 @@
 // ==============================================================================
-// ExamScan — Import Data Screen (Sections 2 & 3)
-// ONE PRIMARY PURPOSE: IMPORT EXCEL DATA
-// - UPLOAD INWARD EXCEL FILE (with drag & drop, file selector, sample template)
-// - Header-based column detection: Class ID and Member ID (supports any column order)
-// - Treats Class ID and Member ID as pure STRINGS (never trims leading zeros e.g. 0031)
-// - Groups records into Class-Wise Cards: CLASS ID: {classId}, {count} MEMBERS, EXPECTED BOOKLETS: {count}
-// - Clicking a Class Card / [View Members] opens compact mobile-friendly member list
-// - Robust Duplicate Detection Modal (All duplicates vs Mixed duplicates with CANCEL / IMPORT NEW RECORDS)
-// - Sequential step loading animation before auto-navigating to Scanning Dashboard
-// - Professional examination UI with soft rounded corners (10px–14px / rounded-xl)
+// ExamScan — Import Data Screen (Sections 13, 14, 18, 19, 20)
+// MANDATORY:
+// - COLLEGE / UNIVERSITY NAME * is required before file selection / parsing / importing.
+// - If empty, blocks with "COLLEGE / UNIVERSITY REQUIRED" and does not process file.
+// - Pure string extraction for Class ID and Member ID (preserves leading zeros e.g. 0031).
+// - Groups records into Class-Wise Cards with expected booklet counts.
+// - Persists into Supabase table 1: import_inwarded_data.
 // ==============================================================================
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -56,6 +53,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [universityRequiredError, setUniversityRequiredError] = useState<boolean>(false);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [classGroups, setClassGroups] = useState<ClassGroupPreview[]>([]);
 
@@ -66,7 +64,6 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [activeMembersModal, setActiveMembersModal] = useState<{
     classId: string;
     members: string[];
-    isLiveSession?: boolean;
   } | null>(null);
 
   // Duplicate Records Modal
@@ -77,7 +74,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     allDuplicates: boolean;
   } | null>(null);
 
-  // Section 3: Step Loading State
+  // Step Loading State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
 
@@ -86,9 +83,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   useEffect(() => {
     const bundles = importedService.getClassBundles();
     setExistingBundles(bundles);
-    const active = importedService.getActiveSession();
-    if (active?.university_name) {
-      setUniversityName(active.university_name);
+    const activeUni = importedService.getActiveUniversity();
+    if (activeUni) {
+      setUniversityName(activeUni);
     }
   }, []);
 
@@ -96,6 +93,15 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // SECTION 13: COLLEGE / UNIVERSITY REQUIRED CHECK BEFORE PARSING/IMPORTING
+    if (!universityName.trim()) {
+      setUniversityRequiredError(true);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setUniversityRequiredError(false);
     processExcelFile(file);
   };
 
@@ -111,7 +117,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         const workbook = XLSX.read(bstr, { type: 'binary', cellText: true });
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
-        // raw: false ensures strings with leading zeros like "0031" are preserved as formatted strings
+        // raw: false ensures strings with leading zeros like "0031" are preserved as pure strings
         const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
 
         if (!rawJson || rawJson.length < 2) {
@@ -120,14 +126,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
         const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
 
-        // Header Detection (Section 2 - does NOT depend on column positions):
-        // 1. Detect Class ID column by header name
+        // Header Detection:
         let classColIdx = headerRow.findIndex(
           (h: string) =>
             h.includes('class') || h.includes('batch') || h.includes('cls') || h.includes('bundle')
         );
 
-        // 2. Detect Member ID column by header name
         let memberColIdx = headerRow.findIndex(
           (h: string) =>
             h.includes('member') ||
@@ -137,7 +141,6 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             h.includes('barcode')
         );
 
-        // Fallbacks if not matched by standard keywords
         if (classColIdx === -1 && memberColIdx === -1 && headerRow.length >= 2) {
           classColIdx = 0;
           memberColIdx = 1;
@@ -155,7 +158,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           const rowData = rawJson[i];
           if (!rowData || rowData.length === 0) continue;
 
-          // Pure string extraction to NEVER drop leading zeros
+          // Pure string extraction to preserve leading zeros e.g. 0031
           const rawClass = String(rowData[classColIdx] ?? '').trim();
           const rawMember = String(rowData[memberColIdx] ?? '').trim();
 
@@ -233,18 +236,18 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   };
 
   /**
-   * Pre-import duplicate validation:
-   * Checks new items against database and already imported records
+   * Pre-import duplicate validation
    */
   const handleInitiateImport = () => {
-    const validRows = parsedRows.filter(r => r.status === 'valid');
-    if (validRows.length === 0) {
-      setParseError('No valid rows to import.');
+    // SECTION 13: Mandatory College/University check
+    if (!universityName.trim()) {
+      setUniversityRequiredError(true);
       return;
     }
 
-    if (!universityName.trim()) {
-      setParseError('Please enter the University Name.');
+    const validRows = parsedRows.filter(r => r.status === 'valid');
+    if (validRows.length === 0) {
+      setParseError('No valid rows to import.');
       return;
     }
 
@@ -261,31 +264,21 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       return;
     }
 
-    // No duplicates -> proceed directly
     executeImport(items);
   };
 
-  /**
-   * Section 3: After Successful Excel Import Execution
-   * Shows step-by-step loading animation:
-   * IMPORTING DATA... -> VALIDATING RECORDS... -> CALCULATING CLASS COUNTS... -> OPENING SCANNING DASHBOARD...
-   * Then automatically opens Scanning Dashboard!
-   */
   const executeImport = async (itemsToInsert: { class_id: string; member_id: string }[]) => {
     setDuplicateModalData(null);
     setIsProcessing(true);
 
     try {
-      // Step 1: IMPORTING DATA...
       setProcessingStep('IMPORTING DATA...');
-      await new Promise(r => setTimeout(r, 450));
+      await new Promise(r => setTimeout(r, 400));
 
-      // Step 2: VALIDATING RECORDS...
       setProcessingStep('VALIDATING RECORDS...');
-      await new Promise(r => setTimeout(r, 450));
+      await new Promise(r => setTimeout(r, 400));
 
-      // Step 3: CALCULATING CLASS COUNTS...
-      setProcessingStep('CALCULATING CLASS COUNTS...');
+      setProcessingStep('SAVING TO DATABASE & CALCULATING CLASS COUNTS...');
       const res = await importedService.bulkInsert(
         itemsToInsert,
         universityName.trim(),
@@ -296,13 +289,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         throw new Error(res.error || 'Failed to save imported records.');
       }
 
-      await new Promise(r => setTimeout(r, 450));
-
-      // Step 4: OPENING SCANNING DASHBOARD...
+      await new Promise(r => setTimeout(r, 400));
       setProcessingStep('OPENING SCANNING DASHBOARD...');
-      await new Promise(r => setTimeout(r, 550));
+      await new Promise(r => setTimeout(r, 400));
 
-      // Automatically navigate to Scanning Dashboard!
+      // Automatically navigate to Scan screen!
       onNavigateToScan();
     } catch (err: any) {
       console.warn('Import execution error:', err);
@@ -311,7 +302,6 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     }
   };
 
-  // Download Sample Inwarding Template
   const handleDownloadSample = () => {
     const sampleData = [
       { 'Class ID': '0031', 'Member ID': '22MIS001' },
@@ -336,7 +326,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
   return (
     <div className="space-y-4 font-sans max-w-4xl mx-auto pb-12">
-      {/* 1. Step-by-Step Processing Overlay (Section 3) */}
+      {/* 1. Step-by-Step Processing Overlay */}
       {isProcessing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
           <div className="w-full max-w-md bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-6 text-center">
@@ -345,62 +335,40 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               {processingStep}
             </div>
             <div className="text-xs text-[#64748B] mt-2">
-              Preparing class bundles and updating the inwarding scanning session...
-            </div>
-
-            <div className="mt-5 space-y-2 text-left bg-slate-50 p-3.5 border border-slate-200 rounded-xl text-xs">
-              <div
-                className={`flex items-center gap-2 ${
-                  processingStep === 'IMPORTING DATA...' ||
-                  processingStep === 'VALIDATING RECORDS...' ||
-                  processingStep === 'CALCULATING CLASS COUNTS...' ||
-                  processingStep === 'OPENING SCANNING DASHBOARD...'
-                    ? 'text-[#16A34A] font-bold'
-                    : 'text-[#64748B]'
-                }`}
-              >
-                <Check className="h-4 w-4" />
-                <span>1. Importing Excel Data</span>
-              </div>
-              <div
-                className={`flex items-center gap-2 ${
-                  processingStep === 'VALIDATING RECORDS...' ||
-                  processingStep === 'CALCULATING CLASS COUNTS...' ||
-                  processingStep === 'OPENING SCANNING DASHBOARD...'
-                    ? 'text-[#16A34A] font-bold'
-                    : 'text-[#64748B]'
-                }`}
-              >
-                <Check className="h-4 w-4" />
-                <span>2. Validating Class &amp; Member Records</span>
-              </div>
-              <div
-                className={`flex items-center gap-2 ${
-                  processingStep === 'CALCULATING CLASS COUNTS...' ||
-                  processingStep === 'OPENING SCANNING DASHBOARD...'
-                    ? 'text-[#16A34A] font-bold'
-                    : 'text-[#64748B]'
-                }`}
-              >
-                <Check className="h-4 w-4" />
-                <span>3. Calculating Class-Wise Expected Counts</span>
-              </div>
-              <div
-                className={`flex items-center gap-2 ${
-                  processingStep === 'OPENING SCANNING DASHBOARD...'
-                    ? 'text-[#1565D8] font-bold animate-pulse'
-                    : 'text-[#64748B]'
-                }`}
-              >
-                <ArrowRight className="h-4 w-4" />
-                <span>4. Opening Scanning Dashboard</span>
-              </div>
+              Preparing class bundles and synchronizing database records...
             </div>
           </div>
         </div>
       )}
 
-      {/* 2. Primary Card: UPLOAD INWARD EXCEL FILE (Section 2) */}
+      {/* SECTION 13: COLLEGE / UNIVERSITY REQUIRED ERROR MODAL */}
+      {universityRequiredError && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
+              <AlertOctagon className="h-7 w-7" />
+            </div>
+
+            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
+              COLLEGE / UNIVERSITY REQUIRED
+            </div>
+
+            <p className="text-xs text-[#7F1D1D] mt-3 mb-5 leading-relaxed font-semibold">
+              Please enter/select the College/University name before importing the Excel file.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setUniversityRequiredError(false)}
+              className="w-full py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+            >
+              ENTER UNIVERSITY NAME
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 2. Primary Card: UPLOAD INWARD EXCEL FILE */}
       <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
         <div className="p-4 bg-[#1565D8] text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -422,7 +390,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Required Columns Specification Banner (Section 2) */}
+          {/* Required Columns Specification Banner */}
           <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg text-xs text-[#1E40AF]">
             <div className="font-bold uppercase tracking-wider text-[11px] mb-1">Required Columns:</div>
             <div className="flex items-center gap-4 text-xs font-mono font-semibold">
@@ -431,30 +399,46 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               <span className="bg-white px-2 py-0.5 border border-[#BFDBFE] rounded-md">Member ID</span>
             </div>
             <div className="text-[11px] text-[#3B82F6] mt-1.5 font-sans">
-              Columns are auto-detected by header name regardless of order. Leading zeros (e.g. 0031) are strictly preserved.
+              Columns are auto-detected by header name. Leading zeros (e.g. 0031) are strictly preserved.
             </div>
           </div>
 
-          {/* University Name Configuration */}
+          {/* SECTION 13: MANDATORY COLLEGE / UNIVERSITY NAME */}
           <div>
             <label className="block text-xs font-bold text-[#172033] uppercase tracking-wider mb-1">
-              University Name <span className="text-red-500">*</span>
+              COLLEGE / UNIVERSITY NAME <span className="text-red-500 font-black">*</span>
             </label>
             <div className="relative">
               <Building className="absolute left-3 top-2.5 h-4 w-4 text-[#64748B]" />
               <input
                 type="text"
                 value={universityName}
-                onChange={e => setUniversityName(e.target.value)}
-                placeholder="e.g. General University, Oxford Exam Board..."
-                className="w-full pl-9 pr-3 py-2 border border-[#CBD5E1] rounded-lg text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8]"
+                onChange={e => {
+                  setUniversityName(e.target.value);
+                  if (e.target.value.trim()) setUniversityRequiredError(false);
+                }}
+                placeholder="e.g. General University, VIT-AP University..."
+                className={`w-full pl-9 pr-3 py-2 border rounded-lg text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8] ${
+                  !universityName.trim() ? 'border-[#EF4444] bg-red-50/20' : 'border-[#CBD5E1]'
+                }`}
               />
             </div>
+            {!universityName.trim() && (
+              <span className="text-[11px] text-[#DC2626] font-semibold mt-1 block">
+                College / University name is mandatory before selecting an Excel file.
+              </span>
+            )}
           </div>
 
-          {/* Upload Drop Zone with rounded-xl */}
+          {/* Upload Drop Zone */}
           <div
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (!universityName.trim()) {
+                setUniversityRequiredError(true);
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
             className="border-2 border-dashed border-[#CBD5E1] hover:border-[#1565D8] bg-[#F8FAFC] hover:bg-blue-50/40 rounded-xl p-6 text-center cursor-pointer transition-colors"
           >
             <input
@@ -497,7 +481,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             </div>
           )}
 
-          {/* 3. CLASS-WISE IMPORT CARDS (Section 2 - GROUPED BY CLASS ID) */}
+          {/* 3. CLASS-WISE IMPORT CARDS */}
           {classGroups.length > 0 && !isParsing && (
             <div className="space-y-4 pt-2 border-t border-[#E2E8F0]">
               <div className="grid grid-cols-3 gap-3 text-center">
@@ -550,34 +534,31 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                             setActiveMembersModal({
                               classId: cg.classId,
                               members: cg.members,
-                              isLiveSession: false,
                             })
                           }
-                          className="px-3 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                          className="px-2.5 py-1 text-xs font-bold text-[#1565D8] hover:bg-blue-50 rounded-lg border border-[#BFDBFE] transition-colors flex items-center gap-1 cursor-pointer"
                         >
-                          <Eye className="h-3.5 w-3.5 text-[#1565D8]" />
-                          <span>View Members</span>
+                          <Eye className="h-3.5 w-3.5" />
+                          <span>View Members ({cg.count})</span>
                         </button>
-                        <span className="text-[11px] font-mono text-[#64748B]">
-                          {cg.count} booklets
-                        </span>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Action: Import Excel Data Button */}
-              <div className="pt-2">
+              {/* Action Button: Import & Save to Database */}
+              <div className="pt-3 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="text-xs text-[#64748B]">
+                  Ready to ingest <strong className="text-[#172033]">{validCount}</strong> expected records for <strong className="text-[#1565D8]">{universityName}</strong>.
+                </div>
                 <button
                   type="button"
                   onClick={handleInitiateImport}
-                  disabled={validCount === 0 || isProcessing}
-                  className="w-full py-3 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-xl hover:bg-[#0D47A1] transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full sm:w-auto px-6 py-2.5 bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-black uppercase tracking-wider rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <FileCheck className="h-4 w-4" />
-                  <span>Import Excel &amp; Open Scanning Dashboard ({validCount} Records)</span>
-                  <ArrowRight className="h-4 w-4" />
+                  <Check className="h-4 w-4 stroke-[3]" />
+                  <span>Import &amp; Open Scanning Dashboard</span>
                 </button>
               </div>
             </div>
@@ -585,252 +566,93 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         </div>
       </div>
 
-      {/* 4. Currently Imported Session Classes (if already imported in active session) */}
-      {existingBundles.length > 0 && classGroups.length === 0 && (
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden p-4">
-          <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0] mb-3">
-            <div>
-              <div className="text-xs font-bold uppercase tracking-wider text-[#172033]">
-                Currently Imported Class Bundles
-              </div>
-              <div className="text-[11px] text-[#64748B]">
-                Active classes available in database for scanning
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onNavigateToScan}
-              className="px-3 py-1.5 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors flex items-center gap-1.5"
-            >
-              <span>Go to Scan</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {existingBundles.map(b => {
-              const recs = importedService.getRecords(b.classId);
-              return (
-                <div
-                  key={b.classId}
-                  className="p-3.5 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl flex flex-col justify-between"
-                >
-                  <div>
-                    <div className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider">
-                      CLASS ID
-                    </div>
-                    <div className="font-mono font-black text-base text-[#172033]">
-                      {b.classId}
-                    </div>
-                    <div className="text-xs text-[#1565D8] font-bold mt-1">
-                      {b.expectedCount} Members
-                    </div>
-                    <div className="text-xs text-[#64748B] mt-0.5">
-                      Expected Booklets: <strong>{b.expectedCount}</strong>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 pt-2 border-t border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setActiveMembersModal({
-                          classId: b.classId,
-                          members: recs.map(r => r.member_id),
-                          isLiveSession: true,
-                        })
-                      }
-                      className="w-full py-1 bg-white hover:bg-slate-100 border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      <Eye className="h-3.5 w-3.5 text-[#1565D8]" />
-                      <span>View Members</span>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* 5. CLASS CARD CLICK: MEMBERS LIST MODAL (Section 2) */}
-      {activeMembersModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-lg bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-            <div className="p-4 bg-[#1565D8] text-white flex items-center justify-between">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wider text-white/80">
-                  Class Members Detail
-                </div>
-                <h2 className="text-base font-black tracking-wide">
-                  CLASS ID: {activeMembersModal.classId}
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveMembersModal(null)}
-                className="p-1 hover:bg-white/20 rounded-lg text-white transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between text-xs">
-              <span className="font-bold text-[#172033] uppercase tracking-wider">
-                {activeMembersModal.members.length} MEMBERS
-              </span>
-              <span className="text-[#64748B]">
-                Expected Booklets: <strong>{activeMembersModal.members.length}</strong>
-              </span>
-            </div>
-
-            {/* Compact mobile-friendly table list (Section 2) */}
-            <div className="p-3 overflow-y-auto flex-1 divide-y divide-slate-100">
-              <table className="w-full text-left text-xs font-mono">
-                <thead>
-                  <tr className="text-[#64748B] text-[10px] uppercase border-b border-slate-200">
-                    <th className="py-1.5 px-3 w-16">#</th>
-                    <th className="py-1.5 px-3">Member ID</th>
-                    <th className="py-1.5 px-3 text-right">Class</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {activeMembersModal.members.map((memId, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-2 px-3 text-[#64748B]">
-                        {String(idx + 1).padStart(3, '0')}
-                      </td>
-                      <td className="py-2 px-3 font-bold text-[#172033]">{memId}</td>
-                      <td className="py-2 px-3 text-right text-[#64748B]">
-                        {activeMembersModal.classId}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="p-3 bg-white border-t border-[#E2E8F0] text-right">
-              <button
-                type="button"
-                onClick={() => setActiveMembersModal(null)}
-                className="px-4 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 6. DUPLICATE IMPORT DETECTION MODAL (Section 3) */}
+      {/* Duplicate Check Modal */}
       {duplicateModalData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-lg bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-4 bg-[#F59E0B] text-black flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5" />
-                <h2 className="text-base font-black tracking-wide uppercase">
-                  {duplicateModalData.allDuplicates
-                    ? 'NO NEW RECORDS TO IMPORT'
-                    : 'DUPLICATE RECORDS FOUND'}
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDuplicateModalData(null)}
-                className="p-1 hover:bg-black/10 rounded-lg text-black transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-[#FDE68A] rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#F59E0B] text-white rounded-xl mx-auto mb-3">
+              <AlertTriangle className="h-7 w-7" />
             </div>
 
-            <div className="p-4 space-y-3 overflow-y-auto">
+            <div className="text-base font-extrabold uppercase tracking-wide text-[#B45309]">
+              DUPLICATE RECORDS DETECTED
+            </div>
+
+            <div className="text-xs text-[#78350F] mt-2 mb-4 leading-relaxed">
+              Found <strong className="font-bold">{duplicateModalData.duplicateItems.length}</strong> duplicate
+              records that already exist in this import session.
               {duplicateModalData.allDuplicates ? (
-                <div className="p-4 bg-[#FEF3C7] border border-[#FDE68A] rounded-xl text-center">
-                  <div className="text-sm font-bold text-[#92400E]">
-                    All records in this Excel file already exist.
-                  </div>
-                  <div className="text-xs text-[#78350F] mt-1">
-                    No new records were found to import. A duplicate import session will not be created.
-                  </div>
+                <div className="mt-2 text-red-600 font-bold">
+                  All records in this file already exist in the system.
                 </div>
               ) : (
-                <>
-                  <div className="text-xs text-[#475569]">
-                    Some records in this Excel file have already been imported:
-                  </div>
-
-                  {/* Duplicate Records Table */}
-                  <div className="border border-[#CBD5E1] rounded-xl overflow-hidden max-h-48 overflow-y-auto">
-                    <table className="w-full text-left text-xs font-mono">
-                      <thead className="bg-[#F8FAFC] text-[10px] text-[#64748B] uppercase border-b border-[#E2E8F0]">
-                        <tr>
-                          <th className="py-2 px-3">Class ID</th>
-                          <th className="py-2 px-3">Member ID</th>
-                          <th className="py-2 px-3 text-right">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#E2E8F0]">
-                        {duplicateModalData.duplicateItems.map((dup, idx) => (
-                          <tr key={idx} className="bg-amber-50/50">
-                            <td className="py-1.5 px-3 font-bold text-[#172033]">{dup.class_id}</td>
-                            <td className="py-1.5 px-3 font-bold text-[#92400E]">{dup.member_id}</td>
-                            <td className="py-1.5 px-3 text-right text-[10px] text-[#B45309] font-bold">
-                              DUPLICATE
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="text-xs text-[#64748B] italic">
-                    These duplicate records already exist and will not be imported again.
-                  </div>
-
-                  {/* Summary Counts */}
-                  <div className="grid grid-cols-3 gap-2 text-center text-xs pt-1">
-                    <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                      <div className="text-[10px] text-[#64748B]">Total Excel</div>
-                      <div className="font-bold text-[#172033]">{duplicateModalData.total}</div>
-                    </div>
-                    <div className="p-2 bg-[#DCFCE7] border border-[#BBF7D0] rounded-lg">
-                      <div className="text-[10px] text-[#166534]">New Records</div>
-                      <div className="font-bold text-[#16A34A]">
-                        {duplicateModalData.newItems.length}
-                      </div>
-                    </div>
-                    <div className="p-2 bg-[#FEF3C7] border border-[#FDE68A] rounded-lg">
-                      <div className="text-[10px] text-[#92400E]">Duplicate</div>
-                      <div className="font-bold text-[#B45309]">
-                        {duplicateModalData.duplicateItems.length}
-                      </div>
-                    </div>
-                  </div>
-                </>
+                <div className="mt-2 text-[#166534] font-semibold">
+                  You can proceed by importing only the {duplicateModalData.newItems.length} new records.
+                </div>
               )}
             </div>
 
-            <div className="p-3 bg-white border-t border-[#E2E8F0] flex items-center justify-end gap-2">
+            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => setDuplicateModalData(null)}
-                className="px-4 py-2 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-colors"
+                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-slate-50 cursor-pointer"
               >
                 CANCEL
               </button>
-
               {!duplicateModalData.allDuplicates && (
                 <button
                   type="button"
                   onClick={() => executeImport(duplicateModalData.newItems)}
-                  className="px-4 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors"
+                  className="flex-1 py-2 bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-bold uppercase tracking-wider rounded-lg cursor-pointer"
                 >
-                  IMPORT NEW RECORDS ({duplicateModalData.newItems.length})
+                  IMPORT NEW ({duplicateModalData.newItems.length})
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* View Members Modal */}
+      {activeMembersModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-5">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0]">
+              <div>
+                <div className="text-xs font-bold uppercase text-[#64748B]">Class Members Preview</div>
+                <h3 className="font-mono font-bold text-sm text-[#172033]">
+                  CLASS {activeMembersModal.classId} ({activeMembersModal.members.length} Expected)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveMembersModal(null)}
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="py-3 max-h-60 overflow-y-auto divide-y divide-slate-100 font-mono text-xs">
+              {activeMembersModal.members.map((m, idx) => (
+                <div key={idx} className="py-2 px-1 flex items-center justify-between">
+                  <span className="text-slate-400 text-[11px]">{idx + 1}.</span>
+                  <span className="font-bold text-[#172033]">{m}</span>
+                  <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    EXPECTED
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setActiveMembersModal(null)}
+              className="w-full mt-3 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] cursor-pointer"
+            >
+              CLOSE
+            </button>
           </div>
         </div>
       )}

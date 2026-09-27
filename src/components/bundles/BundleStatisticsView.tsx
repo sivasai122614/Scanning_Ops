@@ -1,18 +1,14 @@
 // ==============================================================================
-// ExamScan — Bundle Scan Screen (Sections 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 20)
+// ExamScan — Bundle Scan Screen (Sections 6, 7, 8, 9, 10, 11, 12, 13, 14, 30)
 // Active Class Bundle Operational Scanning Workspace:
 // 1. Header: ← Back to Scan Dashboard | BUNDLE SCAN | CLASS ID: {classId}
-// 2. TWO PRIMARY STATISTICS: SCANNED and NOT SCANNED
-// 3. Rectangular Camera Scanner with continuous barcode detection
-// 4. Critical Validations:
-//    - CLASS ID MISMATCH PROTECTION (Section 9)
-//    - MEMBER ID VALIDATION (Section 10)
-//    - UNIMPORTED BOOKLET DETECTION & MANUAL SCAN (Sections 11 & 12)
-//    - DUPLICATE SCAN PROTECTION (Section 14)
-//    - RECEIVED CHECKMARK (Section 13)
-// 5. Scanned Booklet List with Eye/Preview Modal (Section 7)
-// 6. Automatic Not Scanned calculation (Section 8)
-// 7. Soft rounded corners (10px–14px / rounded-xl)
+// 2. SAVE BUTTON: Enabled when pending unsaved scans exist. Shows "SAVING...",
+//    persists final records into saved_scanned_data, updates dashboard/reports,
+//    prevents duplicate saving.
+// 3. Clear distinction between SCANNED / PENDING SAVE and PERMANENTLY SAVED.
+// 4. Rectangular Camera Scanner with continuous barcode detection.
+// 5. Validations: Class Mismatch, Member Not Found, Duplicate Protection.
+// 6. Detailed Scanned Booklet List with Eye/View Modal.
 // ==============================================================================
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -23,12 +19,7 @@ import {
   Clock,
   Check,
   Search,
-  Users,
-  FileSpreadsheet,
-  Lock,
-  Unlock,
   Save,
-  Scan,
   Flashlight,
   FlashlightOff,
   SwitchCamera,
@@ -37,12 +28,13 @@ import {
   Eye,
   X,
   AlertOctagon,
-  HelpCircle,
+  Layers,
+  Sparkles,
 } from 'lucide-react';
 import {
   importedService,
   ClassBundle,
-  ImportedRecord,
+  BundleRecordView,
   sanitizeBarcode,
   ScanResult,
 } from '../../services/importedService';
@@ -66,67 +58,41 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   onBackToDashboard,
 }) => {
   const [bundle, setBundle] = useState<ClassBundle | null>(null);
-  const [records, setRecords] = useState<ImportedRecord[]>([]);
+  const [records, setRecords] = useState<BundleRecordView[]>([]);
 
   // Tabs: [ SCANNED ] | [ NOT SCANNED ] | [ ALL IMPORTED ]
   const [activeTab, setActiveTab] = useState<'scanned' | 'not_scanned' | 'all'>('scanned');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Modals & Notifications
+  // Save Button States (Sections 9, 10, 11, 12)
+  const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  // Scan feedback
   const [scanSuccessToast, setScanSuccessToast] = useState<{
     classId: string;
     memberId: string;
+    isPending: boolean;
   } | null>(null);
 
-  // Resume camera scanning after error modal dismissed
-  const resumeScanning = () => {
-    setClassMismatchModal(null);
-    setMemberNotFoundModal(null);
-    setUnimportedModal(null);
-    setAlreadyScannedModal(null);
-    setShowManualScanModal(false);
-    isProcessingRef.current = false;
-    lastScannedCodeRef.current = null;
-    if (!cameraActive) {
-      startCamera();
-    }
-  };
+  // Eye/View Modal for Booklet Record Details
+  const [viewingRecord, setViewingRecord] = useState<BundleRecordView | null>(null);
 
-  // Section 7: Eye/View Modal for Scanned Booklet Details
-  const [viewingRecord, setViewingRecord] = useState<ImportedRecord | null>(null);
-
-  // Section 9: CLASS ID MISMATCH MODAL
+  // Error Modals
   const [classMismatchModal, setClassMismatchModal] = useState<{
     scannedClassId: string;
     barcode: string;
   } | null>(null);
 
-  // Section 10: MEMBER ID NOT FOUND MODAL
   const [memberNotFoundModal, setMemberNotFoundModal] = useState<{
     memberId: string;
     barcode: string;
   } | null>(null);
 
-  // Section 11: UNIMPORTED BOOKLET MODAL
-  const [unimportedModal, setUnimportedModal] = useState<{
-    classId: string;
-    memberId: string;
-    barcode: string;
-  } | null>(null);
-
-  // Section 14: DUPLICATE BOOKLET / ALREADY SCANNED MODAL
   const [alreadyScannedModal, setAlreadyScannedModal] = useState<{
     memberId: string;
     barcode: string;
   } | null>(null);
-
-  // Section 12: MANUAL SCAN MODAL
-  const [showManualScanModal, setShowManualScanModal] = useState(false);
-  const [manualClassId, setManualClassId] = useState(classId);
-  const [manualMemberId, setManualMemberId] = useState('');
-  const [manualError, setManualError] = useState<string | null>(null);
-  const [showManualConfirmException, setShowManualConfirmException] = useState(false);
 
   // Camera States
   const [cameraActive, setCameraActive] = useState(false);
@@ -148,7 +114,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
 
   const loadData = useCallback(() => {
     const b = importedService.getClassBundle(classId);
-    const recs = importedService.getRecords(classId);
+    const recs = importedService.getBundleRecordViews(classId);
     setBundle(b);
     setRecords(recs);
   }, [classId]);
@@ -159,7 +125,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     return () => unsub();
   }, [loadData]);
 
-  // Camera initialization for Bundle Scan
+  // Camera lifecycle for Bundle Scan
   useEffect(() => {
     startCamera();
     return () => {
@@ -228,9 +194,19 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     }
   };
 
+  const resumeScanning = () => {
+    setClassMismatchModal(null);
+    setMemberNotFoundModal(null);
+    setAlreadyScannedModal(null);
+    isProcessingRef.current = false;
+    lastScannedCodeRef.current = null;
+    if (!cameraActive) {
+      startCamera();
+    }
+  };
+
   /**
    * Barcode Scan Processing within active class bundle
-   * Enforces Section 9 (Mismatch), Section 10 (Member not found), Section 14 (Duplicate)
    */
   const handleBarcodeScan = async (rawCode: string) => {
     const code = sanitizeBarcode(rawCode);
@@ -250,7 +226,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     try {
       const result: ScanResult = await importedService.processBundleScan(classId, code);
 
-      // Section 9: CLASS ID MISMATCH PROTECTION (CRITICAL)
+      // Section 9: CLASS ID MISMATCH PROTECTION
       if (result.isWrongClass) {
         playScanWarningSound();
         setClassMismatchModal({
@@ -280,12 +256,13 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         return;
       }
 
-      // Section 13: VALID BOOKLET -> MARK RECEIVED ✓
+      // Section 13: VALID BOOKLET -> STAGED AS PENDING SAVE
       if (result.success && result.member_id) {
         playScanSuccessSound();
         setScanSuccessToast({
           classId,
           memberId: result.member_id,
+          isPending: true,
         });
         setTimeout(() => setScanSuccessToast(null), 2500);
         loadData();
@@ -296,6 +273,32 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       console.warn('Scan bundle error:', err);
     } finally {
       isProcessingRef.current = false;
+    }
+  };
+
+  /**
+   * SAVE BUTTON ACTION (Sections 9, 10, 11, 12)
+   */
+  const handleSaveScans = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    setSaveSuccessMessage(null);
+
+    try {
+      // Simulate quick confirmation state per Section 11: SAVING...
+      await new Promise(r => setTimeout(r, 450));
+      const res = await importedService.saveActiveBundle(classId);
+
+      if (res.success) {
+        playScanSuccessSound();
+        setSaveSuccessMessage(`${res.savedCount} booklets saved successfully.`);
+        setTimeout(() => setSaveSuccessMessage(null), 4000);
+        loadData();
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error saving scanned booklets');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -337,46 +340,6 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     setQuickManualInput('');
   };
 
-  // Section 12: Manual Scan Submission
-  const handleExecuteManualScan = async (forceException: boolean = false) => {
-    setManualError(null);
-    const cid = manualClassId.trim();
-    const mid = manualMemberId.trim();
-
-    if (!cid || !mid) {
-      setManualError('Please provide both Class ID and Member ID.');
-      return;
-    }
-
-    try {
-      const res = await importedService.processManualScan(cid, mid, forceException);
-
-      if (res.isAlreadyScanned) {
-        setManualError(`ALREADY SCANNED: Member ${mid} has already been received.`);
-        return;
-      }
-
-      if (res.isUnimported && !forceException) {
-        setShowManualConfirmException(true);
-        return;
-      }
-
-      if (res.success) {
-        playScanSuccessSound();
-        setShowManualScanModal(false);
-        setShowManualConfirmException(false);
-        setManualMemberId('');
-        setScanSuccessToast({ classId, memberId: mid });
-        setTimeout(() => setScanSuccessToast(null), 3000);
-        loadData();
-      } else {
-        setManualError(res.message || 'Failed to process manual scan.');
-      }
-    } catch (err: any) {
-      setManualError(err?.message || 'Error executing manual scan.');
-    }
-  };
-
   if (!bundle) {
     return (
       <div className="p-6 bg-white border border-[#CBD5E1] rounded-xl text-center font-sans max-w-4xl mx-auto my-6">
@@ -396,16 +359,16 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     );
   }
 
-  const importedCount = bundle.expectedCount;
-  const scannedCount = bundle.receivedCount;
-  const notScannedCount = Math.max(0, importedCount - scannedCount);
-  const progressPercentage = importedCount > 0 ? Math.round((scannedCount / importedCount) * 100) : 0;
-  const is100Percent = importedCount > 0 && scannedCount >= importedCount;
+  const expectedCount = bundle.expectedCount;
+  const savedCount = bundle.savedCount;
+  const pendingCount = bundle.pendingCount;
+  const totalScanned = bundle.receivedCount; // savedCount + pendingCount
+  const notScannedCount = bundle.missingCount;
+  const progressPercentage = expectedCount > 0 ? Math.round((totalScanned / expectedCount) * 100) : 0;
+  const is100Percent = expectedCount > 0 && savedCount >= expectedCount;
 
   // Filter lists
-  const scannedRecords = records.filter(
-    r => r.scan_status === 'started' || r.scan_status === 'completed'
-  );
+  const scannedRecords = records.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save');
   const notScannedRecords = records.filter(r => r.scan_status === 'not_started');
 
   const displayedRecords = (
@@ -425,7 +388,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
 
   return (
     <div className="space-y-4 font-sans max-w-4xl mx-auto pb-24">
-      {/* 1. Header (Section 6) */}
+      {/* 1. Header (Sections 6 & 9) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center gap-3">
           <button
@@ -447,50 +410,70 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           </div>
         </div>
 
-        {/* Status Badge & Manual Scan Trigger */}
+        {/* SECTION 9: VISIBLE SAVE BUTTON */}
         <div className="flex items-center gap-2">
-          {bundle.status === 'COMPLETED' ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-xs font-bold uppercase tracking-wider rounded-lg">
-              <CheckCircle2 className="h-4 w-4" />
-              COMPLETED
-            </span>
+          {pendingCount > 0 ? (
+            <button
+              type="button"
+              onClick={handleSaveScans}
+              disabled={isSaving}
+              className="flex items-center gap-2 px-5 py-2 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-sm cursor-pointer animate-pulse"
+              title={`${pendingCount} scanned records ready to be saved permanently`}
+            >
+              <Save className="h-4 w-4" />
+              <span>{isSaving ? 'SAVING...' : `SAVE (${pendingCount} READY)`}</span>
+            </button>
           ) : (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#EFF6FF] border border-[#BFDBFE] text-[#1565D8] text-xs font-bold uppercase tracking-wider rounded-lg">
-              IN PROGRESS
-            </span>
+            <button
+              type="button"
+              disabled
+              className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 text-[#64748B] border border-slate-300 text-xs font-bold uppercase tracking-wider rounded-xl cursor-default"
+            >
+              <Check className="h-4 w-4 text-[#16A34A]" />
+              <span>ALL RECORDS SAVED</span>
+            </button>
           )}
-
-          <button
-            type="button"
-            onClick={() => {
-              setManualClassId(classId);
-              setManualMemberId('');
-              setManualError(null);
-              setShowManualScanModal(true);
-            }}
-            className="px-3 py-1.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-colors"
-          >
-            Manual Scan
-          </button>
         </div>
       </div>
 
-      {/* 2. TWO PRIMARY STATISTICS (Section 6) */}
-      <div className="grid grid-cols-2 gap-3">
-        {/* PRIMARY STAT 1: SCANNED */}
+      {/* Save Success Banner */}
+      {saveSuccessMessage && (
+        <div className="p-3.5 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] rounded-xl text-xs font-bold flex items-center justify-between shadow-xs animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-[#16A34A]" />
+            <span>{saveSuccessMessage}</span>
+          </div>
+          <span className="text-[10px] uppercase font-bold text-[#15803D] bg-white px-2 py-0.5 rounded border border-[#86EFAC]">
+            Database Updated
+          </span>
+        </div>
+      )}
+
+      {/* 2. PRIMARY STATISTICS & COUNTERS (Section 9 & 30) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {/* STAT 1: SCANNED (With breakdown between Saved and Pending Save) */}
         <div className="bg-white p-4 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
-          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
-            SCANNED
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
+              SCANNED
+            </div>
+            {pendingCount > 0 && (
+              <span className="text-[9px] bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A] px-1.5 py-0.5 rounded font-bold uppercase">
+                {pendingCount} Pending Save
+              </span>
+            )}
           </div>
           <div className="text-3xl font-black text-[#1565D8] font-tabular mt-1">
-            {scannedCount}
+            {totalScanned}
           </div>
-          <div className="text-[11px] text-[#1565D8] mt-1 font-medium">
-            {scannedCount} Booklets Received
+          <div className="text-[11px] text-[#64748B] mt-1 font-medium flex items-center gap-1.5">
+            <span className="font-bold text-[#16A34A]">{savedCount} Saved</span>
+            <span>•</span>
+            <span className="font-bold text-[#D97706]">{pendingCount} Unsaved</span>
           </div>
         </div>
 
-        {/* PRIMARY STAT 2: NOT SCANNED */}
+        {/* STAT 2: NOT SCANNED */}
         <div className="bg-white p-4 border border-[#FECACA] rounded-xl shadow-xs">
           <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">
             NOT SCANNED
@@ -502,13 +485,26 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             Remaining Expected Booklets
           </div>
         </div>
+
+        {/* STAT 3: TOTAL EXPECTED */}
+        <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs col-span-2 sm:col-span-1">
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
+            TOTAL EXPECTED
+          </div>
+          <div className="text-3xl font-black text-[#172033] font-tabular mt-1">
+            {expectedCount}
+          </div>
+          <div className="text-[11px] text-[#64748B] mt-1 font-medium">
+            Imported for Class {classId}
+          </div>
+        </div>
       </div>
 
       {/* Progress Bar Card */}
       <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">
-            Class {classId} Progress ({scannedCount} / {importedCount} Scanned)
+            Class {classId} Progress ({savedCount} Saved / {expectedCount} Expected)
           </span>
           <span className="text-sm font-black font-tabular text-[#16A34A]">
             {progressPercentage}%
@@ -523,7 +519,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         </div>
       </div>
 
-      {/* SECTION 20: CLASS COMPLETED BANNER */}
+      {/* CLASS COMPLETED BANNER */}
       {is100Percent && (
         <div className="p-4 bg-[#DCFCE7] border-2 border-[#16A34A] rounded-xl text-[#14532D] flex items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center gap-3">
@@ -535,16 +531,15 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                 CLASS COMPLETED
               </div>
               <div className="text-xs text-[#166534] font-medium">
-                All expected booklets for Class ID {classId} have been received.
+                All {expectedCount} expected booklets for Class ID {classId} have been permanently saved!
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 3. FULL-FRAME CAMERA SCANNER (Clean, spacious, full-frame detection, NO overlays) */}
+      {/* 3. FULL-FRAME CAMERA SCANNER */}
       <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
-        {/* Full Camera Viewport - NO fixed boxes, NO red lines, NO text over video */}
         <div className="relative bg-black w-full aspect-4/3 min-h-[380px] sm:min-h-[460px] max-h-[58vh] flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
@@ -579,29 +574,29 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           )}
         </div>
 
-        {/* Success Feedback State OUTSIDE/BELOW the camera */}
+        {/* Scan feedback toast below camera */}
         {scanSuccessToast && (
-          <div className="mx-3 mt-3 p-3 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] rounded-xl flex items-center justify-between shadow-xs animate-in fade-in duration-150">
+          <div className="mx-3 mt-3 p-3 bg-[#FEF3C7] border border-[#FDE68A] text-[#92400E] rounded-xl flex items-center justify-between shadow-xs animate-in fade-in duration-150">
             <div className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#16A34A] text-white shrink-0">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#D97706] text-white shrink-0">
                 <Check className="h-4 w-4 stroke-[3]" />
               </div>
               <div>
-                <div className="text-[10px] font-black uppercase tracking-wider text-[#15803D]">
-                  ✓ BOOKLET RECEIVED
+                <div className="text-[10px] font-black uppercase tracking-wider text-[#B45309]">
+                  ✓ SCANNED — PENDING SAVE
                 </div>
-                <div className="font-mono text-sm font-bold text-[#166534]">
+                <div className="font-mono text-sm font-bold text-[#78350F]">
                   {scanSuccessToast.classId} • {scanSuccessToast.memberId}
                 </div>
               </div>
             </div>
-            <span className="text-[10px] uppercase font-bold text-[#15803D] bg-white/90 px-2 py-0.5 rounded border border-[#86EFAC]">
-              Ready for Next
+            <span className="text-[10px] uppercase font-bold text-[#B45309] bg-white px-2 py-0.5 rounded border border-[#FDE68A]">
+              Press SAVE to finalize
             </span>
           </div>
         )}
 
-        {/* Small Camera Controls BELOW the camera */}
+        {/* Camera Controls */}
         <div className="p-3 bg-white border-t border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {hasTorch && (
@@ -660,7 +655,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
               type="text"
               value={quickManualInput}
               onChange={e => setQuickManualInput(e.target.value)}
-              placeholder={`Enter barcode for Class ${classId}...`}
+              placeholder={`Enter barcode for Class ${classId} (e.g. ${classId}22MIS001)...`}
               className="flex-1 px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8] font-mono"
             />
             <button
@@ -689,7 +684,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         </div>
       </div>
 
-      {/* 4. SCANNED BOOKLET RECORDS & LIST TABS (Section 7 & 8) */}
+      {/* 4. SCANNED BOOKLETS & TABS (Sections 7, 8, 9, 10) */}
       <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
         {/* Navigation Tabs */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-[#CBD5E1] bg-[#F8FAFC] px-4 pt-2 gap-2">
@@ -704,7 +699,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                   : 'border-transparent text-[#64748B] hover:text-[#172033]'
               }`}
             >
-              SCANNED ({scannedCount})
+              SCANNED ({totalScanned})
             </button>
 
             {/* TAB 2: NOT SCANNED */}
@@ -730,7 +725,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                   : 'border-transparent text-[#64748B] hover:text-[#172033]'
               }`}
             >
-              ALL IMPORTED ({importedCount})
+              ALL IMPORTED ({expectedCount})
             </button>
           </div>
 
@@ -749,7 +744,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           </div>
         </div>
 
-        {/* Member Records List (Section 7: Member ID, Scan Time, Status, Eye icon) */}
+        {/* Member Records List */}
         <div className="divide-y divide-[#E2E8F0] max-h-[460px] overflow-y-auto">
           {displayedRecords.length === 0 ? (
             <div className="p-8 text-center text-xs text-[#64748B]">
@@ -757,7 +752,8 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             </div>
           ) : (
             displayedRecords.map((r, idx) => {
-              const isScanned = r.scan_status === 'started' || r.scan_status === 'completed';
+              const isSaved = r.scan_status === 'saved';
+              const isPending = r.scan_status === 'pending_save';
 
               return (
                 <div
@@ -770,7 +766,8 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                     </span>
                     <div>
                       <div className="font-mono font-bold text-xs text-[#172033] flex items-center gap-1.5">
-                        {isScanned && <Check className="h-3.5 w-3.5 text-[#16A34A] stroke-[3]" />}
+                        {isSaved && <Check className="h-3.5 w-3.5 text-[#16A34A] stroke-[3]" />}
+                        {isPending && <Clock className="h-3.5 w-3.5 text-[#D97706]" />}
                         <span>{r.member_id}</span>
                       </div>
                       {r.barcode && (
@@ -788,9 +785,13 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                       </span>
                     )}
 
-                    {isScanned ? (
+                    {isSaved ? (
                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-[10px] font-bold uppercase tracking-wider rounded-md">
-                        Received ✓
+                        Saved ✓
+                      </span>
+                    ) : isPending ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#FEF3C7] border border-[#FDE68A] text-[#92400E] text-[10px] font-bold uppercase tracking-wider rounded-md">
+                        Pending Save
                       </span>
                     ) : (
                       <span className="inline-flex items-center px-2.5 py-0.5 bg-[#FEF2F2] border border-[#FECACA] text-[#DC2626] text-[10px] font-bold uppercase tracking-wider rounded-md">
@@ -798,11 +799,11 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                       </span>
                     )}
 
-                    {/* Section 7: Eye/View icon opens preview */}
+                    {/* Eye/View icon opens preview */}
                     <button
                       type="button"
                       onClick={() => setViewingRecord(r)}
-                      className="p-1.5 hover:bg-slate-200 border border-[#CBD5E1] text-[#1565D8] rounded-md transition-colors"
+                      className="p-1.5 hover:bg-slate-200 border border-[#CBD5E1] text-[#1565D8] rounded-md transition-colors cursor-pointer"
                       title="View booklet details"
                     >
                       <Eye className="h-3.5 w-3.5" />
@@ -826,7 +827,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
               <button
                 type="button"
                 onClick={() => setViewingRecord(null)}
-                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500"
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -849,21 +850,45 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                 <span className="text-[#64748B]">Status:</span>
                 <span
                   className={`font-bold uppercase ${
-                    viewingRecord.scan_status === 'started' || viewingRecord.scan_status === 'completed'
+                    viewingRecord.scan_status === 'saved'
                       ? 'text-[#16A34A]'
+                      : viewingRecord.scan_status === 'pending_save'
+                      ? 'text-[#D97706]'
                       : 'text-[#DC2626]'
                   }`}
                 >
-                  {viewingRecord.scan_status === 'started' || viewingRecord.scan_status === 'completed'
-                    ? 'Received ✓'
+                  {viewingRecord.scan_status === 'saved'
+                    ? 'Saved ✓'
+                    : viewingRecord.scan_status === 'pending_save'
+                    ? 'Scanned (Pending Save)'
                     : 'Not Scanned'}
                 </span>
               </div>
+              {viewingRecord.scanned_by && (
+                <div className="flex justify-between py-1 border-b border-slate-100">
+                  <span className="text-[#64748B]">Scanned By:</span>
+                  <span className="text-[#172033]">{viewingRecord.scanned_by}</span>
+                </div>
+              )}
               {viewingRecord.scanned_at && (
                 <div className="flex justify-between py-1 border-b border-slate-100">
-                  <span className="text-[#64748B]">Scan Time:</span>
+                  <span className="text-[#64748B]">Scanned Time:</span>
                   <span className="text-[#172033]">
                     {new Date(viewingRecord.scanned_at).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {viewingRecord.saved_by && (
+                <div className="flex justify-between py-1 border-b border-slate-100">
+                  <span className="text-[#64748B]">Saved By:</span>
+                  <span className="text-[#172033]">{viewingRecord.saved_by}</span>
+                </div>
+              )}
+              {viewingRecord.saved_at && (
+                <div className="flex justify-between py-1 border-b border-slate-100">
+                  <span className="text-[#64748B]">Saved Time:</span>
+                  <span className="text-[#172033]">
+                    {new Date(viewingRecord.saved_at).toLocaleString()}
                   </span>
                 </div>
               )}
@@ -872,7 +897,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             <button
               type="button"
               onClick={() => setViewingRecord(null)}
-              className="w-full mt-3 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1]"
+              className="w-full mt-3 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] cursor-pointer"
             >
               Close
             </button>
@@ -880,7 +905,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         </div>
       )}
 
-      {/* SECTION 9: CLASS ID MISMATCH WARNING MODAL (CRITICAL) */}
+      {/* SECTION 9: CLASS ID MISMATCH WARNING MODAL */}
       {classMismatchModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
           <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
@@ -893,17 +918,17 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             </div>
 
             <div className="text-xs text-[#7F1D1D] mt-3 leading-relaxed">
-              You are currently scanning:{' '}
-              <strong className="font-mono text-sm bg-blue-100 text-[#1565D8] px-2 py-0.5 rounded border border-blue-300">
+              CURRENT SCANNING CLASS:
+              <div className="font-mono text-sm font-bold bg-blue-100 text-[#1565D8] px-2 py-0.5 rounded border border-blue-300 mt-1">
                 {classId}
-              </strong>
+              </div>
             </div>
 
-            <div className="text-xs text-[#7F1D1D] mt-1 leading-relaxed">
-              But this booklet belongs to:{' '}
-              <strong className="font-mono text-sm bg-red-100 text-[#DC2626] px-2 py-0.5 rounded border border-red-300">
+            <div className="text-xs text-[#7F1D1D] mt-2 leading-relaxed">
+              DETECTED CLASS:
+              <div className="font-mono text-sm font-bold bg-red-100 text-[#DC2626] px-2 py-0.5 rounded border border-red-300 mt-1">
                 {classMismatchModal.scannedClassId}
-              </strong>
+              </div>
             </div>
 
             <div className="text-xs font-mono text-[#64748B] bg-slate-100 p-2 border border-slate-200 rounded-lg mt-3">
@@ -911,9 +936,9 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             </div>
 
             <div className="text-xs text-[#7F1D1D] mt-3 mb-4 font-semibold">
-              This booklet has NOT been marked as received.
+              This booklet does not belong to Class ID {classId}.
               <span className="block mt-1 font-normal">
-                Please scan a booklet belonging to Class ID {classId}.
+                Please scan a valid booklet belonging to Class ID {classId}.
               </span>
             </div>
 
@@ -958,33 +983,18 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
               <span className="block mt-1 font-semibold">The booklet has NOT been marked as received.</span>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={resumeScanning}
-                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-              >
-                SCAN AGAIN
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const mId = memberNotFoundModal.memberId;
-                  resumeScanning();
-                  setManualClassId(classId);
-                  setManualMemberId(mId);
-                  setShowManualScanModal(true);
-                }}
-                className="flex-1 py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-              >
-                MANUAL SCAN
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={resumeScanning}
+              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
+            >
+              SCAN AGAIN
+            </button>
           </div>
         </div>
       )}
 
-      {/* SECTION 14: ALREADY SCANNED / DUPLICATE BOOKLET MODAL */}
+      {/* SECTION 14: ALREADY SCANNED MODAL */}
       {alreadyScannedModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
           <div className="w-full max-w-md bg-white border border-[#FDE68A] rounded-2xl shadow-2xl p-6 text-center">
@@ -1002,7 +1012,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                 {alreadyScannedModal.memberId}
               </strong>
               <div className="mt-1 font-semibold">
-                This booklet was already received. Count remains unchanged.
+                This booklet was already scanned for Class {classId}.
               </div>
             </div>
 
@@ -1013,108 +1023,6 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             >
               DISMISS
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 12: MANUAL SCAN MODAL */}
-      {showManualScanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-5">
-            <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0]">
-              <div className="text-xs font-bold uppercase tracking-wider text-[#172033]">
-                MANUAL SCAN INTAKE
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowManualScanModal(false);
-                  setShowManualConfirmException(false);
-                }}
-                className="p-1 hover:bg-slate-100 rounded-lg text-slate-500"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="py-3 space-y-3">
-              {manualError && (
-                <div className="p-2.5 bg-[#FEF2F2] border border-[#FECACA] rounded-lg text-xs text-[#991B1B]">
-                  {manualError}
-                </div>
-              )}
-
-              {showManualConfirmException && (
-                <div className="p-3 bg-[#FEF3C7] border border-[#FDE68A] rounded-xl text-xs text-[#92400E]">
-                  <div className="font-bold uppercase tracking-wider mb-1">UNIMPORTED BOOKLET</div>
-                  This booklet does not exist in the imported Excel data. Confirm adding it as an exception?
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleExecuteManualScan(true)}
-                      className="px-3 py-1.5 bg-[#D97706] text-white font-bold rounded-lg text-xs"
-                    >
-                      CONFIRM EXCEPTION
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowManualConfirmException(false)}
-                      className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
-                    >
-                      CANCEL
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {!showManualConfirmException && (
-                <>
-                  <div>
-                    <label className="block text-[11px] font-bold text-[#64748B] uppercase mb-1">
-                      Class ID
-                    </label>
-                    <input
-                      type="text"
-                      value={manualClassId}
-                      onChange={e => setManualClassId(e.target.value)}
-                      className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs font-mono text-[#172033]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-[#64748B] uppercase mb-1">
-                      Member ID
-                    </label>
-                    <input
-                      type="text"
-                      value={manualMemberId}
-                      onChange={e => setManualMemberId(e.target.value)}
-                      placeholder="e.g. 22MIS001"
-                      className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs font-mono text-[#172033]"
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-
-            {!showManualConfirmException && (
-              <div className="flex items-center gap-2 pt-2 border-t border-[#E2E8F0]">
-                <button
-                  type="button"
-                  onClick={() => setShowManualScanModal(false)}
-                  className="flex-1 py-2 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold uppercase tracking-wider rounded-lg"
-                >
-                  CANCEL
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleExecuteManualScan(false)}
-                  className="flex-1 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1]"
-                >
-                  PROCESS SCAN
-                </button>
-              </div>
-            )}
           </div>
         </div>
       )}
