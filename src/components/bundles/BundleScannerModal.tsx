@@ -346,29 +346,7 @@ export const BundleScannerModal: React.FC<BundleScannerModalProps> = ({
             </div>
           )}
 
-          {/* Guide reticle: Prominent WIDE RECTANGLE for full wide barcodes */}
-          {cameraActive && (
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              {/* Wide Rectangular Box */}
-              <div className="w-[92%] sm:w-[88%] h-[34%] sm:h-[30%] border-2 border-dashed border-[#22C55E] relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
-                {/* 4 Corner Markers for High Precision */}
-                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-white" />
-                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-white" />
-                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-white" />
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-white" />
-
-                {/* Red Laser Scanning Line spanning full width */}
-                <div className="absolute left-2 right-2 h-0.5 bg-red-500 shadow-[0_0_12px_#ef4444] animate-pulse" />
-
-                <span className="text-[10px] sm:text-[11px] font-bold text-white bg-black/75 px-2.5 py-0.5 uppercase tracking-widest border border-white/30">
-                  WIDE BARCODE ALIGNMENT ZONE
-                </span>
-              </div>
-              <div className="text-[10px] text-white/80 font-medium mt-3 bg-black/60 px-3 py-1 uppercase tracking-wider">
-                Align booklet barcode horizontally inside the green rectangle
-              </div>
-            </div>
-          )}
+          {/* Clean Camera View: No fixed boxes, no red lines, no overlays */}
 
           {/* Camera Controls Overlay: Torch, Camera Switch */}
           {cameraActive && (

@@ -111,40 +111,38 @@ export async function requestCameraStream(
 
   let stream: MediaStream | null = null;
 
-  // Tier 1: Try HD 16:9 widescreen (1920x1080 ideal, 1280x720 min) for sharp 1D barcode lines
+  // Tier 1: Try native 4:3 / full resolution with rear environment camera
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: deviceId
         ? {
             deviceId: { exact: deviceId },
-            width: { ideal: 1920, min: 1280 },
-            height: { ideal: 1080, min: 720 },
-            aspectRatio: { ideal: 16 / 9 },
+            width: { ideal: 1920 },
+            height: { ideal: 1440 },
+            aspectRatio: { ideal: 4 / 3 },
           }
         : {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920, min: 1280 },
-            height: { ideal: 1080, min: 720 },
-            aspectRatio: { ideal: 16 / 9 },
+            width: { ideal: 1920 },
+            height: { ideal: 1440 },
+            aspectRatio: { ideal: 4 / 3 },
           },
       audio: false,
     });
   } catch (err1) {
-    console.warn('HD 16:9 constraints rejected, trying standard 16:9 environment:', err1);
+    console.warn('Native 4:3 constraints rejected, trying relaxed environment:', err1);
     try {
-      // Tier 2: Try relaxed 1280x720
+      // Tier 2: Try relaxed rear camera
       stream = await navigator.mediaDevices.getUserMedia({
         video: deviceId
           ? { deviceId: { exact: deviceId } }
           : {
               facingMode: { ideal: 'environment' },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
             },
         audio: false,
       });
     } catch (err2) {
-      console.warn('Relaxed 16:9 rejected, trying default video:', err2);
+      console.warn('Relaxed environment rejected, trying default video:', err2);
       // Tier 3: Any video device
       stream = await navigator.mediaDevices.getUserMedia({
         video: true,

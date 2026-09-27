@@ -900,7 +900,7 @@ export const BarcodeScannerView: React.FC<{
               </button>
             </div>
 
-            {/* Camera Status & Detection Area Selector (Top-Left) */}
+            {/* Camera Status (Top-Left) */}
             <div className="absolute top-3 left-3 flex flex-wrap items-center gap-2 z-20">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-medium text-white">
                 {cameraLoading ? (
@@ -919,45 +919,6 @@ export const BarcodeScannerView: React.FC<{
                     <span>Camera Standby</span>
                   </>
                 )}
-              </div>
-
-              {/* Area Size Switcher */}
-              <button
-                type="button"
-                onClick={() => setDetectionSize(prev => (prev === 'ultra-wide' ? 'wide' : 'ultra-wide'))}
-                className="px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-[11px] font-medium text-emerald-300 border border-white/20 transition-all flex items-center gap-1 cursor-pointer"
-                title="Toggle Scan Area Width"
-              >
-                <Maximize2 className="h-3 w-3" />
-                <span>{detectionSize === 'ultra-wide' ? 'Full View Area (92%)' : 'Wide Area (80%)'}</span>
-              </button>
-            </div>
-
-            {/* EXPANDED Wide Horizontal Viewfinder Target Frame (V3 1D Barcode Optimized) */}
-            <div className="relative z-10 w-[94%] sm:w-[90%] max-w-[700px] h-[42%] sm:h-[36%] max-h-[140px] rounded-xl border-2 border-emerald-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] pointer-events-none flex flex-col items-center justify-between p-2 transition-all duration-300">
-              {/* Bold Corner Reticle Brackets */}
-              <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-[#16A34A] rounded-tl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-[#16A34A] rounded-tr-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute bottom-0 left-0 w-7 h-7 border-b-4 border-l-4 border-[#16A34A] rounded-bl-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-              <div className="absolute bottom-0 right-0 w-7 h-7 border-b-4 border-r-4 border-[#16A34A] rounded-br-md shadow-[0_0_12px_rgba(22,163,74,0.7)]" />
-
-              {/* Center Guidance Text */}
-              <div className="relative z-10 flex items-center gap-1.5 sm:gap-2 px-3 py-1 bg-black/65 backdrop-blur-xs rounded-full border border-emerald-400/30">
-                <span className="text-emerald-400 text-xs font-bold select-none">─────</span>
-                <span className="text-[10px] sm:text-xs font-black text-emerald-300 uppercase tracking-widest">
-                  SCAN BARCODE HERE
-                </span>
-                <span className="text-emerald-400 text-xs font-bold select-none">─────</span>
-              </div>
-
-              {/* Full Width Laser Scan Line */}
-              {isScanning && (
-                <div className="absolute left-1 right-1 top-1/2 -translate-y-1/2 h-[2px] bg-[#16A34A] shadow-[0_0_14px_#16A34A] animate-pulse" />
-              )}
-
-              {/* Bottom Framing Note */}
-              <div className="text-[10px] font-mono text-white/80 bg-black/50 px-3 py-0.5 rounded-full backdrop-blur-xs">
-                Keep barcode booklet at a comfortable distance
               </div>
             </div>
 
@@ -981,41 +942,7 @@ export const BarcodeScannerView: React.FC<{
               ))}
             </div>
 
-            {/* STRICT REQUIREMENT 4 & 7: Green Check Confirmation Overlay directly on Camera View */}
-            {scanSuccessFlash && (
-              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs animate-in fade-in zoom-in-95 duration-150 pointer-events-none">
-                <div className="h-20 w-20 rounded-full bg-[#16A34A] text-white flex items-center justify-center shadow-[0_0_35px_rgba(22,163,74,0.7)] mb-3 animate-in zoom-in-75 duration-200">
-                  <Check className="h-12 w-12 stroke-[3.5]" />
-                </div>
-                <div className="bg-slate-900/90 border border-[#16A34A] px-5 py-2 rounded-lg shadow-xl text-center">
-                  <div className="text-xs font-bold text-[#4ADE80] uppercase tracking-wider flex items-center justify-center gap-1.5">
-                    <Check className="h-3.5 w-3.5 stroke-[3]" />
-                    <span>Scanned Successfully</span>
-                  </div>
-                  <div className="text-sm font-mono font-bold text-white mt-0.5">
-                    Barcode: {scanSuccessFlash.barcode}
-                  </div>
-                </div>
-              </div>
-            )}
 
-            {/* STRICT REQUIREMENT 6 & 8: Duplicate or Unrecognized Warning Overlay */}
-            {scanWarningFlash && (
-              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs animate-in fade-in zoom-in-95 duration-150 pointer-events-none">
-                <div className="h-16 w-16 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-[0_0_30px_rgba(245,158,11,0.7)] mb-2 animate-in zoom-in-75 duration-200">
-                  <AlertTriangle className="h-9 w-9 stroke-[2.5]" />
-                </div>
-                <div className="bg-slate-900/90 border border-amber-500 px-5 py-2.5 rounded-lg shadow-xl text-center max-w-xs">
-                  <div className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center justify-center gap-1.5">
-                    <AlertTriangle className="h-3.5 w-3.5" />
-                    <span>{scanWarningFlash.title}</span>
-                  </div>
-                  <div className="text-xs font-mono font-medium text-slate-200 mt-1">
-                    {scanWarningFlash.message}
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* STRICT REQUIREMENT 9: Camera Permission Failure UI with Exact Prompt Text */}
             {cameraError && (

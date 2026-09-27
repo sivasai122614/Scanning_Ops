@@ -71,7 +71,22 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
   // Export notifications & feedback
   const [exportNotification, setExportNotification] = useState<string | null>(null);
-  const [scanSuccessToast, setScanSuccessToast] = useState<string | null>(null);
+  const [scanSuccessToast, setScanSuccessToast] = useState<{
+    classId: string;
+    memberId: string;
+  } | null>(null);
+
+  // Resume camera scanning after error modal dismissed
+  const resumeScanning = () => {
+    setUnknownClassModal(null);
+    setUnknownMemberModal(null);
+    setDuplicateModal(null);
+    isProcessingRef.current = false;
+    lastScannedCodeRef.current = null;
+    if (!cameraActive) {
+      startCamera();
+    }
+  };
 
   // Error Modals
   // CLASS ID NOT IMPORTED
@@ -264,15 +279,17 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         return;
       }
 
-      // Section 5 & 18: VALID SCAN -> REDIRECT TO BUNDLE SCAN
+      // Section 5 & 18: VALID SCAN -> SHOW TOAST & CONTINUE CONTINUOUS CAMERA SCANNING
       if (result.success && result.class_id) {
         playScanSuccessSound();
-        setScanSuccessToast(`Received ✓ Member ${result.member_id} in Class ${result.class_id}`);
-        setTimeout(() => setScanSuccessToast(null), 3000);
+        setScanSuccessToast({
+          classId: result.class_id,
+          memberId: result.member_id || code,
+        });
+        setTimeout(() => setScanSuccessToast(null), 2500);
 
-        // Immediately redirect to BUNDLE SCAN screen for active class
-        stopCamera();
-        setActiveClassId(result.class_id);
+        // Update counts in real time (Scanned, Pending, Dashboard) & continue camera scanning
+        loadData();
       } else {
         playScanWarningSound();
       }
@@ -351,7 +368,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   const universityName = sessionSummary?.universityName || 'General University';
 
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-12">
+    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-24">
       {/* 1. Header Toolbar (Section 4: Removed old Session Summary) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center gap-3">
@@ -383,13 +400,6 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         <div className="p-3 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-xs font-bold rounded-xl flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span>{exportNotification}</span>
-        </div>
-      )}
-
-      {scanSuccessToast && (
-        <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] text-[#1565D8] text-xs font-bold rounded-xl flex items-center gap-2 animate-in fade-in">
-          <Check className="h-4 w-4 shrink-0 text-[#16A34A] stroke-[3]" />
-          <span>{scanSuccessToast}</span>
         </div>
       )}
 
@@ -436,51 +446,15 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 3. RECTANGULAR CAMERA SCANNER (Immediately Below Statistics) */}
-      <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        {/* Camera Header */}
-        <div className="p-3.5 bg-[#1565D8] text-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Scan className="h-5 w-5" />
-            <div>
-              <div className="text-xs font-bold uppercase tracking-wider">SCAN BOOKLET</div>
-              <div className="text-[11px] text-white/80">
-                First booklet scan detects Class ID and opens BUNDLE SCAN
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {hasTorch && (
-              <button
-                type="button"
-                onClick={handleToggleTorch}
-                className={`p-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors ${
-                  torchOn ? 'bg-[#F59E0B] text-black' : 'bg-white/20 text-white hover:bg-white/30'
-                }`}
-                title="Toggle Torch/Flashlight"
-              >
-                {torchOn ? <Flashlight className="h-4 w-4" /> : <FlashlightOff className="h-4 w-4" />}
-              </button>
-            )}
-            {availableDevices.length > 1 && (
-              <button
-                type="button"
-                onClick={handleCycleCamera}
-                className="p-1.5 bg-white/20 hover:bg-white/30 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition-colors"
-                title="Switch Camera Lens"
-              >
-                <SwitchCamera className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Viewfinder: Large Rectangle preview */}
-        <div className="relative bg-black w-full aspect-16/10 sm:aspect-16/9 min-h-[260px] max-h-[400px] flex items-center justify-center overflow-hidden">
+      {/* 3. FULL-FRAME CAMERA SCANNER (Clean, spacious, full-frame detection, NO overlays) */}
+      <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
+        {/* Viewfinder: Full Camera View with NO fixed boxes, NO red lines, NO text over video */}
+        <div className="relative bg-black w-full aspect-4/3 min-h-[380px] sm:min-h-[460px] max-h-[58vh] flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
             playsInline
             muted
+            autoPlay
             className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
 
@@ -501,34 +475,86 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
               <button
                 type="button"
                 onClick={startCamera}
-                className="px-4 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors"
+                className="px-4 py-2 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors cursor-pointer"
               >
                 Start Camera
               </button>
             </div>
           )}
+        </div>
 
-          {/* Guide Reticle: Rectangular scan boundary */}
-          {cameraActive && (
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-4">
-              <div className="w-[88%] sm:w-[82%] h-[32%] sm:h-[28%] border-2 border-dashed border-[#22C55E] relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] rounded-xl">
-                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-white rounded-tl" />
-                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-white rounded-tr" />
-                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-white rounded-bl" />
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-white rounded-br" />
-
-                <div className="absolute left-2 right-2 h-0.5 bg-red-500 shadow-[0_0_12px_#ef4444] animate-pulse" />
-
-                <span className="text-[10px] font-bold text-white bg-black/75 px-2.5 py-0.5 uppercase tracking-widest border border-white/30 rounded">
-                  BARCODE DETECTION ZONE
-                </span>
+        {/* Success Feedback State OUTSIDE/BELOW the camera */}
+        {scanSuccessToast && (
+          <div className="mx-3 mt-3 p-3 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] rounded-xl flex items-center justify-between shadow-xs animate-in fade-in duration-150">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#16A34A] text-white shrink-0">
+                <Check className="h-4 w-4 stroke-[3]" />
               </div>
-
-              <div className="text-[10px] sm:text-xs text-white font-bold mt-2.5 bg-black/70 px-3 py-1 uppercase tracking-wider border border-white/20 rounded-lg">
-                HOLD BOOKLET BARCODE HORIZONTALLY INSIDE THE GREEN RECTANGLE
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-wider text-[#15803D]">
+                  ✓ BOOKLET RECEIVED
+                </div>
+                <div className="font-mono text-sm font-bold text-[#166534]">
+                  {scanSuccessToast.classId} • {scanSuccessToast.memberId}
+                </div>
               </div>
             </div>
-          )}
+            <span className="text-[10px] uppercase font-bold text-[#15803D] bg-white/90 px-2 py-0.5 rounded border border-[#86EFAC]">
+              Ready for Next
+            </span>
+          </div>
+        )}
+
+        {/* Small Camera Controls BELOW the camera */}
+        <div className="p-3 bg-white border-t border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {hasTorch && (
+              <button
+                type="button"
+                onClick={handleToggleTorch}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors flex items-center gap-1.5 ${
+                  torchOn
+                    ? 'bg-[#F59E0B] text-black border-[#D97706]'
+                    : 'bg-slate-50 text-[#172033] border-[#CBD5E1] hover:bg-slate-100'
+                }`}
+                title="Toggle Torch/Flashlight"
+              >
+                {torchOn ? <Flashlight className="h-4 w-4" /> : <FlashlightOff className="h-4 w-4" />}
+                <span>{torchOn ? 'Flash On' : 'Flash'}</span>
+              </button>
+            )}
+            {availableDevices.length > 1 && (
+              <button
+                type="button"
+                onClick={handleCycleCamera}
+                className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#CBD5E1] bg-slate-50 text-[#172033] hover:bg-slate-100 transition-colors flex items-center gap-1.5"
+                title="Switch Camera Lens"
+              >
+                <SwitchCamera className="h-4 w-4" />
+                <span>Switch Camera</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {cameraActive ? (
+              <button
+                type="button"
+                onClick={stopCamera}
+                className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#CBD5E1] text-[#64748B] hover:text-[#172033] hover:bg-slate-50 transition-colors"
+              >
+                Pause Camera
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startCamera}
+                className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#1565D8] text-white hover:bg-[#0D47A1] transition-colors"
+              >
+                Start Camera
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Clean Manual Input & Upload Bar directly under camera */}
@@ -701,17 +727,17 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setUnknownClassModal(null)}
-                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider rounded-lg"
+                onClick={resumeScanning}
+                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
               >
                 SCAN AGAIN
               </button>
               <button
                 type="button"
-                onClick={() => setUnknownClassModal(null)}
-                className="flex-1 py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg"
+                onClick={resumeScanning}
+                className="flex-1 py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
               >
-                BACK TO DASHBOARD
+                CONTINUE
               </button>
             </div>
           </div>
@@ -747,8 +773,8 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
             <button
               type="button"
-              onClick={() => setUnknownMemberModal(null)}
-              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg"
+              onClick={resumeScanning}
+              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
             >
               SCAN AGAIN
             </button>
@@ -776,15 +802,15 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setDuplicateModal(null)}
-                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider rounded-lg"
+                onClick={resumeScanning}
+                className="flex-1 py-2.5 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold hover:bg-slate-50 transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
               >
                 DISMISS
               </button>
               <button
                 type="button"
-                onClick={() => setDuplicateModal(null)}
-                className="flex-1 py-2.5 bg-[#D97706] text-white text-xs font-bold hover:bg-[#B45309] transition-colors uppercase tracking-wider rounded-lg"
+                onClick={resumeScanning}
+                className="flex-1 py-2.5 bg-[#D97706] text-white text-xs font-bold hover:bg-[#B45309] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
               >
                 SCAN ANOTHER
               </button>
