@@ -149,6 +149,8 @@ CREATE INDEX idx_imp_inward_member_id ON public.imported_inward_data(member_id);
 CREATE INDEX idx_imp_inward_barcode ON public.imported_inward_data(barcode);
 CREATE INDEX idx_imp_inward_scan_status ON public.imported_inward_data(scan_status);
 CREATE INDEX idx_imp_inward_session_id ON public.imported_inward_data(import_session_id);
+-- Core identity uniqueness: CLASS ID + MEMBER ID
+CREATE UNIQUE INDEX IF NOT EXISTS uq_imp_inward_class_member ON public.imported_inward_data(class_id, member_id);
 
 -- Enable RLS and public access policies
 ALTER TABLE public.imported_inward_data ENABLE ROW LEVEL SECURITY;
@@ -723,6 +725,188 @@ class ImportedService {
   }
 
   /**
+   * Check for duplicate records against existing imported records.
+   * Identity: CLASS ID + MEMBER ID.
+   * Also identifies duplicates within the Excel file itself.
+   */
+  public checkDuplicates(items: { class_id: string; member_id: string }[]): {
+    newItems: { class_id: string; member_id: string }[];
+    duplicateItems: { class_id: string; member_id: string }[];
+    totalChecked: number;
+    allDuplicates: boolean;
+    hasDuplicates: boolean;
+  } {
+    const existingSet = new Set<string>();
+    for (const r of this.records) {
+      existingSet.add(`${String(r.class_id).trim().toLowerCase()}::${String(r.member_id).trim().toLowerCase()}`);
+    }
+
+    const seenInExcel = new Set<string>();
+    const newItems: { class_id: string; member_id: string }[] = [];
+    const duplicateItems: { class_id: string; member_id: string }[] = [];
+
+    for (const item of items) {
+      const cid = String(item.class_id).trim();
+      const mid = String(item.member_id).trim();
+      if (!cid || !mid) continue;
+
+      const key = `${cid.toLowerCase()}::${mid.toLowerCase()}`;
+      if (existingSet.has(key) || seenInExcel.has(key)) {
+        duplicateItems.push({ class_id: cid, member_id: mid });
+      } else {
+        seenInExcel.add(key);
+        newItems.push({ class_id: cid, member_id: mid });
+      }
+    }
+
+    return {
+      newItems,
+      duplicateItems,
+      totalChecked: items.length,
+      allDuplicates: items.length > 0 && newItems.length === 0,
+      hasDuplicates: duplicateItems.length > 0,
+    };
+  }
+
+  /**
+   * Clear all imported records, bundles, and sessions
+   */
+  public clearAllImportedData() {
+    this.records = [];
+    this.bundles = [];
+    this.sessions = [];
+    this.activeSession = null;
+    this.saveLocal();
+    this.notify();
+  }
+
+  /**
+   * Process Manual Scan with 3-case validation (Section 12)
+   */
+  public async processManualScan(
+    classIdInput: string,
+    memberIdInput: string,
+    forceException: boolean = false
+  ): Promise<{
+    success: boolean;
+    isAlreadyScanned?: boolean;
+    isUnimported?: boolean;
+    isNewScan?: boolean;
+    isException?: boolean;
+    message: string;
+    record?: ImportedRecord;
+    bundle?: ClassBundle;
+  }> {
+    const cid = String(classIdInput || '').trim();
+    const mid = String(memberIdInput || '').trim();
+    if (!cid || !mid) {
+      return { success: false, message: 'Class ID and Member ID are required.' };
+    }
+
+    // Find record in active session/records by CLASS ID + MEMBER ID
+    const existingRecord = this.records.find(
+      r =>
+        r.class_id.trim().toLowerCase() === cid.toLowerCase() &&
+        r.member_id.trim().toLowerCase() === mid.toLowerCase()
+    );
+
+    // CASE 1: Record already exists and was scanned
+    if (existingRecord && (existingRecord.scan_status === 'started' || existingRecord.scan_status === 'completed')) {
+      return {
+        success: false,
+        isAlreadyScanned: true,
+        message: `ALREADY SCANNED\n\nMember ID: ${existingRecord.member_id} in Class ${existingRecord.class_id} was already received.`,
+        record: existingRecord,
+      };
+    }
+
+    // CASE 2: Record exists in imported Excel but is not scanned
+    if (existingRecord && existingRecord.scan_status === 'not_started') {
+      const now = new Date().toISOString();
+      existingRecord.scan_status = 'started';
+      existingRecord.scanned_at = now;
+      existingRecord.barcode = `${cid}${mid}`;
+
+      this.reconcileBundlesWithRecords();
+      const updatedBundle = this.getClassBundle(cid);
+      if (updatedBundle && updatedBundle.status === 'NOT STARTED') {
+        updatedBundle.status = 'IN PROGRESS';
+      }
+      this.saveLocal();
+
+      if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+        try {
+          await supabase
+            .from(this.tableName)
+            .update({ scan_status: 'started', scanned_at: now, barcode: `${cid}${mid}` })
+            .eq('id', existingRecord.id);
+        } catch {}
+      }
+
+      this.notify();
+
+      return {
+        success: true,
+        isNewScan: true,
+        message: `✓ Received: Member ${existingRecord.member_id} in Class ${existingRecord.class_id}`,
+        record: existingRecord,
+        bundle: updatedBundle || undefined,
+      };
+    }
+
+    // CASE 3: Record does not exist in imported Excel
+    if (!existingRecord) {
+      if (!forceException) {
+        return {
+          success: false,
+          isUnimported: true,
+          message: `UNIMPORTED BOOKLET DETECTED\n\nClass ID: ${cid}\nMember ID: ${mid}\n\nThis booklet was not found in the imported Excel data.`,
+        };
+      }
+
+      // Explicit confirmation allowed: Create exception record
+      const now = new Date().toISOString();
+      const sessionId = this.activeSession?.id || 'default_session';
+      const uniName = this.activeSession?.university_name || 'General University';
+      const exceptionRecord: ImportedRecord = {
+        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_exc_${Date.now()}`,
+        import_session_id: sessionId,
+        university_name: uniName,
+        class_id: cid,
+        member_id: mid,
+        barcode: `${cid}${mid}`,
+        scan_status: 'started',
+        scanned_at: now,
+        saved_at: null,
+        created_at: now,
+      };
+
+      this.records.push(exceptionRecord);
+      this.reconcileBundlesWithRecords();
+      const updatedBundle = this.getClassBundle(cid);
+      this.saveLocal();
+
+      if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+        try {
+          await supabase.from(this.tableName).insert([exceptionRecord]);
+        } catch {}
+      }
+
+      this.notify();
+
+      return {
+        success: true,
+        isException: true,
+        message: `✓ Manual Exception Scan Processed: Member ${mid} for Class ${cid}`,
+        record: exceptionRecord,
+        bundle: updatedBundle || undefined,
+      };
+    }
+
+    return { success: false, message: 'Could not process manual scan.' };
+  }
+
+  /**
    * Bulk insert imported records into Supabase and local cache
    * Section 1:
    * 1. Remove all sample/demo data completely.
@@ -750,20 +934,51 @@ class ImportedService {
     const now = new Date().toISOString();
     const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`;
 
-    // 1. Create Import Session (Section 6)
-    const session: ImportSession = {
-      id: sessionId,
-      university_name: cleanUniversity,
-      source_file_name: sourceFileName || 'import_file.xlsx',
-      total_records: items.length,
-      total_class_ids: new Set(items.map(i => i.class_id.trim())).size,
-      created_at: now,
-    };
+    // 1. Check existing records for duplicates (Identity: CLASS ID + MEMBER ID)
+    const existingSet = new Set<string>();
+    for (const r of this.records) {
+      existingSet.add(`${r.class_id.trim().toLowerCase()}::${r.member_id.trim().toLowerCase()}`);
+    }
 
-    // 2. Prepare Records (scan_status = 'not_started')
-    const newRecords: ImportedRecord[] = items.map((item, index) => ({
+    const isFirstImport = this.records.length === 0;
+    const itemsToInsert = isFirstImport
+      ? items
+      : items.filter(
+          item =>
+            !existingSet.has(
+              `${String(item.class_id).trim().toLowerCase()}::${String(item.member_id).trim().toLowerCase()}`
+            )
+        );
+
+    if (itemsToInsert.length === 0 && !isFirstImport) {
+      return { success: false, inserted: 0, error: 'All records in this Excel file already exist.' };
+    }
+
+    // 2. Create or Update Import Session
+    let session = this.activeSession;
+    if (!session || isFirstImport) {
+      session = {
+        id: sessionId,
+        university_name: cleanUniversity,
+        source_file_name: sourceFileName || 'import_file.xlsx',
+        total_records: itemsToInsert.length,
+        total_class_ids: new Set(itemsToInsert.map(i => i.class_id.trim())).size,
+        created_at: now,
+      };
+      this.sessions = [session];
+      this.activeSession = session;
+    } else {
+      session.university_name = cleanUniversity;
+      session.total_records += itemsToInsert.length;
+      session.total_class_ids = new Set(
+        [...this.records, ...itemsToInsert.map(i => ({ class_id: i.class_id }))].map(i => i.class_id.trim())
+      ).size;
+    }
+
+    // 3. Prepare New Records (scan_status = 'not_started')
+    const newRecords: ImportedRecord[] = itemsToInsert.map((item, index) => ({
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_${Date.now()}_${index}`,
-      import_session_id: sessionId,
+      import_session_id: session!.id,
       university_name: cleanUniversity,
       class_id: String(item.class_id).trim(),
       member_id: String(item.member_id).trim(),
@@ -774,39 +989,14 @@ class ImportedService {
       created_at: now,
     }));
 
-    // 3. Calculate class-wise expected counts and initialize bundles
-    const classCountMap = new Map<string, number>();
-    for (const it of items) {
-      const cid = String(it.class_id).trim();
-      classCountMap.set(cid, (classCountMap.get(cid) || 0) + 1);
+    if (isFirstImport) {
+      this.records = newRecords;
+    } else {
+      this.records = [...this.records, ...newRecords];
     }
 
-    const newBundles: ClassBundle[] = [];
-    for (const [classId, expectedCount] of classCountMap.entries()) {
-      newBundles.push({
-        id: `bundle_${sessionId}_${classId}`,
-        sessionId,
-        universityName: cleanUniversity,
-        classId,
-        expectedCount,
-        receivedCount: 0,
-        missingCount: expectedCount,
-        remainingCount: expectedCount,
-        progressPercentage: 0,
-        status: 'NOT STARTED',
-        isSaved: false,
-        isCompleted: false,
-        savedAt: null,
-        updatedAt: now,
-        createdAt: now,
-      });
-    }
-
-    // Wipe previous session/demo data completely (Req 1.1)
-    this.sessions = [session];
-    this.activeSession = session;
-    this.records = newRecords;
-    this.bundles = newBundles;
+    // 4. Reconcile bundles dynamically across all records
+    const updatedBundles = this.reconcileBundlesWithRecords();
     this.saveLocal();
 
     // Check remote table availability
@@ -836,7 +1026,7 @@ class ImportedService {
         // Insert bundles into class_bundles table if present
         try {
           await supabase.from('class_bundles').upsert(
-            newBundles.map(b => ({
+            updatedBundles.map(b => ({
               id: b.id,
               session_id: b.sessionId,
               university_name: b.universityName,
@@ -1160,6 +1350,172 @@ class ImportedService {
       record: targetRecord,
       bundle: updatedBundle || undefined,
       message: `✓ Scanned ${targetRecord.member_id} for Class ${actualClassId}`,
+    };
+  }
+
+  /**
+   * Process Scan within an Active Bundle Scan session (Sections 9, 10, 11, 13, 14)
+   * Enforces:
+   * 1. Class ID Mismatch Protection (Section 9)
+   * 2. Member ID Validation for Active Class (Section 10)
+   * 3. Duplicate Scan Protection (Section 14)
+   * 4. Received Checkmark and Real-Time Counts (Section 13)
+   */
+  public async processBundleScan(
+    activeClassId: string,
+    barcodeInput: string
+  ): Promise<ScanResult> {
+    const rawCode = sanitizeBarcode(barcodeInput);
+    if (!rawCode) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    const { detectedClassId, detectedMemberId } = this.parseBarcodeContent(rawCode);
+    const cleanActiveCid = activeClassId.trim().toLowerCase();
+
+    // 1. SECTION 9: CLASS ID MISMATCH PROTECTION (CRITICAL)
+    if (detectedClassId && detectedClassId.toLowerCase() !== cleanActiveCid) {
+      return {
+        success: false,
+        isWrongClass: true,
+        currentClassId: activeClassId,
+        detectedClassId,
+        detectedMemberId: detectedMemberId || undefined,
+        barcode: rawCode,
+        message: `CLASS ID MISMATCH\n\nYou are currently scanning: ${activeClassId}\nBut this booklet belongs to: ${detectedClassId}\n\nThis booklet has NOT been marked as received.\nPlease scan a booklet belonging to Class ID ${activeClassId}.`,
+      };
+    }
+
+    // 2. Find imported records for activeClassId
+    const classRecords = this.records.filter(
+      r => r.class_id.trim().toLowerCase() === cleanActiveCid
+    );
+
+    if (classRecords.length === 0) {
+      return {
+        success: false,
+        isUnknownClass: true,
+        detectedClassId: activeClassId,
+        barcode: rawCode,
+        message: `CLASS ID NOT IMPORTED\n\nClass ID ${activeClassId} has no imported records in this session.`,
+      };
+    }
+
+    // 3. SECTION 10 & 11: MEMBER ID VALIDATION
+    let targetRecord: ImportedRecord | undefined;
+    if (detectedMemberId) {
+      targetRecord = classRecords.find(
+        r =>
+          r.member_id.toLowerCase() === detectedMemberId.toLowerCase() ||
+          r.member_id.toLowerCase() === rawCode.toLowerCase() ||
+          (r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === rawCode.toLowerCase())
+      );
+
+      if (!targetRecord) {
+        return {
+          success: false,
+          isUnknownMember: true,
+          class_id: activeClassId,
+          detectedClassId: activeClassId,
+          detectedMemberId,
+          barcode: rawCode,
+          message: `MEMBER ID NOT FOUND\n\nClass ID: ${activeClassId}\nMember ID: ${detectedMemberId}\n\nThis Member ID was not found in the imported Excel data for Class ID ${activeClassId}.\n\nThe booklet has NOT been marked as received.`,
+        };
+      }
+    } else {
+      // If barcode does not contain separate member format, check if raw barcode matches any member
+      targetRecord = classRecords.find(
+        r =>
+          r.member_id.toLowerCase() === rawCode.toLowerCase() ||
+          (r.barcode && sanitizeBarcode(r.barcode).toLowerCase() === rawCode.toLowerCase())
+      );
+
+      if (!targetRecord) {
+        // Fallback to next pending member in this class
+        targetRecord = classRecords.find(r => r.scan_status === 'not_started');
+      }
+
+      if (!targetRecord) {
+        return {
+          success: false,
+          isAllScanned: true,
+          class_id: activeClassId,
+          barcode: rawCode,
+          message: `All ${classRecords.length} booklets for Class ${activeClassId} have already been received!`,
+        };
+      }
+    }
+
+    // 4. SECTION 14: DUPLICATE SCAN PROTECTION
+    if (targetRecord.scan_status === 'started' || targetRecord.scan_status === 'completed') {
+      return {
+        success: false,
+        isDuplicate: true,
+        class_id: activeClassId,
+        member_id: targetRecord.member_id,
+        barcode: rawCode,
+        record: targetRecord,
+        message: `ALREADY SCANNED\n\nMember ID: ${targetRecord.member_id}\n\nThis booklet was already received.`,
+      };
+    }
+
+    // 5. SECTION 13: VALID BOOKLET -> MARK RECEIVED ✓
+    const now = new Date().toISOString();
+    targetRecord.scan_status = 'started';
+    targetRecord.scanned_at = now;
+    targetRecord.barcode = rawCode;
+
+    this.reconcileBundlesWithRecords();
+    const updatedBundle = this.getClassBundle(activeClassId);
+    if (updatedBundle) {
+      if (updatedBundle.status === 'NOT STARTED') {
+        updatedBundle.status = 'IN PROGRESS';
+      }
+      updatedBundle.updatedAt = now;
+    }
+
+    this.saveLocal();
+
+    // Persist to remote Supabase in background
+    if (isSupabaseConfigured && this.isRemoteTableAvailable) {
+      try {
+        await supabase
+          .from(this.tableName)
+          .update({ scan_status: 'started', scanned_at: now, barcode: rawCode })
+          .eq('id', targetRecord.id);
+
+        if (updatedBundle) {
+          try {
+            await supabase.from('class_bundles').upsert({
+              id: updatedBundle.id,
+              session_id: updatedBundle.sessionId,
+              university_name: updatedBundle.universityName,
+              class_id: updatedBundle.classId,
+              expected_count: updatedBundle.expectedCount,
+              received_count: updatedBundle.receivedCount,
+              missing_count: updatedBundle.missingCount,
+              status: updatedBundle.status,
+              is_saved: updatedBundle.isSaved,
+              is_completed: updatedBundle.isCompleted,
+              saved_at: updatedBundle.savedAt,
+              updated_at: now,
+            });
+          } catch {}
+        }
+      } catch (err) {
+        console.warn('Sync scan note:', err);
+      }
+    }
+
+    this.notify();
+
+    return {
+      success: true,
+      class_id: activeClassId,
+      member_id: targetRecord.member_id,
+      record: targetRecord,
+      bundle: updatedBundle || undefined,
+      message: `✓ Received: Member ${targetRecord.member_id} in Class ${activeClassId}`,
     };
   }
 

@@ -60,8 +60,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const totalClasses = sessionSummary?.totalClasses || bundles.length;
   const totalExpected = sessionSummary?.totalExpected || 0;
   const totalReceived = sessionSummary?.totalReceived || 0;
-  const totalMissing = sessionSummary?.totalMissing || 0;
-  const completionRate = sessionSummary?.overallCompletion || 0;
+  const totalPending = Math.max(0, totalExpected - totalReceived);
+  const completionRate = totalExpected > 0 ? Math.round((totalReceived / totalExpected) * 100) : 0;
   const universityName = sessionSummary?.universityName || 'General University';
 
   // Status breakdown counts
@@ -70,12 +70,14 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const partialSavedCount = bundles.filter(b => b.status === 'PARTIAL / SAVED').length;
   const notStartedCount = bundles.filter(b => b.status === 'NOT STARTED').length;
 
+  const hasScanningStarted = totalReceived > 0;
+
   return (
     <div className="space-y-4 font-sans max-w-5xl mx-auto pb-12">
       {/* 1. Header Toolbar (Informational Only - No Operational Scan Buttons) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 h-9 px-3 bg-[#F8FAFC] border border-[#E2E8F0] text-xs font-semibold text-[#172033]">
+          <div className="flex items-center gap-2 h-9 px-3 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg text-xs font-semibold text-[#172033]">
             <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
             <span>{todayStr}</span>
           </div>
@@ -87,7 +89,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
         {/* Live Monitoring Badge */}
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#F1F5F9] border border-[#CBD5E1] text-[#475569] text-xs font-bold uppercase tracking-wider">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] border border-[#CBD5E1] rounded-lg text-[#475569] text-xs font-bold uppercase tracking-wider">
             <Activity className="h-3.5 w-3.5 text-[#1565D8]" />
             <span>Monitoring Overview</span>
           </span>
@@ -96,41 +98,41 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
       {/* 2. Statistics KPI Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">Total Classes</div>
+        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES</div>
           <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalClasses}</div>
           <div className="text-[11px] text-[#64748B] mt-0.5">Imported Sessions</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#CBD5E1] shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">Expected Booklets</div>
+        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
           <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalExpected}</div>
           <div className="text-[11px] text-[#64748B] mt-0.5">Source from Excel</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#BFDBFE] shadow-xs bg-[#F8FAFC]">
-          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">Received Booklets</div>
+        <div className="bg-white p-3.5 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
+          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">RECEIVED BOOKLETS</div>
           <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">{totalReceived}</div>
           <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">Inwarded / Verified</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#FECACA] shadow-xs">
-          <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">Missing Booklets</div>
-          <div className="text-2xl font-black text-[#DC2626] font-tabular mt-1">{totalMissing}</div>
-          <div className="text-[11px] text-[#DC2626] mt-0.5 font-medium">Remaining to Inward</div>
+        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
+          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalPending}</div>
+          <div className="text-[11px] text-[#64748B] mt-0.5 font-medium">Expected - Received</div>
         </div>
       </div>
 
       {/* 3. Today's Progress Card */}
-      <div className="bg-white p-4 border border-[#CBD5E1] shadow-xs">
+      <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">Today's Progress</span>
           <span className="text-sm font-black font-tabular text-[#16A34A]">{completionRate}%</span>
         </div>
 
-        <div className="mt-2 h-2.5 w-full bg-slate-100 overflow-hidden border border-[#CBD5E1]">
+        <div className="mt-2 h-2.5 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
           <div
-            className="h-full bg-[#16A34A] transition-all duration-300"
+            className="h-full bg-[#16A34A] transition-all duration-300 rounded-full"
             style={{ width: `${Math.min(100, completionRate)}%` }}
           />
         </div>
@@ -146,44 +148,58 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       </div>
 
       {/* 4. Scanning Status Overview Grid (Section 1) */}
-      <div className="bg-white p-4 border border-[#CBD5E1] shadow-xs">
+      <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="text-xs font-bold uppercase tracking-wider text-[#172033] mb-3 flex items-center gap-1.5">
           <Layers className="h-4 w-4 text-[#1565D8]" />
           <span>Scanning Status Overview</span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0]">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Not Started</div>
-            <div className="text-xl font-bold font-tabular text-[#475569] mt-0.5">{notStartedCount}</div>
-            <div className="text-[10px] text-[#64748B] mt-0.5">Classes pending intake</div>
+        {!hasScanningStarted ? (
+          /* Neutral State Before Scanning Starts */
+          <div className="p-4 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl text-center">
+            <Clock className="h-5 w-5 text-[#64748B] mx-auto mb-1.5" />
+            <div className="text-xs font-bold text-[#172033]">
+              Scanning has not started yet.
+            </div>
+            <div className="text-[11px] text-[#64748B] mt-0.5">
+              Start scanning a booklet to begin live monitoring.
+            </div>
           </div>
+        ) : (
+          /* Active State After First Valid Booklet */
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Not Started</div>
+              <div className="text-xl font-bold font-tabular text-[#475569] mt-0.5">{notStartedCount}</div>
+              <div className="text-[10px] text-[#64748B] mt-0.5">Classes pending intake</div>
+            </div>
 
-          <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE]">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-[#1D4ED8]">In Progress</div>
-            <div className="text-xl font-bold font-tabular text-[#1565D8] mt-0.5">{inProgressCount}</div>
-            <div className="text-[10px] text-[#1E40AF] mt-0.5">Currently inwarding</div>
-          </div>
+            <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#1D4ED8]">In Progress</div>
+              <div className="text-xl font-bold font-tabular text-[#1565D8] mt-0.5">{inProgressCount}</div>
+              <div className="text-[10px] text-[#1E40AF] mt-0.5">Currently inwarding</div>
+            </div>
 
-          <div className="p-3 bg-[#FEF3C7] border border-[#FDE68A]">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-[#B45309]">Partial / Saved</div>
-            <div className="text-xl font-bold font-tabular text-[#B45309] mt-0.5">{partialSavedCount}</div>
-            <div className="text-[10px] text-[#92400E] mt-0.5">Inwarded with missing</div>
-          </div>
+            <div className="p-3 bg-[#FEF3C7] border border-[#FDE68A] rounded-lg">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#B45309]">Partial / Saved</div>
+              <div className="text-xl font-bold font-tabular text-[#B45309] mt-0.5">{partialSavedCount}</div>
+              <div className="text-[10px] text-[#92400E] mt-0.5">Inwarded with pending</div>
+            </div>
 
-          <div className="p-3 bg-[#DCFCE7] border border-[#BBF7D0]">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D]">Completed</div>
-            <div className="text-xl font-bold font-tabular text-[#16A34A] mt-0.5">{completedCount}</div>
-            <div className="text-[10px] text-[#166534] mt-0.5">100% Verified &amp; Saved</div>
+            <div className="p-3 bg-[#DCFCE7] border border-[#BBF7D0] rounded-lg">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D]">Completed</div>
+              <div className="text-xl font-bold font-tabular text-[#16A34A] mt-0.5">{completedCount}</div>
+              <div className="text-[10px] text-[#166534] mt-0.5">100% Verified &amp; Saved</div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* 5. Class-Wise Monitoring Table (Read-Only Overview) */}
-      <div className="bg-white border border-[#CBD5E1] shadow-xs overflow-hidden">
+      <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
         <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0]">
           <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
-            Class-Wise Monitoring Overview
+            CLASS-WISE MONITORING OVERVIEW
           </h2>
           <div className="text-[11px] text-[#64748B]">
             Real-time status of all imported class bundles in the current inwarding session
@@ -192,12 +208,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
         {bundles.length === 0 ? (
           <div className="p-8 text-center">
-            <div className="flex h-10 w-10 items-center justify-center bg-[#EAF2FF] text-[#1565D8] mx-auto mb-2">
+            <div className="flex h-10 w-10 items-center justify-center bg-[#EAF2FF] text-[#1565D8] rounded-xl mx-auto mb-2">
               <FileSpreadsheet className="h-5 w-5" />
             </div>
-            <h3 className="text-xs font-bold text-[#172033]">No Imported Classes Found</h3>
+            <h3 className="text-xs font-bold text-[#172033]">NO IMPORTED DATA</h3>
             <p className="text-[11px] text-[#64748B] max-w-sm mx-auto mt-1">
-              Upload an Inward Excel file in the Import Data screen to populate class-wise records.
+              Import an Excel file containing Class ID and Member ID to begin.
             </p>
           </div>
         ) : (
@@ -207,8 +223,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 <tr>
                   <th className="py-2.5 px-3">Class ID</th>
                   <th className="py-2.5 px-3">Expected</th>
-                  <th className="py-2.5 px-3">Received</th>
-                  <th className="py-2.5 px-3">Remaining</th>
+                  <th className="py-2.5 px-3">Scanned</th>
+                  <th className="py-2.5 px-3">Pending</th>
                   <th className="py-2.5 px-3">Progress</th>
                   <th className="py-2.5 px-3">Status</th>
                 </tr>
@@ -224,6 +240,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                     badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
                   }
 
+                  const classPending = Math.max(0, b.expectedCount - b.receivedCount);
+
                   return (
                     <tr key={b.classId} className="hover:bg-slate-50 transition-colors">
                       <td className="py-2.5 px-3 font-mono font-bold text-[#172033]">
@@ -236,13 +254,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                         {b.receivedCount}
                       </td>
                       <td className="py-2.5 px-3 font-tabular font-bold text-[#DC2626]">
-                        {b.missingCount}
+                        {classPending}
                       </td>
                       <td className="py-2.5 px-3">
                         <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-16 bg-slate-200 overflow-hidden">
+                          <div className="h-1.5 w-16 bg-slate-200 rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-[#16A34A]"
+                              className="h-full bg-[#16A34A] rounded-full"
                               style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
                             />
                           </div>
@@ -253,7 +271,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       </td>
                       <td className="py-2.5 px-3">
                         <span
-                          className={`inline-block px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider ${badgeColor}`}
+                          className={`inline-block px-2 py-0.5 border rounded-md text-[10px] font-bold uppercase tracking-wider ${badgeColor}`}
                         >
                           {b.status}
                         </span>
