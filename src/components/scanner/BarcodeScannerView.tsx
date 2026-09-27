@@ -853,96 +853,13 @@ export const BarcodeScannerView: React.FC<{
               }`}
             />
 
-            {/* Camera Overlay Controls (Top-Right) */}
-            <div className="absolute top-3 right-3 flex items-center gap-2 z-20">
-              {availableCameras.length > 1 && (
-                <select
-                  value={selectedCameraId}
-                  onChange={e => {
-                    const devId = e.target.value;
-                    setSelectedCameraId(devId);
-                    startCameraStream(devId);
-                  }}
-                  className="bg-black/60 backdrop-blur-md text-white text-[11px] px-2 py-1.5 rounded-md border border-white/20 focus:outline-none max-w-[130px] truncate"
-                  title="Switch camera device"
-                >
-                  {availableCameras.map((cam, idx) => (
-                    <option key={cam.deviceId || idx} value={cam.deviceId} className="bg-slate-900 text-white">
-                      {cam.label || `Camera ${idx + 1}`}
-                    </option>
-                  ))}
-                </select>
-              )}
-
-              <button
-                type="button"
-                onClick={toggleTorch}
-                className={`p-2 rounded-full backdrop-blur-md transition-colors ${
-                  torchOn ? 'bg-amber-400 text-slate-950' : 'bg-black/50 text-white hover:bg-black/70'
-                }`}
-                title="Toggle Torch"
-              >
-                <Zap className="h-4 w-4" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (cameraActive) stopCameraStream();
-                  else startCameraStream();
-                }}
-                className={`p-2 rounded-full backdrop-blur-md transition-colors ${
-                  cameraActive ? 'bg-black/50 text-white hover:bg-black/70' : 'bg-rose-600 text-white'
-                }`}
-                title={cameraActive ? 'Pause Camera' : 'Start Camera'}
-              >
-                {cameraActive ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
-              </button>
-            </div>
-
-            {/* Camera Status (Top-Left) */}
-            <div className="absolute top-3 left-3 flex flex-wrap items-center gap-2 z-20">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-medium text-white">
-                {cameraLoading ? (
-                  <>
-                    <div className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-                    <span>Starting Camera...</span>
-                  </>
-                ) : cameraActive ? (
-                  <>
-                    <span className="h-2 w-2 rounded-full bg-[#16A34A] animate-pulse" />
-                    <span>Camera Live</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="h-2 w-2 rounded-full bg-amber-500" />
-                    <span>Camera Standby</span>
-                  </>
-                )}
+            {/* Loading Indicator */}
+            {cameraLoading && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/70 text-white">
+                <div className="h-8 w-8 border-3 border-white/20 border-t-white rounded-full animate-spin mb-2" />
+                <span className="text-xs font-semibold tracking-wide">Starting Camera...</span>
               </div>
-            </div>
-
-            {/* Quick Zoom Controls (Bottom-Left) */}
-            <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg border border-white/20">
-              <span className="text-[10px] font-bold text-slate-300 pr-1 uppercase">Zoom</span>
-              {[1, 1.5, 2].map(z => (
-                <button
-                  key={z}
-                  type="button"
-                  onClick={() => applyZoom(z)}
-                  className={`px-2 py-0.5 text-[11px] font-bold rounded cursor-pointer transition-all ${
-                    zoomLevel === z
-                      ? 'bg-[#1565D8] text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-white/10'
-                  }`}
-                  title={`Set camera zoom to ${z}x`}
-                >
-                  {z}x
-                </button>
-              ))}
-            </div>
-
-
+            )}
 
             {/* STRICT REQUIREMENT 9: Camera Permission Failure UI with Exact Prompt Text */}
             {cameraError && (
@@ -984,9 +901,80 @@ export const BarcodeScannerView: React.FC<{
                 </div>
               </div>
             )}
+          </div>
 
-            {/* Quick Test Barcode Button for testing without physical camera */}
-            <div className="absolute bottom-2.5 right-2.5 z-20">
+          {/* Small Clean Camera Controls BELOW the camera */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 border border-[#E2E8F0] rounded-xl text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleTorch}
+                className={`px-3 py-1.5 font-bold rounded-lg border transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  torchOn ? 'bg-amber-400 text-slate-950 border-amber-500' : 'bg-white text-slate-700 border-[#CBD5E1] hover:bg-slate-100'
+                }`}
+                title="Toggle Torch"
+              >
+                <Zap className="h-3.5 w-3.5" />
+                <span>{torchOn ? 'Flash On' : 'Flash'}</span>
+              </button>
+
+              {availableCameras.length > 1 && (
+                <div className="flex items-center gap-1">
+                  <select
+                    value={selectedCameraId}
+                    onChange={e => {
+                      const devId = e.target.value;
+                      setSelectedCameraId(devId);
+                      startCameraStream(devId);
+                    }}
+                    className="bg-white text-slate-700 border border-[#CBD5E1] text-xs px-2.5 py-1.5 rounded-lg focus:outline-none max-w-[130px] truncate"
+                    title="Switch camera device"
+                  >
+                    {availableCameras.map((cam, idx) => (
+                      <option key={cam.deviceId || idx} value={cam.deviceId}>
+                        {cam.label || `Camera ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Zoom Controls */}
+              <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-lg border border-[#CBD5E1]">
+                <span className="text-[10px] font-bold text-slate-500 pr-1 uppercase">Zoom</span>
+                {[1, 1.5, 2].map(z => (
+                  <button
+                    key={z}
+                    type="button"
+                    onClick={() => applyZoom(z)}
+                    className={`px-1.5 py-0.5 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                      zoomLevel === z
+                        ? 'bg-[#1565D8] text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    {z}x
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (cameraActive) stopCameraStream();
+                  else startCameraStream();
+                }}
+                className={`px-3 py-1.5 font-bold rounded-lg border transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  cameraActive ? 'bg-white text-slate-600 border-[#CBD5E1] hover:bg-slate-100' : 'bg-[#1565D8] text-white border-[#1565D8]'
+                }`}
+              >
+                {cameraActive ? <CameraOff className="h-3.5 w-3.5" /> : <Camera className="h-3.5 w-3.5" />}
+                <span>{cameraActive ? 'Pause' : 'Start'}</span>
+              </button>
+
+              {/* Quick Test Barcode Button */}
               <button
                 type="button"
                 onClick={() => {
@@ -994,11 +982,11 @@ export const BarcodeScannerView: React.FC<{
                   const randomNum = Math.floor(1000 + Math.random() * 9000);
                   handleAttemptScan(`${prefix}${randomNum}`);
                 }}
-                className="px-2.5 py-1 rounded bg-black/60 hover:bg-black/80 text-white text-[10px] font-mono border border-white/20 transition-all flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-600 text-xs font-mono border border-[#CBD5E1] transition-all flex items-center gap-1 cursor-pointer"
                 title="Simulate scanning a test barcode"
               >
-                <Zap className="h-3 w-3 text-amber-400" />
-                <span>Test Barcode</span>
+                <Zap className="h-3 w-3 text-amber-500" />
+                <span>Test</span>
               </button>
             </div>
           </div>

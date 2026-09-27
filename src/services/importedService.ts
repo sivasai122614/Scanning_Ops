@@ -60,6 +60,34 @@ export interface StagedScanItem {
   scannedAt: string;
 }
 
+export interface SavedScannedRecord {
+  id: string;
+  scan_session_id?: string;
+  import_session_id?: string;
+  college_name: string;
+  class_id: string;
+  member_id: string;
+  barcode?: string | null;
+  scanned_by: string;
+  scanned_at: string;
+  saved_by: string;
+  saved_at: string;
+  status: 'SAVED';
+}
+
+export interface ScanSession {
+  id: string;
+  college_name: string;
+  import_session_id?: string;
+  class_id: string;
+  started_by: string;
+  started_at: string;
+  last_activity_at: string;
+  status: 'ACTIVE' | 'SAVED' | 'COMPLETED';
+  saved_at?: string | null;
+  saved_by?: string | null;
+}
+
 export interface ImportedRecord {
   id: string;
   import_session_id?: string;
@@ -68,8 +96,10 @@ export interface ImportedRecord {
   class_id: string;
   member_id: string;
   barcode: string | null;
-  scan_status: 'not_started' | 'started' | 'completed';
+  scan_status: 'not_started' | 'started' | 'pending_save' | 'saved' | 'completed';
+  scanned_by?: string | null;
   scanned_at: string | null;
+  saved_by?: string | null;
   saved_at?: string | null;
   created_at: string;
 }
@@ -110,81 +140,121 @@ export interface ScanResult {
   item?: StagedScanItem;
 }
 
-// SQL Script for clean 2-table architecture requested by user:
-// 1. imported_inward_data
-// 2. manual_inward_data
-export const EXAMSCAN_2TABLES_SQL = `-- ==============================================================================
--- ExamScan — Clean 2-Table Database Architecture
--- Drops older legacy tables and establishes ONLY 2 operational tables:
+// SQL Script for 4-table database architecture requested by user:
+// 1. imported_inward_data (Excel imported expected dataset)
+// 2. manual_inwarded_data (Manual script intake by operators)
+// 3. scan_sessions        (Active Bundle Scan sessions)
+// 4. saved_scanned_data   (Finalized scanned booklet records after pressing SAVE)
+export const EXAMSCAN_DATABASE_SCHEMA_SQL = `-- ==============================================================================
+-- ExamScan — Full-Production 4-Table Architecture
 -- 1. imported_inward_data (Excel imported students & inwarding status)
--- 2. manual_inward_data   (Manual bundle & script inward intake)
+-- 2. manual_inwarded_data (Manual bundle & script inward intake)
+-- 3. scan_sessions        (Active Bundle Scan sessions)
+-- 4. saved_scanned_data   (Finalized scanned booklet records after pressing SAVE)
 -- ==============================================================================
 
--- 1. Drop existing tables safely
-DROP TABLE IF EXISTS public.imported CASCADE;
-DROP TABLE IF EXISTS public.import_sessions CASCADE;
-DROP TABLE IF EXISTS public.scanned_scripts CASCADE;
-DROP TABLE IF EXISTS public.inward_schedules CASCADE;
-DROP TABLE IF EXISTS public.exam_sessions CASCADE;
-DROP TABLE IF EXISTS public.centers CASCADE;
-DROP TABLE IF EXISTS public.imported_inward_data CASCADE;
-DROP TABLE IF EXISTS public.manual_inward_data CASCADE;
-
--- 2. Table: imported_inward_data
-CREATE TABLE public.imported_inward_data (
+-- 1. Table: imported_inward_data
+CREATE TABLE IF NOT EXISTS public.imported_inward_data (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   import_session_id VARCHAR(100),
-  university_name VARCHAR(255) NOT NULL,
+  college_name VARCHAR(255) NOT NULL,
+  university_name VARCHAR(255),
   class_id VARCHAR(100) NOT NULL,
   member_id VARCHAR(100) NOT NULL,
   barcode VARCHAR(255),
-  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started' CHECK (scan_status IN ('not_started', 'started', 'completed')),
+  scan_status VARCHAR(50) NOT NULL DEFAULT 'not_started',
+  scanned_by VARCHAR(255),
   scanned_at TIMESTAMPTZ,
+  saved_by VARCHAR(255),
+  saved_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Fast lookup indexes
-CREATE INDEX idx_imp_inward_class_id ON public.imported_inward_data(class_id);
-CREATE INDEX idx_imp_inward_member_id ON public.imported_inward_data(member_id);
-CREATE INDEX idx_imp_inward_barcode ON public.imported_inward_data(barcode);
-CREATE INDEX idx_imp_inward_scan_status ON public.imported_inward_data(scan_status);
-CREATE INDEX idx_imp_inward_session_id ON public.imported_inward_data(import_session_id);
--- Core identity uniqueness: CLASS ID + MEMBER ID
+CREATE INDEX IF NOT EXISTS idx_imp_inward_class_id ON public.imported_inward_data(class_id);
+CREATE INDEX IF NOT EXISTS idx_imp_inward_member_id ON public.imported_inward_data(member_id);
+CREATE INDEX IF NOT EXISTS idx_imp_inward_barcode ON public.imported_inward_data(barcode);
+CREATE INDEX IF NOT EXISTS idx_imp_inward_scan_status ON public.imported_inward_data(scan_status);
+CREATE INDEX IF NOT EXISTS idx_imp_inward_session_id ON public.imported_inward_data(import_session_id);
+CREATE INDEX IF NOT EXISTS idx_imp_inward_college ON public.imported_inward_data(college_name);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_imp_inward_class_member ON public.imported_inward_data(class_id, member_id);
+
+-- Alias view for import_inwarded_data compatibility
+CREATE OR REPLACE VIEW public.import_inwarded_data AS SELECT * FROM public.imported_inward_data;
+
+-- 2. Table: manual_inwarded_data
+CREATE TABLE IF NOT EXISTS public.manual_inwarded_data (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_name VARCHAR(255) NOT NULL,
+  class_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100) NOT NULL,
+  source VARCHAR(50) DEFAULT 'MANUAL',
+  created_by VARCHAR(255),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_inwarded_class ON public.manual_inwarded_data(class_id);
+CREATE INDEX IF NOT EXISTS idx_manual_inwarded_college ON public.manual_inwarded_data(college_name);
+
+-- Alias view for manual_inward_data compatibility
+CREATE OR REPLACE VIEW public.manual_inward_data AS SELECT * FROM public.manual_inwarded_data;
+
+-- 3. Table: scan_sessions
+CREATE TABLE IF NOT EXISTS public.scan_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_name VARCHAR(255) NOT NULL,
+  import_session_id VARCHAR(100),
+  class_id VARCHAR(100) NOT NULL,
+  started_by VARCHAR(255),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+  saved_at TIMESTAMPTZ,
+  saved_by VARCHAR(255),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_sessions_class ON public.scan_sessions(class_id);
+CREATE INDEX IF NOT EXISTS idx_scan_sessions_college ON public.scan_sessions(college_name);
+
+-- 4. Table: saved_scanned_data
+CREATE TABLE IF NOT EXISTS public.saved_scanned_data (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  scan_session_id VARCHAR(100),
+  import_session_id VARCHAR(100),
+  college_name VARCHAR(255) NOT NULL,
+  class_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100) NOT NULL,
+  barcode VARCHAR(255),
+  scanned_by VARCHAR(255),
+  scanned_at TIMESTAMPTZ,
+  saved_by VARCHAR(255) NOT NULL,
+  saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status VARCHAR(50) NOT NULL DEFAULT 'SAVED'
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_scanned_class ON public.saved_scanned_data(class_id);
+CREATE INDEX IF NOT EXISTS idx_saved_scanned_member ON public.saved_scanned_data(member_id);
+CREATE INDEX IF NOT EXISTS idx_saved_scanned_college ON public.saved_scanned_data(college_name);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_scanned_class_member ON public.saved_scanned_data(college_name, class_id, member_id);
 
 -- Enable RLS and public access policies
 ALTER TABLE public.imported_inward_data ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.manual_inwarded_data ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scan_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.saved_scanned_data ENABLE ROW LEVEL SECURITY;
+
 DROP POLICY IF EXISTS "Allow all on imported_inward_data" ON public.imported_inward_data;
 CREATE POLICY "Allow all on imported_inward_data" ON public.imported_inward_data FOR ALL TO public USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow all on manual_inwarded_data" ON public.manual_inwarded_data;
+CREATE POLICY "Allow all on manual_inwarded_data" ON public.manual_inwarded_data FOR ALL TO public USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow all on scan_sessions" ON public.scan_sessions;
+CREATE POLICY "Allow all on scan_sessions" ON public.scan_sessions FOR ALL TO public USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow all on saved_scanned_data" ON public.saved_scanned_data;
+CREATE POLICY "Allow all on saved_scanned_data" ON public.saved_scanned_data FOR ALL TO public USING (true) WITH CHECK (true);
+`;
 
--- 3. Table: manual_inward_data
-CREATE TABLE public.manual_inward_data (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_code VARCHAR(100),
-  bundle_code VARCHAR(100),
-  class_id VARCHAR(100),
-  school_id VARCHAR(100),
-  room_number VARCHAR(100),
-  subject_name VARCHAR(255),
-  booklet_barcode VARCHAR(255),
-  roll_number VARCHAR(100),
-  status VARCHAR(50) NOT NULL DEFAULT 'inwarded',
-  inwarded_by VARCHAR(255),
-  notes TEXT,
-  scanned_at TIMESTAMPTZ DEFAULT now(),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Fast lookup indexes
-CREATE INDEX idx_manual_inward_class_id ON public.manual_inward_data(class_id);
-CREATE INDEX idx_manual_inward_barcode ON public.manual_inward_data(booklet_barcode);
-CREATE INDEX idx_manual_inward_roll ON public.manual_inward_data(roll_number);
-CREATE INDEX idx_manual_inward_session ON public.manual_inward_data(session_code);
-
--- Enable RLS and public access policies
-ALTER TABLE public.manual_inward_data ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow all on manual_inward_data" ON public.manual_inward_data;
-CREATE POLICY "Allow all on manual_inward_data" ON public.manual_inward_data FOR ALL TO public USING (true) WITH CHECK (true);`;
+export const EXAMSCAN_2TABLES_SQL = EXAMSCAN_DATABASE_SCHEMA_SQL;
 
 const PROD_RECORDS_KEY = 'examscan_imported_records_prod_v3';
 const PROD_SESSIONS_KEY = 'examscan_import_sessions_prod_v3';
