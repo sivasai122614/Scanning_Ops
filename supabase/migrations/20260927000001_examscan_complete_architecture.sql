@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- MIGRATION: 20260927000001_examscan_complete_architecture.sql
--- Purpose: 4-Table Architecture & Pending Scan Records
+-- Purpose: Complete 4-Table Architecture & Pending Scan Records
 -- 1. import_inwarded_data (Excel imported expected dataset)
 -- 2. manual_inwarded_data (Manual script intake by operators)
 -- 3. scan_sessions        (Active Bundle Scan sessions)
@@ -23,26 +23,34 @@ CREATE TABLE IF NOT EXISTS public.import_inwarded_data (
   college_name VARCHAR(255) NOT NULL,
   university_name VARCHAR(255),
   class_id VARCHAR(100) NOT NULL,
+  sch_id VARCHAR(100),
   member_id VARCHAR(100) NOT NULL,
+  barcode VARCHAR(255),
   created_by VARCHAR(255),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Ensure optional columns exist if table was already created
+ALTER TABLE public.import_inwarded_data ADD COLUMN IF NOT EXISTS sch_id VARCHAR(100);
+ALTER TABLE public.import_inwarded_data ADD COLUMN IF NOT EXISTS barcode VARCHAR(255);
+ALTER TABLE public.import_inwarded_data ADD COLUMN IF NOT EXISTS university_name VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_imp_inwarded_college ON public.import_inwarded_data(college_name);
 CREATE INDEX IF NOT EXISTS idx_imp_inwarded_session ON public.import_inwarded_data(import_session_id);
 CREATE INDEX IF NOT EXISTS idx_imp_inwarded_class ON public.import_inwarded_data(class_id);
 CREATE INDEX IF NOT EXISTS idx_imp_inwarded_member ON public.import_inwarded_data(member_id);
+CREATE INDEX IF NOT EXISTS idx_imp_inwarded_barcode ON public.import_inwarded_data(barcode);
 CREATE INDEX IF NOT EXISTS idx_imp_inwarded_class_member ON public.import_inwarded_data(class_id, member_id);
 
--- Logical uniqueness per session / import scope + class_id + member_id
+-- Enforce Uniqueness: Exactly 1 record per (college_name, class_id, member_id)
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'uq_import_inwarded_scope_class_member'
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_import_inwarded_college_class_member'
   ) THEN
     ALTER TABLE public.import_inwarded_data 
-      ADD CONSTRAINT uq_import_inwarded_scope_class_member 
-      UNIQUE (import_session_id, class_id, member_id);
+      ADD CONSTRAINT uq_import_inwarded_college_class_member 
+      UNIQUE (college_name, class_id, member_id);
   END IF;
 EXCEPTION WHEN OTHERS THEN
   NULL;
@@ -50,7 +58,7 @@ END $$;
 
 -- Backward compatibility alias
 CREATE OR REPLACE VIEW public.imported_inward_data AS 
-  SELECT id, import_session_id, college_name, university_name, class_id, member_id, created_by, created_at 
+  SELECT id, import_session_id, college_name, university_name, class_id, sch_id, member_id, barcode, created_by, created_at 
   FROM public.import_inwarded_data;
 
 -- ==============================================================================
@@ -91,13 +99,30 @@ CREATE TABLE IF NOT EXISTS public.scan_sessions (
   status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SAVED', 'COMPLETED')),
   saved_at TIMESTAMPTZ,
   saved_by VARCHAR(255),
+  ended_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.scan_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_college ON public.scan_sessions(college_name);
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_class ON public.scan_sessions(class_id);
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_status ON public.scan_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_import_sess ON public.scan_sessions(import_session_id);
+
+-- Enforce Uniqueness: One active session per (college_name, class_id)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_scan_sessions_college_class'
+  ) THEN
+    ALTER TABLE public.scan_sessions 
+      ADD CONSTRAINT uq_scan_sessions_college_class 
+      UNIQUE (college_name, class_id);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  NULL;
+END $$;
 
 -- ==============================================================================
 -- TABLE 4: saved_scanned_data
@@ -109,6 +134,7 @@ CREATE TABLE IF NOT EXISTS public.saved_scanned_data (
   import_session_id VARCHAR(100),
   college_name VARCHAR(255) NOT NULL,
   class_id VARCHAR(100) NOT NULL,
+  sch_id VARCHAR(100),
   member_id VARCHAR(100) NOT NULL,
   barcode VARCHAR(255),
   scanned_by VARCHAR(255),
@@ -118,10 +144,13 @@ CREATE TABLE IF NOT EXISTS public.saved_scanned_data (
   status VARCHAR(50) NOT NULL DEFAULT 'SAVED'
 );
 
+ALTER TABLE public.saved_scanned_data ADD COLUMN IF NOT EXISTS sch_id VARCHAR(100);
+
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_college ON public.saved_scanned_data(college_name);
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_class ON public.saved_scanned_data(class_id);
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_member ON public.saved_scanned_data(member_id);
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_class_member ON public.saved_scanned_data(class_id, member_id);
+CREATE INDEX IF NOT EXISTS idx_saved_scanned_barcode ON public.saved_scanned_data(barcode);
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_saved_at ON public.saved_scanned_data(saved_at);
 CREATE INDEX IF NOT EXISTS idx_saved_scanned_session ON public.saved_scanned_data(scan_session_id);
 
@@ -157,6 +186,33 @@ CREATE TABLE IF NOT EXISTS public.scan_session_items (
 CREATE INDEX IF NOT EXISTS idx_scan_items_session ON public.scan_session_items(scan_session_id);
 CREATE INDEX IF NOT EXISTS idx_scan_items_class_member ON public.scan_session_items(class_id, member_id);
 CREATE INDEX IF NOT EXISTS idx_scan_items_status ON public.scan_session_items(status);
+
+-- ==============================================================================
+-- SUPABASE REALTIME REPLICATION CONFIGURATION
+-- ==============================================================================
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.import_inwarded_data;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.saved_scanned_data;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.scan_sessions;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.scan_session_items;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 -- ==============================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES

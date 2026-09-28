@@ -77,7 +77,7 @@ export const ReportsView: React.FC = () => {
   }, [loadData]);
 
   // Handle Export Excel per Section 15 & 16
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (!selectedUniversity || selectedUniversity === '-- Select College / University --') {
       setSelectUniversityError(true);
       return;
@@ -86,7 +86,7 @@ export const ReportsView: React.FC = () => {
     setSelectUniversityError(false);
 
     try {
-      const res = importedService.exportUniversityExcel(selectedUniversity);
+      const res = await importedService.exportUniversityExcel(selectedUniversity);
       if (res.success) {
         setExportNotification(`Exported 3-sheet report: ${res.filename} (${res.scannedCount} scanned, ${res.notScannedCount} not scanned)`);
         setTimeout(() => setExportNotification(null), 5000);

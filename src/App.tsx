@@ -57,7 +57,7 @@ const AuthenticatedApp: React.FC = () => {
   const getHeaderConfig = () => {
     switch (activeView) {
       case 'home':
-        return { title: 'ExamScan', isRoot: true };
+        return { title: 'Inward Scan', isRoot: true };
       case 'import-data':
         return { title: 'Import Data', isRoot: true };
       case 'sessions':
@@ -79,7 +79,7 @@ const AuthenticatedApp: React.FC = () => {
       case 'my-profile':
         return { title: 'Staff Profile', isRoot: false };
       default:
-        return { title: 'ExamScan', isRoot: true };
+        return { title: 'Inward Scan', isRoot: true };
     }
   };
 
@@ -111,6 +111,7 @@ const AuthenticatedApp: React.FC = () => {
         onBack={() => navigateTo(headerCfg.isRoot ? 'home' : 'more')}
         onOpenProfile={() => navigateTo('my-profile')}
         onOpenNotifications={() => navigateTo('home')}
+        onNavigateToImport={() => navigateTo('import-data')}
       />
 
       {/* 4. Main Body: Desktop Sidebar + Dynamic Operational Workspace */}
@@ -132,6 +133,7 @@ const AuthenticatedApp: React.FC = () => {
                 onNavigateToScan={() => navigateTo('scan')}
                 onNavigateToCreateSession={() => navigateTo('sessions')}
                 onNavigateToExceptions={() => navigateTo('scan')}
+                onNavigateToImport={() => navigateTo('import-data')}
               />
             )}
 

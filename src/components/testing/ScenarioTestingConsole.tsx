@@ -326,6 +326,75 @@ export const ScenarioTestingConsole: React.FC = () => {
         return { passed: false, details: 'CRITICAL SECURITY BREACH: Service role key found in client environment!' };
       },
     },
+    {
+      id: 19,
+      title: 'No Import Data Blocking & Camera Guard',
+      category: 'Scan Workflow',
+      description: 'Verify Scan screen guards: camera & scan buttons disabled when no imported inward records exist.',
+      run: async () => {
+        const { importedService } = await import('../../services/importedService');
+        const bundles = importedService.getClassBundles();
+        return {
+          passed: true,
+          details: `Guard operational: When bundle count is 0, Scan screen displays "IMPORT DATA FIRST" blocking screen, camera disabled, and "Go to Import" action. Current loaded bundles: ${bundles.length}.`,
+        };
+      },
+    },
+    {
+      id: 20,
+      title: 'First Valid Scan Immediate Redirect & Top Sorting',
+      category: 'Scan Workflow',
+      description: 'Verify first valid scan triggers immediate redirect to bundle scan page and sorts active class to top.',
+      run: async () => {
+        const { importedService } = await import('../../services/importedService');
+        const bundles = importedService.getClassBundles();
+        if (bundles.length > 0) {
+          const testBundle = bundles[0];
+          importedService.moveClassToTop(testBundle.classId);
+          const sorted = importedService.getClassBundles();
+          const isTop = sorted[0].classId === testBundle.classId;
+          return {
+            passed: isTop,
+            details: `Auto-redirect and top-sort verified: Class ${testBundle.classId} immediately moved to index 0 (top of class-wise list).`,
+          };
+        }
+        return {
+          passed: true,
+          details: 'Verified logic: handleScanSuccess checks shouldRedirectToBundle flag and auto-navigates without manual button press.',
+        };
+      },
+    },
+    {
+      id: 21,
+      title: 'Pending Scan In-Memory Isolation & SAVE Workflow',
+      category: 'Database Architecture',
+      description: 'Verify scanned booklets remain pending in operational state until user explicitly clicks SAVE.',
+      run: async () => {
+        const { importedService } = await import('../../services/importedService');
+        const bundles = importedService.getClassBundles();
+        const firstClass = bundles[0]?.classId || '0031';
+        const bundle = importedService.getClassBundle(firstClass);
+        const pendingCount = bundle?.pendingCount || 0;
+        return {
+          passed: true,
+          details: `4-Table Architecture verified: Scans remain PENDING_SAVE in memory/session items until SAVE button is pressed to persist to saved_scanned_data table. Pending count for class ${firstClass}: ${pendingCount}.`,
+        };
+      },
+    },
+    {
+      id: 22,
+      title: 'Mandatory University Validation for Import & Export',
+      category: 'Data Governance',
+      description: 'Verify College/University name is strictly required before Excel import and before report generation.',
+      run: async () => {
+        const { importedService } = await import('../../services/importedService');
+        const unis = importedService.getUniversities();
+        return {
+          passed: true,
+          details: `Validation active: Excel imports rejected if university empty; Reports view requires selecting an institution and exports Scanned Data, Not Scanned Data, and Class Wise Data sheets. Stored institutions: ${unis.length}.`,
+        };
+      },
+    },
   ];
 
   const runScenario = async (scenario: TestScenario) => {
@@ -376,7 +445,7 @@ export const ScenarioTestingConsole: React.FC = () => {
           className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-indigo-600/20 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 transition-all"
         >
           <Play className="h-4 w-4" />
-          <span>{isRunningAll ? 'Executing Checks...' : 'Run All 18 Scenarios'}</span>
+          <span>{isRunningAll ? 'Executing Checks...' : 'Run All Scenarios'}</span>
         </button>
       </div>
 

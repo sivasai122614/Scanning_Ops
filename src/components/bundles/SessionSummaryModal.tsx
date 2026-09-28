@@ -52,11 +52,15 @@ export const SessionSummaryModal: React.FC<SessionSummaryModalProps> = ({
 
   if (!isOpen || !summary) return null;
 
-  const handleExport = () => {
-    const res = importedService.exportClassWiseExcel();
-    if (res.success) {
-      setExportMessage(`Successfully exported ${res.filename} with reconciliation data!`);
-      setTimeout(() => setExportMessage(null), 4000);
+  const handleExport = async () => {
+    try {
+      const res = await importedService.exportClassWiseExcel();
+      if (res.success) {
+        setExportMessage(`Successfully exported ${res.filename} with reconciliation data!`);
+        setTimeout(() => setExportMessage(null), 4000);
+      }
+    } catch (err: any) {
+      alert(err.message || 'Export failed');
     }
   };
 

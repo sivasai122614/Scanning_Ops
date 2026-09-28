@@ -29,6 +29,8 @@ import {
   AlertOctagon,
   Check,
   FileSpreadsheet,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import {
   importedService,
@@ -61,6 +63,8 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
   // Active Class Bundle (when set, immediately renders BUNDLE SCAN for that class)
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
+  const [bundleViewMode, setBundleViewMode] = useState<'grid' | 'list'>('grid');
+  const [bundleSearch, setBundleSearch] = useState<string>('');
 
   // Export notifications & feedback
   const [exportNotification, setExportNotification] = useState<string | null>(null);
@@ -360,10 +364,10 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     setManualInput('');
   };
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const uni = sessionSummary?.universityName || importedService.getActiveUniversity();
     try {
-      const res = importedService.exportUniversityExcel(uni);
+      const res = await importedService.exportUniversityExcel(uni);
       if (res.success) {
         setExportNotification(`Exported ${res.filename} successfully!`);
         setTimeout(() => setExportNotification(null), 4000);
@@ -479,8 +483,19 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           </div>
         </div>
 
-        {/* Global Toolbar Action: Export Excel */}
+        {/* Global Toolbar Actions: Import Data & Export Excel */}
         <div className="flex items-center gap-2">
+          {onNavigateToImport && (
+            <button
+              type="button"
+              onClick={onNavigateToImport}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors shadow-xs cursor-pointer"
+              title="Import Excel Data"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Import Data</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleExportExcel}
@@ -670,99 +685,256 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
       {/* 4. CLASS-WISE CARDS (Sorted with Scanned Class at TOP - Section 6) */}
       <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0]">
-          <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
-            CLASS-WISE BUNDLES
-          </h2>
-          <div className="text-[11px] text-[#64748B]">
-            Scanned classes automatically move to the top. Click any card to open Bundle Scan.
+        <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div>
+            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+              <Layers className="h-4 w-4 text-[#1565D8]" />
+              <span>CLASS-WISE BUNDLES</span>
+              <span className="px-2 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded-full font-mono text-[10px]">
+                {bundles.length} Classes
+              </span>
+            </h2>
+            <div className="text-[11px] text-[#64748B]">
+              Scanned classes automatically move to the top. Click any card to open Bundle Scan.
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Quick Filter */}
+            <div className="relative">
+              <input
+                type="text"
+                value={bundleSearch}
+                onChange={e => setBundleSearch(e.target.value)}
+                placeholder="Filter Class ID..."
+                className="pl-3 pr-2.5 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white focus:outline-none focus:border-[#1565D8] w-32 sm:w-40 text-[#172033]"
+              />
+            </div>
+
+            {/* View Mode Toggle: Grid vs List */}
+            <div className="flex items-center border border-[#CBD5E1] rounded-lg p-0.5 bg-white shrink-0">
+              <button
+                type="button"
+                onClick={() => setBundleViewMode('grid')}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md transition-colors cursor-pointer ${
+                  bundleViewMode === 'grid'
+                    ? 'bg-[#1565D8] text-white shadow-xs'
+                    : 'text-[#64748B] hover:text-[#172033]'
+                }`}
+                title="Grid View"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Grid</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBundleViewMode('list')}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md transition-colors cursor-pointer ${
+                  bundleViewMode === 'list'
+                    ? 'bg-[#1565D8] text-white shadow-xs'
+                    : 'text-[#64748B] hover:text-[#172033]'
+                }`}
+                title="List View"
+              >
+                <List className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">List</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="p-3.5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-          {bundles.map((b, idx) => {
-            let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-            if (b.status === 'COMPLETED') {
-              badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-            } else if (b.status === 'IN PROGRESS') {
-              badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-            } else if (b.status === 'PARTIAL / SAVED') {
-              badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
-            }
+        {bundles.filter(b => !bundleSearch.trim() || b.classId.toLowerCase().includes(bundleSearch.trim().toLowerCase())).length === 0 ? (
+          <div className="p-8 text-center text-xs text-[#64748B]">
+            No class bundles found matching "{bundleSearch}".
+          </div>
+        ) : bundleViewMode === 'grid' ? (
+          /* 1. GRID VIEW */
+          <div className="p-3.5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {bundles
+              .filter(b => !bundleSearch.trim() || b.classId.toLowerCase().includes(bundleSearch.trim().toLowerCase()))
+              .map((b, idx) => {
+                let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                if (b.status === 'COMPLETED') {
+                  badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                } else if (b.status === 'IN PROGRESS') {
+                  badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                } else if (b.status === 'PARTIAL / SAVED') {
+                  badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
+                }
 
-            return (
-              <div
-                key={b.classId}
-                onClick={() => setActiveClassId(b.classId)}
-                className={`bg-white border-2 hover:border-[#1565D8] rounded-xl p-4 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group ${
-                  idx === 0 && b.status === 'IN PROGRESS' ? 'border-[#1565D8] ring-1 ring-[#1565D8]/20' : 'border-[#CBD5E1]'
-                }`}
-              >
-                {/* Card Header: CLASS ID */}
-                <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
-                  <div className="font-mono font-black text-sm text-[#172033] group-hover:text-[#1565D8] transition-colors flex items-center gap-1.5">
-                    <span>CLASS {b.classId}</span>
-                    {idx === 0 && b.status === 'IN PROGRESS' && (
-                      <span className="text-[9px] bg-[#1565D8] text-white px-1.5 py-0.5 rounded font-sans font-bold">
-                        ACTIVE TOP
-                      </span>
-                    )}
-                  </div>
-                  <span
-                    className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}
+                return (
+                  <div
+                    key={b.classId}
+                    onClick={() => setActiveClassId(b.classId)}
+                    className={`bg-white border-2 hover:border-[#1565D8] rounded-xl p-4 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group ${
+                      idx === 0 && b.status === 'IN PROGRESS' ? 'border-[#1565D8] ring-1 ring-[#1565D8]/20' : 'border-[#CBD5E1]'
+                    }`}
                   >
-                    {b.status}
-                  </span>
-                </div>
+                    {/* Card Header: CLASS ID */}
+                    <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
+                      <div className="font-mono font-black text-sm text-[#172033] group-hover:text-[#1565D8] transition-colors flex items-center gap-1.5">
+                        <span>CLASS {b.classId}</span>
+                        {idx === 0 && b.status === 'IN PROGRESS' && (
+                          <span className="text-[9px] bg-[#1565D8] text-white px-1.5 py-0.5 rounded font-sans font-bold">
+                            ACTIVE TOP
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}
+                      >
+                        {b.status}
+                      </span>
+                    </div>
 
-                {/* Card Counts */}
-                <div className="py-3 space-y-1.5 text-xs font-tabular">
-                  <div className="flex items-center justify-between text-[#64748B]">
-                    <span>Expected</span>
-                    <span className="font-bold text-[#172033] text-sm">{b.expectedCount}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-[#1565D8]">
-                    <span>Scanned</span>
-                    <span className="font-bold text-sm">
-                      {b.savedCount}
-                      {b.pendingCount > 0 && (
-                        <span className="text-[10px] text-[#F59E0B] font-normal ml-1">
-                          (+{b.pendingCount} unsaved)
+                    {/* Card Counts */}
+                    <div className="py-3 space-y-1.5 text-xs font-tabular">
+                      <div className="flex items-center justify-between text-[#64748B]">
+                        <span>Expected</span>
+                        <span className="font-bold text-[#172033] text-sm">{b.expectedCount}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[#1565D8]">
+                        <span>Scanned</span>
+                        <span className="font-bold text-sm">
+                          {b.savedCount}
+                          {b.pendingCount > 0 && (
+                            <span className="text-[10px] text-[#F59E0B] font-normal ml-1">
+                              (+{b.pendingCount} unsaved)
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-[#DC2626]">
-                    <span>Not Scanned</span>
-                    <span className="font-bold text-sm">{b.missingCount}</span>
-                  </div>
-                </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[#DC2626]">
+                        <span>Not Scanned</span>
+                        <span className="font-bold text-sm">{b.missingCount}</span>
+                      </div>
+                    </div>
 
-                {/* Progress */}
-                <div className="pt-2 border-t border-[#E2E8F0]">
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <span className="text-[#64748B] font-bold">Progress</span>
-                    <span className="font-bold font-tabular text-[#16A34A]">
-                      {b.progressPercentage}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
-                    <div
-                      className="h-full bg-[#16A34A] rounded-full"
-                      style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
-                    />
-                  </div>
-                </div>
+                    {/* Progress */}
+                    <div className="pt-2 border-t border-[#E2E8F0]">
+                      <div className="flex items-center justify-between text-[11px] mb-1">
+                        <span className="text-[#64748B] font-bold">Progress</span>
+                        <span className="font-bold font-tabular text-[#16A34A]">
+                          {b.progressPercentage}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                        <div
+                          className="h-full bg-[#16A34A] rounded-full"
+                          style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
+                        />
+                      </div>
+                    </div>
 
-                <div className="mt-3 pt-2 text-right">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[#1565D8] group-hover:underline inline-flex items-center gap-1">
-                    Open Bundle Scan <ArrowRight className="h-3 w-3" />
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                    <div className="mt-3 pt-2 text-right">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#1565D8] group-hover:underline inline-flex items-center gap-1">
+                        Open Bundle Scan <ArrowRight className="h-3 w-3" />
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        ) : (
+          /* 2. LIST VIEW */
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] uppercase tracking-wider text-[#64748B] font-bold">
+                <tr>
+                  <th className="py-2.5 px-4 w-12 text-center">#</th>
+                  <th className="py-2.5 px-4">Class ID</th>
+                  <th className="py-2.5 px-4 text-center">Status</th>
+                  <th className="py-2.5 px-4 text-center">Expected</th>
+                  <th className="py-2.5 px-4 text-center">Scanned</th>
+                  <th className="py-2.5 px-4 text-center">Not Scanned</th>
+                  <th className="py-2.5 px-4 text-center">Progress</th>
+                  <th className="py-2.5 px-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {bundles
+                  .filter(b => !bundleSearch.trim() || b.classId.toLowerCase().includes(bundleSearch.trim().toLowerCase()))
+                  .map((b, idx) => {
+                    let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                    if (b.status === 'COMPLETED') {
+                      badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                    } else if (b.status === 'IN PROGRESS') {
+                      badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                    } else if (b.status === 'PARTIAL / SAVED') {
+                      badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
+                    }
+
+                    return (
+                      <tr
+                        key={b.classId}
+                        onClick={() => setActiveClassId(b.classId)}
+                        className="hover:bg-blue-50/40 transition-colors cursor-pointer"
+                      >
+                        <td className="py-2.5 px-4 text-center font-mono text-[11px] text-[#64748B]">
+                          {idx + 1}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          <span className="font-mono font-bold text-sm text-[#172033] bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
+                            {b.classId}
+                          </span>
+                          {idx === 0 && b.status === 'IN PROGRESS' && (
+                            <span className="ml-2 text-[9px] bg-[#1565D8] text-white px-1.5 py-0.5 rounded font-sans font-bold">
+                              TOP
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-center">
+                          <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
+                            {b.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-center font-bold text-[#172033]">
+                          {b.expectedCount}
+                        </td>
+                        <td className="py-2.5 px-4 text-center font-bold text-[#1565D8]">
+                          {b.savedCount}
+                          {b.pendingCount > 0 && (
+                            <span className="text-[10px] text-[#F59E0B] font-normal ml-1">
+                              (+{b.pendingCount})
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-center font-bold text-[#DC2626]">
+                          {b.missingCount}
+                        </td>
+                        <td className="py-2.5 px-4 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                              <div
+                                className="h-full bg-[#16A34A] rounded-full"
+                                style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
+                              />
+                            </div>
+                            <span className="font-mono font-bold text-[11px] text-[#16A34A]">
+                              {b.progressPercentage}%
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveClassId(b.classId);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#1565D8] hover:bg-blue-50 rounded-lg border border-[#BFDBFE] transition-colors cursor-pointer"
+                          >
+                            <span>Open Bundle</span>
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* SECTION 5: CLASS NOT IMPORTED WARNING MODAL */}

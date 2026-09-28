@@ -118,7 +118,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
 
       {/* Footer System Info */}
       <div className="pt-3 border-t border-[#E2E8F0] px-3 text-[11px] text-[#64748B]">
-        <div className="font-medium text-[#172033]">ExamScan Enterprise</div>
+        <div className="font-medium text-[#172033]">Inward Scan Enterprise</div>
         <div className="text-[10px] text-[#94A3B8]">Production Light Theme • v1.0.0</div>
       </div>
     </aside>

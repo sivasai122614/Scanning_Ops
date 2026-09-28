@@ -4,9 +4,13 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Retrieve public frontend credentials from Vite environment
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Retrieve public credentials from Vite environment or process.env
+const globalObj = globalThis as any;
+const envObj: any = typeof import.meta !== 'undefined' && (import.meta as any).env 
+  ? (import.meta as any).env 
+  : (globalObj.process?.env || {});
+const supabaseUrl = envObj.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = envObj.VITE_SUPABASE_ANON_KEY || '';
 
 // Verify that the service role key is NEVER used on frontend
 if (

@@ -4,7 +4,7 @@
 // ==============================================================================
 
 import React from 'react';
-import { ArrowLeft, Bell, ScanLine, ShieldCheck, Lock, LogOut } from 'lucide-react';
+import { ArrowLeft, Bell, ScanLine, ShieldCheck, Lock, LogOut, FileSpreadsheet } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 interface AppHeaderProps {
@@ -15,6 +15,7 @@ interface AppHeaderProps {
   rightAction?: React.ReactNode;
   onOpenNotifications?: () => void;
   onOpenProfile?: () => void;
+  onNavigateToImport?: () => void;
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
@@ -25,6 +26,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   rightAction,
   onOpenNotifications,
   onOpenProfile,
+  onNavigateToImport,
 }) => {
   const { user, role, lockSession, logout } = useAuth();
   const [showDropdown, setShowDropdown] = React.useState(false);
@@ -55,12 +57,12 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           <div className="min-w-0">
             {showBackButton ? (
               <h1 className="text-base sm:text-lg font-semibold text-white tracking-tight truncate">
-                {title || 'ExamScan'}
+                {title || 'Inward Scan'}
               </h1>
             ) : (
               <div>
                 <div className="text-base font-bold text-white tracking-tight leading-tight">
-                  ExamScan
+                  Inward Scan
                 </div>
                 <div className="text-[10px] text-blue-100 font-normal leading-tight hidden sm:block">
                   Digitize. Verify. Simplify.
@@ -79,6 +81,20 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
 
         {/* Right Slot: Contextual Actions / Notifications & Profile */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Top Import Button */}
+          {onNavigateToImport && (
+            <button
+              type="button"
+              onClick={onNavigateToImport}
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white text-[#1565D8] hover:bg-blue-50 active:bg-blue-100 text-xs font-bold transition-all shadow-xs cursor-pointer focus:outline-none"
+              aria-label="Import Data"
+              title="Import Excel Data"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-[#1565D8]" />
+              <span className="font-bold">Import</span>
+            </button>
+          )}
+
           {rightAction ? (
             rightAction
           ) : (

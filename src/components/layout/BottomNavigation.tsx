@@ -16,6 +16,26 @@ interface BottomNavigationProps {
 }
 
 export const BottomNavigation: React.FC<BottomNavigationProps> = ({ activeTab, onSelectTab }) => {
+  const [isMobile, setIsMobile] = React.useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768;
+    }
+    return false;
+  });
+
+  React.useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  if (!isMobile) {
+    return null;
+  }
+
   const tabs = [
     { id: 'home' as const, label: 'Dashboard', icon: Home },
     { id: 'import-data' as const, label: 'Import', icon: FileSpreadsheet },
@@ -25,7 +45,7 @@ export const BottomNavigation: React.FC<BottomNavigationProps> = ({ activeTab, o
   ];
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-[#E2E8F0] shadow-sm select-none">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-[#E2E8F0] shadow-sm select-none md:hidden">
       <div className="max-w-md mx-auto grid grid-cols-5 h-15 items-center px-1">
         {tabs.map(t => {
           const isActive = activeTab === t.id;

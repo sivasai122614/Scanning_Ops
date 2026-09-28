@@ -839,7 +839,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                 <span className="font-bold text-[#172033]">{viewingRecord.class_id}</span>
               </div>
               <div className="flex justify-between py-1 border-b border-slate-100">
-                <span className="text-[#64748B]">Member ID:</span>
+                <span className="text-[#64748B]">Unique Member ID (unqid):</span>
                 <span className="font-bold text-[#1565D8]">{viewingRecord.member_id}</span>
               </div>
               <div className="flex justify-between py-1 border-b border-slate-100">
