@@ -128,7 +128,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       const bundles = importedService.getClassBundles();
       setExistingBundles(bundles);
       const activeUni = importedService.getActiveUniversity();
-      if (activeUni && activeUni !== 'General University') {
+      if (activeUni) {
         setUniversityName(activeUni);
       }
     };

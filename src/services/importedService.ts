@@ -11,6 +11,9 @@
 import * as XLSX from 'xlsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { enterpriseStore } from './store';
+import { normalizeIdentifier, sanitizeBarcode } from '../utils/normalize';
+
+export { normalizeIdentifier, sanitizeBarcode };
 
 export type BundleStatus = 'NOT STARTED' | 'IN PROGRESS' | 'COMPLETED' | 'PARTIAL / SAVED';
 
@@ -198,11 +201,17 @@ export function getCurrentUser(): { id: string; name: string; email: string } {
   };
 }
 
-export function sanitizeBarcode(code: string): string {
-  if (!code) return '';
-  let cleaned = code.trim();
-  cleaned = cleaned.replace(/^\*+|\*+$/g, '').trim();
-  return cleaned;
+// Note: normalizeIdentifier and sanitizeBarcode are imported from ../utils/normalize
+
+export function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0,
+      v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 const STORAGE_IMPORT_INWARDED = 'examscan_import_inwarded_v5';
@@ -535,8 +544,8 @@ class ImportedService {
         if (!sessErr && sessData !== null && Array.isArray(sessData)) {
           this.importSessions = sessData.map((s: any) => ({
             id: s.id,
-            university_name: s.university_name || s.college_name || 'General University',
-            college_name: s.college_name || s.university_name || 'General University',
+            university_name: s.university_name || s.college_name || '',
+            college_name: s.college_name || s.university_name || '',
             source_file_name: s.source_file_name || 'import.xlsx',
             total_records: s.total_records || 0,
             total_class_ids: s.total_class_ids || 0,
@@ -551,33 +560,30 @@ class ImportedService {
         // Optional session table
       }
 
-      // 2. Fetch imported data (Check import_inwarded_data first, fallback to imported_inward_data)
+      // 2. Fetch imported data from primary production table imported_inward_data
       let impRows: any[] | null = null;
       let querySuccess = false;
 
-      // Primary check: import_inwarded_data
-      const { data: imp1, error: err1 } = await supabase
-        .from('import_inwarded_data')
+      const { data: impData, error: impErr } = await supabase
+        .from('imported_inward_data')
         .select('*')
         .limit(50000);
 
-      if (!err1 && imp1 !== null && Array.isArray(imp1)) {
-        impRows = imp1;
+      if (!impErr && impData !== null && Array.isArray(impData)) {
+        impRows = impData;
         querySuccess = true;
       } else {
-        // Fallback check: imported_inward_data
-        const { data: imp2, error: err2 } = await supabase
-          .from('imported_inward_data')
-          .select('*')
-          .limit(50000);
-
-        if (!err2 && imp2 !== null && Array.isArray(imp2)) {
-          impRows = imp2;
-          querySuccess = true;
-        } else if (err1 && !err2 && imp2 !== null) {
-          impRows = imp2;
-          querySuccess = true;
-        }
+        // Fallback check in case import_inwarded_data exists
+        try {
+          const { data: impFallback, error: fbErr } = await supabase
+            .from('import_inwarded_data')
+            .select('*')
+            .limit(50000);
+          if (!fbErr && impFallback !== null && Array.isArray(impFallback)) {
+            impRows = impFallback;
+            querySuccess = true;
+          }
+        } catch {}
       }
 
       // Authoritative update:
@@ -586,12 +592,12 @@ class ImportedService {
         this.importInwarded = impRows.map((r: any) => ({
           id: r.id || `${r.class_id}_${r.member_id}`,
           import_session_id: r.import_session_id || 'default_session',
-          college_name: r.college_name || r.university_name || this.activeUniversity,
-          university_name: r.university_name || r.college_name || this.activeUniversity,
-          class_id: String(r.class_id || '').trim(),
+          college_name: r.university_name || r.college_name || this.activeUniversity || '',
+          university_name: r.university_name || r.college_name || this.activeUniversity || '',
+          class_id: normalizeIdentifier(r.class_id),
           sch_id: r.sch_id,
-          member_id: String(r.member_id || '').trim(),
-          barcode: r.barcode,
+          member_id: normalizeIdentifier(r.member_id),
+          barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
           created_by: r.created_by,
           created_at: r.created_at || new Date().toISOString(),
         }));
@@ -602,12 +608,14 @@ class ImportedService {
           this.classOrder = [];
           this.activeSessionId = null;
         } else {
-          // If active university is not set or matches defaults, align with records
+          // Align active university with imported records
           const firstUni = this.importInwarded[0].university_name || this.importInwarded[0].college_name;
-          if (firstUni && (!this.activeUniversity || this.activeUniversity === 'General University')) {
+          if (firstUni && !this.activeUniversity) {
             this.activeUniversity = firstUni;
           }
         }
+        this.saveToLocalStorage();
+        this.notify();
       }
 
       // 3. Fetch scan_sessions
@@ -617,8 +625,8 @@ class ImportedService {
           id: s.id,
           college_name: s.college_name || this.activeUniversity,
           import_session_id: s.import_session_id,
-          class_id: String(s.class_id || '').trim(),
-          started_by: s.started_by || 'Siva Sai',
+          class_id: normalizeIdentifier(s.class_id),
+          started_by: s.started_by || 'Operator',
           started_at: s.started_at || new Date().toISOString(),
           last_activity_at: s.last_activity_at || new Date().toISOString(),
           status: s.status || 'ACTIVE',
@@ -627,6 +635,7 @@ class ImportedService {
           ended_at: s.ended_at,
           created_at: s.created_at || new Date().toISOString(),
         }));
+        this.saveToLocalStorage();
       }
 
       // 4. Fetch saved_scanned_data
@@ -637,16 +646,17 @@ class ImportedService {
           scan_session_id: s.scan_session_id,
           import_session_id: s.import_session_id,
           college_name: s.college_name || this.activeUniversity,
-          class_id: String(s.class_id || '').trim(),
+          class_id: normalizeIdentifier(s.class_id),
           sch_id: s.sch_id,
-          member_id: String(s.member_id || '').trim(),
-          barcode: s.barcode,
-          scanned_by: s.scanned_by || 'Siva Sai',
+          member_id: normalizeIdentifier(s.member_id),
+          barcode: s.barcode ? normalizeIdentifier(s.barcode) : undefined,
+          scanned_by: s.scanned_by || 'Operator',
           scanned_at: s.scanned_at || new Date().toISOString(),
-          saved_by: s.saved_by || 'Siva Sai',
+          saved_by: s.saved_by || 'Operator',
           saved_at: s.saved_at || new Date().toISOString(),
-          status: 'SAVED',
+          status: s.status || 'SAVED',
         }));
+        this.saveToLocalStorage();
       }
 
       // 5. Fetch scan_session_items (pending items)
@@ -834,12 +844,9 @@ class ImportedService {
     const uni = this.activeUniversity;
     const expectedMap = new Map<string, number>();
 
-    // 1. Collect expected count per class from import_inwarded_data
+    // 1. Collect expected count per class from imported_inward_data
     for (const r of this.importInwarded) {
-      if (uni && r.college_name && r.college_name.toLowerCase() !== uni.toLowerCase() && r.university_name && r.university_name.toLowerCase() !== uni.toLowerCase()) {
-        continue;
-      }
-      const cid = r.class_id.trim();
+      const cid = normalizeIdentifier(r.class_id);
       if (!cid) continue;
       expectedMap.set(cid, (expectedMap.get(cid) || 0) + 1);
     }
@@ -847,8 +854,8 @@ class ImportedService {
     // 2. Count saved scans per class from saved_scanned_data
     const savedMap = new Map<string, number>();
     for (const s of this.savedScanned) {
-      if (uni && s.college_name && s.college_name.toLowerCase() !== uni.toLowerCase()) continue;
-      const cid = s.class_id.trim();
+      const cid = normalizeIdentifier(s.class_id);
+      if (!cid) continue;
       savedMap.set(cid, (savedMap.get(cid) || 0) + 1);
     }
 
@@ -856,7 +863,8 @@ class ImportedService {
     const pendingMap = new Map<string, number>();
     for (const item of this.scanItems) {
       if (item.status === 'PENDING_SAVE') {
-        const cid = item.class_id.trim();
+        const cid = normalizeIdentifier(item.class_id);
+        if (!cid) continue;
         pendingMap.set(cid, (pendingMap.get(cid) || 0) + 1);
       }
     }
@@ -929,47 +937,45 @@ class ImportedService {
 
   public getClassBundle(classId: string): ClassBundle | null {
     if (!classId) return null;
-    const clean = classId.trim().toLowerCase();
+    const clean = normalizeIdentifier(classId).toLowerCase();
     const bundles = this.getClassBundles();
-    return bundles.find(b => b.classId.toLowerCase() === clean) || null;
+    return bundles.find(b => normalizeIdentifier(b.classId).toLowerCase() === clean) || null;
   }
 
   // ==============================================================================
   // BUNDLE RECORDS VIEW (Section 7 & 30)
+  // All members displayed inside the class come from imported_inward_data
   // ==============================================================================
   public getBundleRecordViews(classId: string): BundleRecordView[] {
-    const clean = classId.trim().toLowerCase();
-    const uni = this.activeUniversity;
+    const clean = normalizeIdentifier(classId).toLowerCase();
 
-    // Expected members for this class and active university
+    // Expected members for this class from imported_inward_data
     const expected = this.importInwarded.filter(
-      r =>
-        r.class_id.trim().toLowerCase() === clean &&
-        (!uni || r.college_name.toLowerCase() === uni.toLowerCase() || (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase()))
+      r => normalizeIdentifier(r.class_id).toLowerCase() === clean
     );
 
-    // Saved scans for this class
+    // Saved scans for this class from saved_scanned_data
     const saved = this.savedScanned.filter(
-      s => s.class_id.trim().toLowerCase() === clean && (!uni || s.college_name.toLowerCase() === uni.toLowerCase())
+      s => normalizeIdentifier(s.class_id).toLowerCase() === clean
     );
     const savedMap = new Map<string, SavedScannedRecord>();
     for (const s of saved) {
-      savedMap.set(s.member_id.trim().toLowerCase(), s);
+      savedMap.set(normalizeIdentifier(s.member_id).toLowerCase(), s);
     }
 
     // Pending scans for this class
     const pending = this.scanItems.filter(
-      i => i.class_id.trim().toLowerCase() === clean && i.status === 'PENDING_SAVE'
+      i => normalizeIdentifier(i.class_id).toLowerCase() === clean && i.status === 'PENDING_SAVE'
     );
     const pendingMap = new Map<string, ScanSessionItem>();
     for (const p of pending) {
-      pendingMap.set(p.member_id.trim().toLowerCase(), p);
+      pendingMap.set(normalizeIdentifier(p.member_id).toLowerCase(), p);
     }
 
     const views: BundleRecordView[] = [];
 
     for (const exp of expected) {
-      const mid = exp.member_id.trim();
+      const mid = normalizeIdentifier(exp.member_id);
       const midLower = mid.toLowerCase();
 
       const sv = savedMap.get(midLower);
@@ -980,7 +986,7 @@ class ImportedService {
           id: sv.id,
           class_id: exp.class_id,
           member_id: mid,
-          barcode: sv.barcode || null,
+          barcode: sv.barcode || exp.barcode || null,
           scan_status: 'saved',
           scanned_by: sv.scanned_by,
           scanned_at: sv.scanned_at,
@@ -992,7 +998,7 @@ class ImportedService {
           id: pend.id,
           class_id: exp.class_id,
           member_id: mid,
-          barcode: pend.barcode,
+          barcode: pend.barcode || exp.barcode || null,
           scan_status: 'pending_save',
           scanned_by: pend.detected_by,
           scanned_at: pend.detected_at,
@@ -1004,7 +1010,7 @@ class ImportedService {
           id: exp.id,
           class_id: exp.class_id,
           member_id: mid,
-          barcode: null,
+          barcode: exp.barcode || null,
           scan_status: 'not_started',
           scanned_by: null,
           scanned_at: null,
@@ -1026,74 +1032,440 @@ class ImportedService {
   }
 
   // ==============================================================================
-  // BARCODE PARSING & EXTRACTION
-  // Extracts Class ID and Member ID
-  // Supports formats:
-  // - "0031 | 22MIS001"
-  // - "0031:22MIS001"
-  // - "0031-22MIS001"
-  // - Direct Member ID (searched in class)
-  // - Pure Class ID (4 digits e.g. 0031)
+  // AUTHORITATIVE SUPABASE DATA LOOKUP & FETCH WORKFLOW
+  // 1. Barcode Scan:
+  //    Camera -> Barcode decoder -> decoded barcode value -> normalize barcode
+  //    -> search imported_inward_data.barcode -> matching imported row
+  //    -> get member_id from that row -> get class_id from that row -> continue scanning workflow
+  // 2. Class ID Search / Fetch:
+  //    Query imported_inward_data.class_id using normalized Class ID
+  // 3. Manual Search:
+  //    Query imported_inward_data using member_id or barcode
   // ==============================================================================
-  public parseBarcodeContent(barcodeRaw: string): {
-    detectedClassId?: string;
-    detectedMemberId?: string;
-  } {
-    const raw = sanitizeBarcode(barcodeRaw);
-    if (!raw) return {};
 
-    // Pattern 1: Delimited formats e.g. "0031 | 22MIS001", "0031:22MIS001", "0031_22MIS001"
-    const delimiterMatch = raw.match(/^([a-zA-Z0-9_-]+)\s*[:|_\-\/]\s*([a-zA-Z0-9_-]+)$/);
-    if (delimiterMatch) {
-      const part1 = delimiterMatch[1].trim();
-      const part2 = delimiterMatch[2].trim();
+  /**
+   * Fetches fresh member records for a Class ID directly from imported_inward_data in Supabase.
+   * Authoritative single source of truth when a Class is opened.
+   * If Supabase returns zero rows, the local dataset for that class is cleared.
+   */
+  public async fetchClassMembers(classId: string): Promise<ImportInwardedRecord[]> {
+    const cleanCid = normalizeIdentifier(classId);
+    if (!cleanCid) return [];
 
-      // Check if part1 matches known class_id in imported data
-      if (this.importInwarded.some(r => r.class_id.toLowerCase() === part1.toLowerCase())) {
-        return { detectedClassId: part1, detectedMemberId: part2 };
+    console.log('[SCANNER] Supabase class members fetch started for:', cleanCid);
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('class_id', cleanCid);
+
+        if (!error && Array.isArray(data)) {
+          const freshClassRecords: ImportInwardedRecord[] = data.map((r: any) => ({
+            id: r.id || `${r.class_id}_${r.member_id}`,
+            import_session_id: r.import_session_id || 'default_session',
+            college_name: r.university_name || r.college_name || this.activeUniversity || '',
+            university_name: r.university_name || r.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(r.class_id),
+            sch_id: r.sch_id,
+            member_id: normalizeIdentifier(r.member_id),
+            barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            created_by: r.created_by,
+            created_at: r.created_at || new Date().toISOString(),
+          }));
+
+          // Authoritative replacement for this class
+          this.importInwarded = [
+            ...this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() !== cleanCid.toLowerCase()),
+            ...freshClassRecords,
+          ];
+
+          this.saveToLocalStorage();
+          this.notify();
+          console.log(`[SCANNER] Supabase class members fetch result: ${freshClassRecords.length} records`);
+          return freshClassRecords;
+        }
+      } catch (err) {
+        console.warn('[SCANNER] fetchClassMembers error:', err);
       }
-      // Check if part2 matches known class_id
-      if (this.importInwarded.some(r => r.class_id.toLowerCase() === part2.toLowerCase())) {
-        return { detectedClassId: part2, detectedMemberId: part1 };
+    }
+
+    return this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase());
+  }
+
+  /**
+   * Manual search against Supabase imported_inward_data (Member ID / Barcode)
+   */
+  public async searchMember(query: string, optionalClassId?: string): Promise<ImportInwardedRecord[]> {
+    const normalized = normalizeIdentifier(query);
+    if (!normalized) return [];
+
+    const cleanClass = optionalClassId ? normalizeIdentifier(optionalClassId) : undefined;
+
+    if (isSupabaseConfigured) {
+      try {
+        let q = supabase
+          .from('imported_inward_data')
+          .select('*')
+          .or(`member_id.ilike.%${normalized}%,barcode.ilike.%${normalized}%`);
+
+        if (cleanClass) {
+          q = q.eq('class_id', cleanClass);
+        }
+
+        const { data, error } = await q.limit(100);
+        if (!error && Array.isArray(data)) {
+          return data.map((r: any) => ({
+            id: r.id || `${r.class_id}_${r.member_id}`,
+            import_session_id: r.import_session_id || 'default_session',
+            college_name: r.university_name || r.college_name || this.activeUniversity || '',
+            university_name: r.university_name || r.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(r.class_id),
+            sch_id: r.sch_id,
+            member_id: normalizeIdentifier(r.member_id),
+            barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            created_by: r.created_by,
+            created_at: r.created_at || new Date().toISOString(),
+          }));
+        }
+      } catch (err) {
+        console.warn('[ImportedService] Supabase member search note:', err);
       }
-
-      return { detectedClassId: part1, detectedMemberId: part2 };
     }
 
-    // Pattern 2: 4-digit or standard class code e.g. "0031"
-    const exactClass = this.importInwarded.find(r => r.class_id.toLowerCase() === raw.toLowerCase());
-    if (exactClass) {
-      return { detectedClassId: exactClass.class_id };
+    const qLower = normalized.toLowerCase();
+    return this.importInwarded.filter(r => {
+      if (cleanClass && normalizeIdentifier(r.class_id).toLowerCase() !== cleanClass.toLowerCase()) {
+        return false;
+      }
+      return (
+        normalizeIdentifier(r.member_id).toLowerCase().includes(qLower) ||
+        (r.barcode && normalizeIdentifier(r.barcode).toLowerCase().includes(qLower))
+      );
+    });
+  }
+
+  /**
+   * Unified authoritative lookup used by both Barcode Scanner and Manual Search.
+   * Flow:
+   * 1. Normalize barcode / input string (preserve leading zeros e.g. "0021", "002124EMBA1159")
+   * 2. Search imported_inward_data.barcode
+   * 3. Search compound class_id + member_id (e.g. "002124EMBA1159")
+   * 4. Search imported_inward_data.member_id (fallback when identical)
+   * 5. Search imported_inward_data.class_id (for Class ID barcodes)
+   * Checks Supabase directly before concluding not found!
+   */
+  public async lookupImportedRecord(queryInput: string, optionalClassId?: string): Promise<{
+    record?: ImportInwardedRecord;
+    isClassOnly?: boolean;
+    classId?: string;
+  } | null> {
+    const normalized = normalizeIdentifier(queryInput);
+    if (!normalized) return null;
+
+    console.log('[SCANNER] Supabase lookup started');
+    const cleanLower = normalized.toLowerCase();
+    const cleanClass = optionalClassId ? normalizeIdentifier(optionalClassId) : undefined;
+
+    // 1. Authoritative direct Supabase query FIRST
+    if (isSupabaseConfigured) {
+      try {
+        // Step A: Search imported_inward_data.barcode
+        let qBar = supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('barcode', normalized);
+
+        if (cleanClass) {
+          qBar = qBar.eq('class_id', cleanClass);
+        }
+
+        const { data: byBar, error: barErr } = await qBar.limit(1);
+
+        if (!barErr && byBar && byBar.length > 0) {
+          const row = byBar[0];
+          const matchedMemberId = normalizeIdentifier(row.member_id);
+          const matchedClassId = normalizeIdentifier(row.class_id);
+          console.log(`[SCANNER] Supabase lookup result: Found member ${matchedMemberId} for class ${matchedClassId}`);
+
+          const matchedRec: ImportInwardedRecord = {
+            id: row.id || `${matchedClassId}_${matchedMemberId}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: matchedClassId,
+            sch_id: row.sch_id,
+            member_id: matchedMemberId,
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+
+          const existingIdx = this.importInwarded.findIndex(r => r.id === matchedRec.id);
+          if (existingIdx >= 0) {
+            this.importInwarded[existingIdx] = matchedRec;
+          } else {
+            this.importInwarded.push(matchedRec);
+          }
+
+          return { record: matchedRec };
+        }
+
+        // Step B: Case-insensitive ILIKE barcode
+        let qIlike = supabase
+          .from('imported_inward_data')
+          .select('*')
+          .ilike('barcode', normalized);
+
+        if (cleanClass) {
+          qIlike = qIlike.eq('class_id', cleanClass);
+        }
+
+        const { data: byIlike, error: ilikeErr } = await qIlike.limit(1);
+        if (!ilikeErr && byIlike && byIlike.length > 0) {
+          const row = byIlike[0];
+          const matchedMemberId = normalizeIdentifier(row.member_id);
+          const matchedClassId = normalizeIdentifier(row.class_id);
+          console.log(`[SCANNER] Supabase lookup result: Found member ${matchedMemberId} for class ${matchedClassId}`);
+
+          const matchedRec: ImportInwardedRecord = {
+            id: row.id || `${matchedClassId}_${matchedMemberId}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: matchedClassId,
+            sch_id: row.sch_id,
+            member_id: matchedMemberId,
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+
+          const existingIdx = this.importInwarded.findIndex(r => r.id === matchedRec.id);
+          if (existingIdx >= 0) {
+            this.importInwarded[existingIdx] = matchedRec;
+          } else {
+            this.importInwarded.push(matchedRec);
+          }
+
+          return { record: matchedRec };
+        }
+
+        // Step C: Check if barcode is a Class ID (e.g. "0021")
+        const { data: byCls } = await supabase
+          .from('imported_inward_data')
+          .select('class_id, university_name')
+          .eq('class_id', normalized)
+          .limit(1);
+
+        if (byCls && byCls.length > 0) {
+          const resolvedClass = normalizeIdentifier(byCls[0].class_id);
+          console.log(`[SCANNER] Supabase lookup result: Identified Class ID ${resolvedClass}`);
+          return { isClassOnly: true, classId: resolvedClass };
+        }
+
+        // Step D: Fallback for member_id match (only when barcode and member_id are intentionally identical)
+        let qMem = supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('member_id', normalized);
+
+        if (cleanClass) {
+          qMem = qMem.eq('class_id', cleanClass);
+        }
+
+        const { data: byMem } = await qMem.limit(1);
+        if (byMem && byMem.length > 0) {
+          const row = byMem[0];
+          const matchedMemberId = normalizeIdentifier(row.member_id);
+          const matchedClassId = normalizeIdentifier(row.class_id);
+          console.log(`[SCANNER] Supabase lookup result: Found member ${matchedMemberId} for class ${matchedClassId}`);
+
+          const matchedRec: ImportInwardedRecord = {
+            id: row.id || `${matchedClassId}_${matchedMemberId}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: matchedClassId,
+            sch_id: row.sch_id,
+            member_id: matchedMemberId,
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+
+          const existingIdx = this.importInwarded.findIndex(r => r.id === matchedRec.id);
+          if (existingIdx >= 0) {
+            this.importInwarded[existingIdx] = matchedRec;
+          } else {
+            this.importInwarded.push(matchedRec);
+          }
+
+          return { record: matchedRec };
+        }
+      } catch (err) {
+        console.warn('[SCANNER] Supabase lookup exception:', err);
+      }
     }
 
-    // Pattern 3: Direct member ID match
-    const exactMember = this.importInwarded.find(r => r.member_id.toLowerCase() === raw.toLowerCase());
-    if (exactMember) {
-      return { detectedClassId: exactMember.class_id, detectedMemberId: exactMember.member_id };
+    // 2. Memory Cache fallback (in case offline or local)
+    const matchRecord = (r: ImportInwardedRecord) => {
+      if (cleanClass && normalizeIdentifier(r.class_id).toLowerCase() !== cleanClass.toLowerCase()) {
+        return false;
+      }
+      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
+      const rMem = normalizeIdentifier(r.member_id).toLowerCase();
+      const rCls = normalizeIdentifier(r.class_id).toLowerCase();
+
+      // 1. Exact barcode match
+      if (rBar && rBar === cleanLower) return true;
+
+      // 2. Compound match (class_id + member_id)
+      if (`${rCls}${rMem}` === cleanLower) return true;
+      if (`${rCls}_${rMem}` === cleanLower) return true;
+
+      // 3. Member ID fallback
+      if (rMem === cleanLower) return true;
+
+      return false;
+    };
+
+    const localFound = this.importInwarded.find(matchRecord);
+    if (localFound) {
+      console.log(`[SCANNER] Supabase lookup result: Found member ${localFound.member_id} for class ${localFound.class_id}`);
+      return { record: localFound };
     }
 
-    // Fallback: If 4 digits, assume Class ID
-    if (/^\d{3,6}$/.test(raw)) {
-      return { detectedClassId: raw };
+    const matchingClassRecord = this.importInwarded.find(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cleanLower
+    );
+    if (matchingClassRecord) {
+      console.log(`[SCANNER] Supabase lookup result: Identified Class ID ${matchingClassRecord.class_id}`);
+      return { isClassOnly: true, classId: matchingClassRecord.class_id };
     }
 
-    return { detectedMemberId: raw };
+    console.log('[SCANNER] Supabase lookup result: Not found');
+    return null;
+  }
+
+  /**
+   * Helper to ensure an active scan session exists in table 3 (scan_sessions)
+   * Does NOT duplicate sessions on every barcode scan. One session per scanning operation.
+   */
+  public async ensureScanSession(classId: string): Promise<ScanSession> {
+    const cleanCid = normalizeIdentifier(classId);
+    const uni =
+      this.activeUniversity ||
+      this.importInwarded.find(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase())?.university_name ||
+      'VIT';
+    const now = new Date().toISOString();
+    const currentUser = getCurrentUser();
+
+    // Check in-memory active session for this class
+    let session = this.scanSessions.find(
+      s => s.class_id.toLowerCase() === cleanCid.toLowerCase() && s.status === 'ACTIVE'
+    );
+
+    // If not in memory, check Supabase scan_sessions for active session
+    if (!session && isSupabaseConfigured) {
+      try {
+        const { data: dbSess } = await supabase
+          .from('scan_sessions')
+          .select('*')
+          .eq('class_id', cleanCid)
+          .eq('status', 'ACTIVE')
+          .order('started_at', { ascending: false })
+          .limit(1);
+
+        if (dbSess && dbSess.length > 0) {
+          const row = dbSess[0];
+          session = {
+            id: row.id,
+            college_name: row.college_name || uni,
+            import_session_id: row.import_session_id || this.activeSessionId || undefined,
+            class_id: cleanCid,
+            started_by: row.started_by || currentUser.name,
+            started_at: row.started_at || now,
+            last_activity_at: now,
+            status: 'ACTIVE',
+            created_at: row.created_at || now,
+          };
+          this.scanSessions.push(session);
+        }
+      } catch (e) {
+        console.warn('[ImportedService] Supabase session check note:', e);
+      }
+    }
+
+    if (!session) {
+      session = {
+        id: generateUUID(),
+        college_name: uni,
+        import_session_id: this.activeSessionId || undefined,
+        class_id: cleanCid,
+        started_by: currentUser.name,
+        started_at: now,
+        last_activity_at: now,
+        status: 'ACTIVE',
+        created_at: now,
+      };
+      this.scanSessions.push(session);
+
+      if (isSupabaseConfigured) {
+        try {
+          await supabase.from('scan_sessions').insert({
+            id: session.id,
+            college_name: session.college_name,
+            import_session_id: session.import_session_id || null,
+            class_id: session.class_id,
+            started_by: session.started_by,
+            started_at: session.started_at,
+            last_activity_at: session.last_activity_at,
+            status: 'ACTIVE',
+          });
+        } catch (err: any) {
+          console.warn('[ImportedService] Supabase scan_sessions insert note:', err?.message || err);
+        }
+      }
+    } else {
+      session.last_activity_at = now;
+      if (isSupabaseConfigured) {
+        try {
+          await supabase
+            .from('scan_sessions')
+            .update({ last_activity_at: now })
+            .eq('id', session.id);
+        } catch {}
+      }
+    }
+
+    this.saveToLocalStorage();
+    return session;
   }
 
   // ==============================================================================
-  // MAIN SCAN SCREEN SCAN LOGIC (Requirements 1, 3, 4, 5, 7)
-  // 1. Camera Scans Booklet
-  // 2. Detects Class ID
-  // 3. Verifies Class ID exists in imported data FOR THE SELECTED UNIVERSITY
-  // 4. Verifies Member ID exists for this Class
-  // 5. Creates/opens Scan Session in Supabase
-  // 6. Stages scan as PENDING_SAVE in scan_session_items
-  // 7. SHOULD IMMEDIATELY REDIRECT to Bundle Scan page (shouldRedirectToBundle = true)
+  // MAIN SCAN SCREEN SCAN LOGIC
+  // 1. Camera Scans Booklet or Class barcode
+  // 2. Normalizes barcode
+  // 3. Searches imported_inward_data.barcode
+  // 4. Resolves member_id and class_id
+  // 5. Creates/updates Scan Session in scan_sessions
+  // 6. Stages scan as PENDING_SAVE in memory and redirects to Bundle Scan
   // ==============================================================================
   public async processScanningDashboardScan(barcodeInput: string): Promise<ScanResult> {
-    const rawCode = sanitizeBarcode(barcodeInput);
+    const normalized = normalizeIdentifier(barcodeInput);
+    if (!normalized) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    console.log('[SCANNER] Barcode detected:', barcodeInput);
+    console.log('[SCANNER] Normalized barcode:', normalized);
 
     // SECTION 1: NO IMPORT DATA — BLOCKING STATE
+    if (this.importInwarded.length === 0) {
+      await this.syncFromSupabase();
+    }
     if (this.importInwarded.length === 0) {
       return {
         success: false,
@@ -1102,93 +1474,40 @@ class ImportedService {
       };
     }
 
-    if (!rawCode) {
-      return { success: false, message: 'Please provide a valid barcode.' };
-    }
+    const match = await this.lookupImportedRecord(normalized);
 
-    const { detectedClassId, detectedMemberId } = this.parseBarcodeContent(rawCode);
-
-    if (!detectedClassId) {
+    if (!match) {
       return {
         success: false,
-        message: 'Could not extract Class ID from barcode.',
-        barcode: rawCode,
+        isUnknownMember: true,
+        barcode: normalized,
+        message: `MEMBER ID NOT FOUND\n\nBarcode: ${normalized}\n\nThis Member ID / Barcode was not found in the imported data.`,
       };
     }
 
-    // Requirement 2 & 3: Search import_inwarded_data restricted by the active university
-    const uni = this.activeUniversity;
-    const classRecords = this.importInwarded.filter(
-      r =>
-        r.class_id.trim().toLowerCase() === detectedClassId.toLowerCase() &&
-        (!uni || r.college_name.toLowerCase() === uni.toLowerCase() || (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase()))
-    );
-
-    if (classRecords.length === 0) {
+    // Pattern A: Scanned barcode represents a Class ID
+    if (match.isClassOnly && match.classId) {
+      this.moveClassToTop(match.classId);
+      await this.ensureScanSession(match.classId);
       return {
-        success: false,
-        isUnknownClass: true,
-        detectedClassId,
-        detectedMemberId: detectedMemberId || undefined,
-        barcode: rawCode,
-        message: `CLASS NOT IMPORTED\n\nClass ID:\n${detectedClassId}\n\nThis Class ID is not available in the imported data for ${this.activeUniversity}.\nPlease scan a valid imported booklet.`,
+        success: true,
+        shouldRedirectToBundle: true,
+        class_id: match.classId,
+        barcode: normalized,
+        message: `✓ Class ${match.classId} identified. Opening bundle...`,
       };
     }
 
-    const actualClassId = classRecords[0].class_id;
+    // Pattern B: Scanned barcode represents a member booklet
+    const targetRecord = match.record!;
+    const actualClassId = targetRecord.class_id;
 
-    // SECTION 4: Verify Member ID exists for this Class ID
-    let targetRecord: ImportInwardedRecord | undefined;
-    if (detectedMemberId) {
-      targetRecord = classRecords.find(
-        r =>
-          r.member_id.toLowerCase() === detectedMemberId.toLowerCase() ||
-          r.member_id.toLowerCase() === rawCode.toLowerCase()
-      );
-
-      if (!targetRecord) {
-        return {
-          success: false,
-          isUnknownMember: true,
-          detectedClassId: actualClassId,
-          detectedMemberId,
-          barcode: rawCode,
-          message: `MEMBER ID NOT FOUND\n\nClass ID: ${actualClassId}\nMember ID: ${detectedMemberId}\n\nThis Member ID was not found in the imported Excel data for Class ${actualClassId}.`,
-        };
-      }
-    } else {
-      // If no explicit member in barcode, find first unscanned record in this class
-      const savedMembers = new Set(
-        this.savedScanned
-          .filter(s => s.class_id.toLowerCase() === actualClassId.toLowerCase())
-          .map(s => s.member_id.toLowerCase())
-      );
-      const pendingMembers = new Set(
-        this.scanItems
-          .filter(i => i.class_id.toLowerCase() === actualClassId.toLowerCase() && i.status === 'PENDING_SAVE')
-          .map(i => i.member_id.toLowerCase())
-      );
-
-      targetRecord = classRecords.find(
-        r => !savedMembers.has(r.member_id.toLowerCase()) && !pendingMembers.has(r.member_id.toLowerCase())
-      );
-
-      if (!targetRecord) {
-        return {
-          success: false,
-          message: `All booklets for Class ${actualClassId} are already scanned or pending save.`,
-          detectedClassId: actualClassId,
-          barcode: rawCode,
-        };
-      }
-    }
-
-    // Requirement 7: Duplicate Protection Check (college + class + member)
+    // Duplicate check
     const alreadySaved = this.savedScanned.some(
-      s => s.college_name.toLowerCase() === uni.toLowerCase() && s.class_id.toLowerCase() === actualClassId.toLowerCase() && s.member_id.toLowerCase() === targetRecord!.member_id.toLowerCase()
+      s => s.class_id.toLowerCase() === actualClassId.toLowerCase() && s.member_id.toLowerCase() === targetRecord.member_id.toLowerCase()
     );
     const alreadyPending = this.scanItems.some(
-      i => i.class_id.toLowerCase() === actualClassId.toLowerCase() && i.member_id.toLowerCase() === targetRecord!.member_id.toLowerCase() && i.status === 'PENDING_SAVE'
+      i => i.class_id.toLowerCase() === actualClassId.toLowerCase() && i.member_id.toLowerCase() === targetRecord.member_id.toLowerCase() && i.status === 'PENDING_SAVE'
     );
 
     if (alreadySaved || alreadyPending) {
@@ -1197,201 +1516,120 @@ class ImportedService {
         isDuplicate: true,
         class_id: actualClassId,
         member_id: targetRecord.member_id,
-        barcode: rawCode,
-        message: `ALREADY SCANNED\n\nMember ID: ${targetRecord.member_id} in Class ${actualClassId} was already scanned.`,
+        barcode: normalized,
+        message: `ALREADY INWARDED\n\nMember ID: ${targetRecord.member_id} in Class ${actualClassId} was already inwarded.`,
       };
     }
 
-    // SECTION 6, 7 & 31: Move Class ID to TOP of class list automatically
+    // Move Class ID to top
     this.moveClassToTop(actualClassId);
 
-    // Requirement 4 & 5: Create persistent scan session and store in scan_session_items as PENDING_SAVE
+    // Ensure persistent scan session exists
+    const session = await this.ensureScanSession(actualClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
 
-    // Ensure Scan Session exists in table 3
-    let session = this.scanSessions.find(
-      s => s.college_name.toLowerCase() === uni.toLowerCase() && s.class_id.toLowerCase() === actualClassId.toLowerCase()
-    );
-    if (!session) {
-      session = {
-        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`,
-        college_name: this.activeUniversity,
-        import_session_id: targetRecord.import_session_id,
-        class_id: actualClassId,
-        started_by: currentUser.name,
-        started_at: now,
-        last_activity_at: now,
-        status: 'ACTIVE',
-        created_at: now,
-      };
-      this.scanSessions.push(session);
-    } else {
-      session.last_activity_at = now;
-      if (session.status === 'COMPLETED') {
-        session.status = 'ACTIVE';
-      }
-    }
-
-    // Create pending item in table 5
+    // Stage as PENDING_SAVE
     const pendingItem: ScanSessionItem = {
-      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `item_${Date.now()}`,
+      id: generateUUID(),
       scan_session_id: session.id,
       class_id: actualClassId,
       member_id: targetRecord.member_id,
-      barcode: rawCode,
+      barcode: normalized,
       detected_at: now,
       detected_by: currentUser.name,
       status: 'PENDING_SAVE',
       created_at: now,
     };
     this.scanItems.push(pendingItem);
-
     this.saveToLocalStorage();
-
-    // Push to Supabase tables 3 & 5
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.from('scan_sessions').upsert({
-          id: session.id,
-          college_name: session.college_name,
-          import_session_id: session.import_session_id,
-          class_id: session.class_id,
-          started_by: session.started_by,
-          started_at: session.started_at,
-          last_activity_at: now,
-          status: session.status,
-        }, { onConflict: 'college_name,class_id' });
-
-        await supabase.from('scan_session_items').insert({
-          id: pendingItem.id,
-          scan_session_id: pendingItem.scan_session_id,
-          class_id: pendingItem.class_id,
-          member_id: pendingItem.member_id,
-          barcode: pendingItem.barcode,
-          detected_at: pendingItem.detected_at,
-          detected_by: pendingItem.detected_by,
-          status: 'PENDING_SAVE',
-        });
-      } catch (err) {
-        console.warn('Sync pending scan note:', err);
-      }
-    }
+    this.notify();
 
     const updatedBundle = this.getClassBundle(actualClassId);
 
-    // CRITICAL: shouldRedirectToBundle = true (Section 3 & 4)
     return {
       success: true,
       shouldRedirectToBundle: true,
       class_id: actualClassId,
       member_id: targetRecord.member_id,
-      barcode: rawCode,
+      barcode: normalized,
       bundle: updatedBundle || undefined,
-      message: `✓ Scanned ${targetRecord.member_id} for Class ${actualClassId}`,
+      message: `✓ Inwarded ${targetRecord.member_id} for Class ${actualClassId}`,
     };
   }
 
   // ==============================================================================
-  // BUNDLE SCAN PROCESSING (Requirements 3, 5, 7, 8)
+  // BUNDLE SCAN PROCESSING
   // Enforces:
   // - Class ID Mismatch Protection
-  // - Member ID Validation for Active Class
-  // - Duplicate Scan Protection
-  // - Staged as PENDING_SAVE in scan_session_items
+  // - Member ID Validation for Active Class via authoritative lookup
+  // - Duplicate Inward Protection
+  // - Staged as PENDING_SAVE
   // ==============================================================================
   public async processBundleScan(activeClassId: string, barcodeInput: string): Promise<ScanResult> {
-    const rawCode = sanitizeBarcode(barcodeInput);
-    if (!rawCode) {
+    const normalized = normalizeIdentifier(barcodeInput);
+    const cleanActiveCid = normalizeIdentifier(activeClassId);
+    if (!normalized) {
       return { success: false, message: 'Please provide a valid barcode.' };
     }
 
-    const { detectedClassId, detectedMemberId } = this.parseBarcodeContent(rawCode);
-    const cleanActiveCid = activeClassId.trim().toLowerCase();
+    console.log('[SCANNER] Barcode detected:', barcodeInput);
+    console.log('[SCANNER] Normalized barcode:', normalized);
 
-    // SECTION 9: CLASS ID MISMATCH PROTECTION
-    if (detectedClassId && detectedClassId.toLowerCase() !== cleanActiveCid) {
+    const match = await this.lookupImportedRecord(normalized, cleanActiveCid);
+
+    if (!match) {
+      return {
+        success: false,
+        isUnknownMember: true,
+        class_id: activeClassId,
+        detectedClassId: activeClassId,
+        detectedMemberId: normalized,
+        barcode: normalized,
+        message: `MEMBER ID NOT FOUND\n\nClass ID: ${activeClassId}\nBarcode: ${normalized}\n\nThis Member ID / Barcode was not found in the imported data for Class ID ${activeClassId}.`,
+      };
+    }
+
+    if (match.isClassOnly) {
+      if (match.classId?.toLowerCase() !== cleanActiveCid.toLowerCase()) {
+        return {
+          success: false,
+          isWrongClass: true,
+          currentClassId: activeClassId,
+          detectedClassId: match.classId,
+          barcode: normalized,
+          message: `CLASS ID MISMATCH\n\nCURRENT INWARDING CLASS:\n${activeClassId}\n\nDETECTED CLASS:\n${match.classId}\n\nThis booklet does not belong to the active inwarding bundle.\nPlease scan a booklet belonging to Class ID ${activeClassId}.`,
+        };
+      }
+      return {
+        success: true,
+        class_id: activeClassId,
+        barcode: normalized,
+        message: `Class ID ${activeClassId} verified.`,
+      };
+    }
+
+    const targetRecord = match.record!;
+
+    // Class ID Mismatch Check
+    if (normalizeIdentifier(targetRecord.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) {
       return {
         success: false,
         isWrongClass: true,
         currentClassId: activeClassId,
-        detectedClassId,
-        detectedMemberId: detectedMemberId || undefined,
-        barcode: rawCode,
-        message: `CLASS ID MISMATCH\n\nCURRENT SCANNING CLASS:\n${activeClassId}\n\nDETECTED CLASS:\n${detectedClassId}\n\nThis booklet does not belong to the active scanning bundle.\nPlease scan a booklet belonging to Class ID ${activeClassId}.`,
+        detectedClassId: targetRecord.class_id,
+        detectedMemberId: targetRecord.member_id,
+        barcode: normalized,
+        message: `CLASS ID MISMATCH\n\nCURRENT INWARDING CLASS:\n${activeClassId}\n\nDETECTED CLASS:\n${targetRecord.class_id}\n\nThis booklet belongs to Class ID ${targetRecord.class_id}, not active Class ${activeClassId}.`,
       };
     }
 
-    // Find imported records for activeClassId and active university
-    const uni = this.activeUniversity;
-    const classRecords = this.importInwarded.filter(
-      r =>
-        r.class_id.trim().toLowerCase() === cleanActiveCid &&
-        (!uni || r.college_name.toLowerCase() === uni.toLowerCase() || (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase()))
-    );
-
-    if (classRecords.length === 0) {
-      return {
-        success: false,
-        isUnknownClass: true,
-        detectedClassId: activeClassId,
-        barcode: rawCode,
-        message: `CLASS NOT IMPORTED\n\nClass ID: ${activeClassId}\nThis Class ID is not available in the imported data for ${this.activeUniversity}.`,
-      };
-    }
-
-    // SECTION 10: MEMBER ID VALIDATION
-    let targetRecord: ImportInwardedRecord | undefined;
-    if (detectedMemberId) {
-      targetRecord = classRecords.find(
-        r =>
-          r.member_id.toLowerCase() === detectedMemberId.toLowerCase() ||
-          r.member_id.toLowerCase() === rawCode.toLowerCase()
-      );
-
-      if (!targetRecord) {
-        return {
-          success: false,
-          isUnknownMember: true,
-          class_id: activeClassId,
-          detectedClassId: activeClassId,
-          detectedMemberId,
-          barcode: rawCode,
-          message: `MEMBER ID NOT FOUND\n\nClass ID: ${activeClassId}\nMember ID: ${detectedMemberId}\n\nThis Member ID was not found in the imported Excel data for Class ID ${activeClassId}.`,
-        };
-      }
-    } else {
-      const savedMembers = new Set(
-        this.savedScanned
-          .filter(s => s.class_id.toLowerCase() === cleanActiveCid)
-          .map(s => s.member_id.toLowerCase())
-      );
-      const pendingMembers = new Set(
-        this.scanItems
-          .filter(i => i.class_id.toLowerCase() === cleanActiveCid && i.status === 'PENDING_SAVE')
-          .map(i => i.member_id.toLowerCase())
-      );
-
-      targetRecord = classRecords.find(
-        r => !savedMembers.has(r.member_id.toLowerCase()) && !pendingMembers.has(r.member_id.toLowerCase())
-      );
-
-      if (!targetRecord) {
-        return {
-          success: false,
-          message: `All booklets for Class ${activeClassId} have already been received or staged for save.`,
-          class_id: activeClassId,
-          barcode: rawCode,
-        };
-      }
-    }
-
-    // Requirement 7: DUPLICATE PROTECTION
+    // Duplicate Check
     const alreadySaved = this.savedScanned.some(
-      s => s.college_name.toLowerCase() === uni.toLowerCase() && s.class_id.toLowerCase() === cleanActiveCid && s.member_id.toLowerCase() === targetRecord!.member_id.toLowerCase()
+      s => s.class_id.toLowerCase() === cleanActiveCid.toLowerCase() && s.member_id.toLowerCase() === targetRecord.member_id.toLowerCase()
     );
     const alreadyPending = this.scanItems.some(
-      i => i.class_id.toLowerCase() === cleanActiveCid && i.member_id.toLowerCase() === targetRecord!.member_id.toLowerCase() && i.status === 'PENDING_SAVE'
+      i => i.class_id.toLowerCase() === cleanActiveCid.toLowerCase() && i.member_id.toLowerCase() === targetRecord.member_id.toLowerCase() && i.status === 'PENDING_SAVE'
     );
 
     if (alreadySaved || alreadyPending) {
@@ -1400,64 +1638,30 @@ class ImportedService {
         isDuplicate: true,
         class_id: activeClassId,
         member_id: targetRecord.member_id,
-        barcode: rawCode,
-        message: `ALREADY SCANNED\n\nMember ID: ${targetRecord.member_id}\nThis booklet was already scanned for Class ${activeClassId}.`,
+        barcode: normalized,
+        message: `ALREADY INWARDED\n\nMember ID: ${targetRecord.member_id}\nThis booklet was already inwarded for Class ${activeClassId}.`,
       };
     }
 
-    // Valid booklet: Stage as PENDING_SAVE in table 5
+    // Valid booklet: Stage as PENDING_SAVE
+    const session = await this.ensureScanSession(activeClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
 
-    let session = this.scanSessions.find(
-      s => s.college_name.toLowerCase() === uni.toLowerCase() && s.class_id.toLowerCase() === cleanActiveCid
-    );
-    if (!session) {
-      session = {
-        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`,
-        college_name: this.activeUniversity,
-        import_session_id: targetRecord.import_session_id,
-        class_id: activeClassId,
-        started_by: currentUser.name,
-        started_at: now,
-        last_activity_at: now,
-        status: 'ACTIVE',
-        created_at: now,
-      };
-      this.scanSessions.push(session);
-    } else {
-      session.last_activity_at = now;
-    }
-
     const pendingItem: ScanSessionItem = {
-      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `item_${Date.now()}`,
+      id: generateUUID(),
       scan_session_id: session.id,
-      class_id: activeClassId,
+      class_id: cleanActiveCid,
       member_id: targetRecord.member_id,
-      barcode: rawCode,
+      barcode: normalized,
       detected_at: now,
       detected_by: currentUser.name,
       status: 'PENDING_SAVE',
       created_at: now,
     };
     this.scanItems.push(pendingItem);
-
     this.saveToLocalStorage();
-
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.from('scan_session_items').insert({
-          id: pendingItem.id,
-          scan_session_id: pendingItem.scan_session_id,
-          class_id: pendingItem.class_id,
-          member_id: pendingItem.member_id,
-          barcode: pendingItem.barcode,
-          detected_at: pendingItem.detected_at,
-          detected_by: pendingItem.detected_by,
-          status: 'PENDING_SAVE',
-        });
-      } catch {}
-    }
+    this.notify();
 
     const updatedBundle = this.getClassBundle(activeClassId);
 
@@ -1465,9 +1669,9 @@ class ImportedService {
       success: true,
       class_id: activeClassId,
       member_id: targetRecord.member_id,
-      barcode: rawCode,
+      barcode: normalized,
       bundle: updatedBundle || undefined,
-      message: `✓ Received (Pending Save): Member ${targetRecord.member_id} in Class ${activeClassId}`,
+      message: `✓ Inwarded (Pending Save): Member ${targetRecord.member_id} in Class ${activeClassId}`,
     };
   }
 
@@ -1514,11 +1718,15 @@ class ImportedService {
 
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
-    const uni = this.activeUniversity;
+    const uni =
+      this.activeUniversity ||
+      session?.college_name ||
+      this.importInwarded.find(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase())?.university_name ||
+      'VIT';
     const session = this.scanSessions.find(
-      s => s.college_name.toLowerCase() === uni.toLowerCase() && s.class_id.toLowerCase() === cleanCid.toLowerCase()
+      s => (!uni || s.college_name.toLowerCase() === uni.toLowerCase()) && normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()
     );
-    const sessId = session?.id || `sess_${Date.now()}`;
+    const sessId = session?.id || generateUUID();
 
     // Existing saved keys for uniqueness check: college_name + class_id + member_id
     const existingSavedKeys = new Set(
@@ -1528,20 +1736,31 @@ class ImportedService {
     const newSavedRecords: SavedScannedRecord[] = [];
 
     for (const item of pendingForClass) {
-      const key = `${uni.toLowerCase()}::${cleanCid.toLowerCase()}::${item.member_id.toLowerCase()}`;
+      // The member ID must come from the matching row in imported_inward_data
+      const matchingImport = this.importInwarded.find(r =>
+        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
+        (
+          (item.barcode && r.barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalizeIdentifier(item.barcode).toLowerCase()) ||
+          normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(item.member_id).toLowerCase()
+        )
+      );
+      const targetMemberId = matchingImport ? normalizeIdentifier(matchingImport.member_id) : normalizeIdentifier(item.member_id);
+      const targetBarcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.barcode ? normalizeIdentifier(item.barcode) : null);
+
+      const key = `${uni.toLowerCase()}::${cleanCid.toLowerCase()}::${targetMemberId.toLowerCase()}`;
       if (!existingSavedKeys.has(key)) {
         existingSavedKeys.add(key);
         newSavedRecords.push({
-          id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `save_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          id: generateUUID(),
           scan_session_id: sessId,
           import_session_id: session?.import_session_id || this.activeSessionId || 'default_sess',
           college_name: uni,
           class_id: cleanCid,
-          member_id: item.member_id,
-          barcode: item.barcode,
-          scanned_by: item.detected_by || currentUser.name,
+          member_id: targetMemberId,
+          barcode: targetBarcode,
+          scanned_by: item.detected_by || currentUser.name || 'Operator',
           scanned_at: item.detected_at || now,
-          saved_by: currentUser.name,
+          saved_by: currentUser.name || 'Operator',
           saved_at: now,
           status: 'SAVED',
         });

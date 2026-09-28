@@ -411,10 +411,12 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
               <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
               <span>{todayStr}</span>
             </div>
-            <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
-              <Building className="h-4 w-4 text-[#64748B]" />
-              <span className="font-bold text-[#172033]">{universityName}</span>
-            </div>
+            {universityName ? (
+              <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
+                <Building className="h-4 w-4 text-[#64748B]" />
+                <span className="font-bold text-[#172033]">{universityName}</span>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -477,10 +479,12 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
             <span>{todayStr}</span>
           </div>
-          <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
-            <Building className="h-4 w-4 text-[#64748B]" />
-            <span className="font-bold text-[#172033]">{universityName}</span>
-          </div>
+          {universityName ? (
+            <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
+              <Building className="h-4 w-4 text-[#64748B]" />
+              <span className="font-bold text-[#172033]">{universityName}</span>
+            </div>
+          ) : null}
         </div>
 
         {/* Global Toolbar Actions: Import Data & Export Excel */}
@@ -539,17 +543,17 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
         <div className="bg-white p-3.5 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
           <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
-            SCANNED
+            INWARDED
           </div>
           <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">
             {totalScanned}
           </div>
-          <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">Permanently Saved</div>
+          <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">Permanently Inwarded</div>
         </div>
 
         <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
           <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">
-            NOT SCANNED
+            NOT INWARDED
           </div>
           <div className="text-2xl font-black text-[#DC2626] font-tabular mt-1">
             {totalNotScanned}
@@ -695,7 +699,7 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
               </span>
             </h2>
             <div className="text-[11px] text-[#64748B]">
-              Scanned classes automatically move to the top. Click any card to open Bundle Scan.
+              Inwarded classes automatically move to the top. Click any card to open Bundle Scan.
             </div>
           </div>
 
@@ -794,18 +798,18 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
                         <span className="font-bold text-[#172033] text-sm">{b.expectedCount}</span>
                       </div>
                       <div className="flex items-center justify-between text-[#1565D8]">
-                        <span>Scanned</span>
+                        <span>Inwarded</span>
                         <span className="font-bold text-sm">
                           {b.savedCount}
                           {b.pendingCount > 0 && (
                             <span className="text-[10px] text-[#F59E0B] font-normal ml-1">
-                              (+{b.pendingCount} unsaved)
+                              (+{b.pendingCount} pending save)
                             </span>
                           )}
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-[#DC2626]">
-                        <span>Not Scanned</span>
+                        <span>Not Inwarded</span>
                         <span className="font-bold text-sm">{b.missingCount}</span>
                       </div>
                     </div>
@@ -845,8 +849,8 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
                   <th className="py-2.5 px-4">Class ID</th>
                   <th className="py-2.5 px-4 text-center">Status</th>
                   <th className="py-2.5 px-4 text-center">Expected</th>
-                  <th className="py-2.5 px-4 text-center">Scanned</th>
-                  <th className="py-2.5 px-4 text-center">Not Scanned</th>
+                  <th className="py-2.5 px-4 text-center">Inwarded</th>
+                  <th className="py-2.5 px-4 text-center">Not Inwarded</th>
                   <th className="py-2.5 px-4 text-center">Progress</th>
                   <th className="py-2.5 px-4 text-right">Action</th>
                 </tr>

@@ -88,10 +88,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
             <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
             <span>{todayStr}</span>
           </div>
-          <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
-            <Building className="h-4 w-4 text-[#64748B]" />
-            <span className="font-bold text-[#172033]">{universityName}</span>
-          </div>
+          {universityName ? (
+            <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
+              <Building className="h-4 w-4 text-[#64748B]" />
+              <span className="font-bold text-[#172033]">{universityName}</span>
+            </div>
+          ) : null}
         </div>
 
         {/* Top Actions */}

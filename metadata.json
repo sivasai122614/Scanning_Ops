@@ -1,6 +1,6 @@
 {
-  "name": "Exam Scanning & Script Verification System",
-  "description": "Enterprise Exam Scanning and Answer Script Verification Management System for examination and valuation authorities.",
+  "name": "Inward Scan",
+  "description": "Professional internal Inward Scan & Script Verification Operations System for examination and scanning staff.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

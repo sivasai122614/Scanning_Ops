@@ -3,13 +3,14 @@
 // High-Reliability Dual-Engine Barcode Scanner:
 // 1. Native Hardware-Accelerated BarcodeDetector Web API (Chromium / Safari 17+)
 // 2. ZXing MultiFormatReader with TRY_HARDER: true and all 1D/2D formats
-// 3. Wide rectangular scanning zone optimized for wide 1D exam barcodes
+// 3. Robust frame scanning loop with canvas fallback
 // 4. File/Image upload decoder fallback
-// 5. Camera stream setup with HD 16:9 widescreen, continuous autofocus, torch & zoom
+// 5. Camera stream setup with HD widescreen, continuous autofocus, torch & zoom
 // ==============================================================================
 
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
+import { normalizeIdentifier } from './normalize';
 
 export interface BarcodeScanResult {
   text: string;
@@ -31,7 +32,7 @@ export interface CameraStreamResult {
 }
 
 // All recognized barcode formats for exam scripts and ID cards
-export const ZXING_ALL_FORMATS = [
+export const ZXING_ALL_FORMATS: BarcodeFormat[] = [
   BarcodeFormat.CODE_128,
   BarcodeFormat.CODE_39,
   BarcodeFormat.CODE_93,
@@ -66,7 +67,7 @@ export function createZXingReader(): BrowserMultiFormatReader {
   const hints = new Map();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, ZXING_ALL_FORMATS);
   hints.set(DecodeHintType.TRY_HARDER, true);
-  return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 80 });
+  return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 40 });
 }
 
 /**
@@ -100,49 +101,46 @@ export async function createNativeBarcodeDetector(): Promise<any | null> {
 }
 
 /**
- * Request HD 16:9 camera stream with continuous autofocus
+ * Request camera stream with rear environment camera priority and fallback
  */
 export async function requestCameraStream(
   deviceId?: string
 ): Promise<CameraStreamResult> {
+  console.log('[SCANNER] Camera requested');
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error('Camera access not supported by browser.');
   }
 
   let stream: MediaStream | null = null;
 
-  // Tier 1: Try native 4:3 / full resolution with rear environment camera
+  // Tier 1: Try HD 1280x720 environment rear camera
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: deviceId
         ? {
             deviceId: { exact: deviceId },
-            width: { ideal: 1920 },
-            height: { ideal: 1440 },
-            aspectRatio: { ideal: 4 / 3 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           }
         : {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1440 },
-            aspectRatio: { ideal: 4 / 3 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
       audio: false,
     });
   } catch (err1) {
-    console.warn('Native 4:3 constraints rejected, trying relaxed environment:', err1);
+    console.warn('[SCANNER] HD constraints rejected, trying relaxed environment:', err1);
     try {
       // Tier 2: Try relaxed rear camera
       stream = await navigator.mediaDevices.getUserMedia({
         video: deviceId
           ? { deviceId: { exact: deviceId } }
-          : {
-              facingMode: { ideal: 'environment' },
-            },
+          : { facingMode: { ideal: 'environment' } },
         audio: false,
       });
     } catch (err2) {
-      console.warn('Relaxed environment rejected, trying default video:', err2);
+      console.warn('[SCANNER] Relaxed environment rejected, trying default video:', err2);
       // Tier 3: Any video device
       stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -155,6 +153,7 @@ export async function requestCameraStream(
     throw new Error('Could not establish video feed from any camera.');
   }
 
+  console.log('[SCANNER] Camera started');
   const videoTrack = stream.getVideoTracks()[0];
   const capabilities: any = videoTrack?.getCapabilities ? videoTrack.getCapabilities() : {};
 
@@ -239,118 +238,142 @@ export function startContinuousDualScanning(
     useCanvasRegion?: boolean;
   }
 ): { stop: () => void } {
+  console.log('[SCANNER] Decoder initialized');
+  console.log('[SCANNER] Scanning started');
+
   let isRunning = true;
   let isProcessing = false;
   let detectorInstance: any = null;
+  let zxingReaderInstance: BrowserMultiFormatReader | null = null;
   let zxingControls: { stop: () => void } | null = null;
-  const intervalTime = options?.throttleMs || 70;
+  let frameTimerId: any = null;
 
-  // Offscreen canvas for frame capture and contrast enhancement
-  const offscreenCanvas = document.createElement('canvas');
-  const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+  try {
+    zxingReaderInstance = createZXingReader();
+  } catch (e) {
+    console.warn('[SCANNER] ZXing reader init note:', e);
+  }
 
-  const processFrame = async () => {
-    if (!isRunning) return;
-    if (isProcessing) return;
-    if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
+  // 1. If Native BarcodeDetector Web API is supported, setup hardware accelerated detector
+  if (isNativeBarcodeDetectorSupported()) {
+    createNativeBarcodeDetector()
+      .then(detector => {
+        if (isRunning && detector) {
+          detectorInstance = detector;
+        }
+      })
+      .catch(() => {});
+  }
 
-    isProcessing = true;
-
-    try {
-      // 1. Try Native BarcodeDetector (fastest and most accurate hardware-accelerated decode)
-      if (detectorInstance) {
-        try {
-          const barcodes = await detectorInstance.detect(videoEl);
-          if (barcodes && barcodes.length > 0) {
-            for (const b of barcodes) {
-              if (b.rawValue && b.rawValue.trim()) {
-                onBarcodeDetected({
-                  text: b.rawValue.trim(),
-                  format: b.format || 'unknown',
-                });
-                isProcessing = false;
-                return;
-              }
+  // 2. Primary ZXing continuous reader directly on video element
+  try {
+    if (zxingReaderInstance) {
+      zxingReaderInstance
+        .decodeFromVideoElement(videoEl, (result) => {
+          if (!isRunning) return;
+          if (result) {
+            const rawText = result.getText();
+            if (rawText && rawText.trim()) {
+              const cleaned = rawText.trim();
+              console.log('[SCANNER] Barcode detected:', cleaned);
+              console.log('[SCANNER] Normalized barcode:', normalizeIdentifier(cleaned));
+              onBarcodeDetected({
+                text: cleaned,
+                format: result.getBarcodeFormat() ? String(result.getBarcodeFormat()) : undefined,
+              });
             }
           }
-        } catch (e) {
-          // Frame drop or unsupported format on this frame
-        }
-      }
+        })
+        .then(controls => {
+          if (!isRunning) {
+            controls.stop();
+          } else {
+            zxingControls = controls;
+          }
+        })
+        .catch(err => {
+          console.warn('[SCANNER] ZXing stream attach note:', err?.message || err);
+        });
+    }
+  } catch (zxingErr) {
+    console.warn('[SCANNER] ZXing init error:', zxingErr);
+  }
 
-      // 2. Offscreen canvas extraction with focus on central wide rectangle zone
-      if (offscreenCtx && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
-        const vw = videoEl.videoWidth;
-        const vh = videoEl.videoHeight;
-        offscreenCanvas.width = vw;
-        offscreenCanvas.height = vh;
-        offscreenCtx.drawImage(videoEl, 0, 0, vw, vh);
+  // 3. Auxiliary Frame Loop (native BarcodeDetector + Canvas fallback)
+  // Ensures barcode is captured even if decodeFromVideoElement had a frame stall
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        // If native detector exists, also try detecting on canvas
+  const runFrameLoop = async () => {
+    if (!isRunning) return;
+
+    if (!isProcessing && videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+      isProcessing = true;
+      try {
+        // A. Native BarcodeDetector if available
         if (detectorInstance) {
           try {
-            const barcodesCanvas = await detectorInstance.detect(offscreenCanvas);
-            if (barcodesCanvas && barcodesCanvas.length > 0 && barcodesCanvas[0].rawValue) {
+            const barcodes = await detectorInstance.detect(videoEl);
+            if (barcodes && barcodes.length > 0) {
+              for (const b of barcodes) {
+                if (b.rawValue && b.rawValue.trim()) {
+                  const cleaned = b.rawValue.trim();
+                  console.log('[SCANNER] Barcode detected:', cleaned);
+                  console.log('[SCANNER] Normalized barcode:', normalizeIdentifier(cleaned));
+                  onBarcodeDetected({
+                    text: cleaned,
+                    format: b.format || 'unknown',
+                  });
+                  isProcessing = false;
+                  return;
+                }
+              }
+            }
+          } catch {
+            // Frame drop
+          }
+        }
+
+        // B. Canvas snapshot fallback for difficult 1D barcodes
+        if (ctx && zxingReaderInstance && (!zxingControls || Math.random() < 0.3)) {
+          canvas.width = videoEl.videoWidth;
+          canvas.height = videoEl.videoHeight;
+          ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+          try {
+            const res = zxingReaderInstance.decodeFromCanvas(canvas);
+            if (res && res.getText()) {
+              const cleaned = res.getText().trim();
+              console.log('[SCANNER] Barcode detected:', cleaned);
+              console.log('[SCANNER] Normalized barcode:', normalizeIdentifier(cleaned));
               onBarcodeDetected({
-                text: barcodesCanvas[0].rawValue.trim(),
-                format: barcodesCanvas[0].format,
+                text: cleaned,
+                format: res.getBarcodeFormat() ? String(res.getBarcodeFormat()) : undefined,
               });
               isProcessing = false;
               return;
             }
-          } catch {}
+          } catch {
+            // No barcode in frame
+          }
         }
+      } catch {
+        // Frame processing exception
+      } finally {
+        isProcessing = false;
       }
-    } catch (err) {
-      // Ignore scan loop transient errors
-    } finally {
-      isProcessing = false;
+    }
+
+    if (isRunning) {
+      frameTimerId = setTimeout(runFrameLoop, options?.throttleMs || 90);
     }
   };
 
-  let timerId: any = null;
-
-  // Initialize Native Detector
-  createNativeBarcodeDetector().then(detector => {
-    if (!isRunning) return;
-    detectorInstance = detector;
-    timerId = setInterval(processFrame, intervalTime);
-  });
-
-  // Also initialize ZXing Reader as secondary parallel engine
-  try {
-    const zxingReader = createZXingReader();
-    zxingReader
-      .decodeFromVideoElement(videoEl, (result, error) => {
-        if (!isRunning) return;
-        if (result) {
-          const text = result.getText();
-          if (text && text.trim()) {
-            onBarcodeDetected({
-              text: text.trim(),
-              format: result.getBarcodeFormat() ? String(result.getBarcodeFormat()) : undefined,
-            });
-          }
-        }
-      })
-      .then(controls => {
-        if (!isRunning) {
-          controls.stop();
-        } else {
-          zxingControls = controls;
-        }
-      })
-      .catch(e => {
-        console.warn('ZXing decodeFromVideoElement note:', e);
-      });
-  } catch (zxingErr) {
-    console.warn('ZXing init error:', zxingErr);
-  }
+  frameTimerId = setTimeout(runFrameLoop, 120);
 
   return {
     stop: () => {
       isRunning = false;
-      if (timerId) clearInterval(timerId);
+      if (frameTimerId) clearTimeout(frameTimerId);
       if (zxingControls) {
         try {
           zxingControls.stop();
@@ -428,6 +451,16 @@ export async function decodeBarcodeFromImageFile(
                   });
                 }
               }
+            }
+
+            const zxing = createZXingReader();
+            const res = zxing.decodeFromCanvas(canvas);
+            if (res && res.getText()) {
+              URL.revokeObjectURL(url);
+              return resolve({
+                text: res.getText().trim(),
+                format: res.getBarcodeFormat() ? String(res.getBarcodeFormat()) : undefined,
+              });
             }
           }
         } catch (canvasErr) {

@@ -120,10 +120,14 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   }, [classId]);
 
   useEffect(() => {
+    // Authoritative fetch from Supabase imported_inward_data when class opens
+    importedService.fetchClassMembers(classId).then(() => {
+      loadData();
+    });
     loadData();
     const unsub = importedService.subscribe(loadData);
     return () => unsub();
-  }, [loadData]);
+  }, [classId, loadData]);
 
   // Camera lifecycle for Bundle Scan
   useEffect(() => {
@@ -451,11 +455,11 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
 
       {/* 2. PRIMARY STATISTICS & COUNTERS (Section 9 & 30) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {/* STAT 1: SCANNED (With breakdown between Saved and Pending Save) */}
+        {/* STAT 1: INWARDED (With breakdown between Saved and Pending Save) */}
         <div className="bg-white p-4 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
           <div className="flex items-center justify-between">
             <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
-              SCANNED
+              INWARDED
             </div>
             {pendingCount > 0 && (
               <span className="text-[9px] bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A] px-1.5 py-0.5 rounded font-bold uppercase">
@@ -467,16 +471,16 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             {totalScanned}
           </div>
           <div className="text-[11px] text-[#64748B] mt-1 font-medium flex items-center gap-1.5">
-            <span className="font-bold text-[#16A34A]">{savedCount} Saved</span>
+            <span className="font-bold text-[#16A34A]">{savedCount} Inwarded</span>
             <span>•</span>
-            <span className="font-bold text-[#D97706]">{pendingCount} Unsaved</span>
+            <span className="font-bold text-[#D97706]">{pendingCount} Pending Save</span>
           </div>
         </div>
 
-        {/* STAT 2: NOT SCANNED */}
+        {/* STAT 2: NOT INWARDED */}
         <div className="bg-white p-4 border border-[#FECACA] rounded-xl shadow-xs">
           <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">
-            NOT SCANNED
+            NOT INWARDED
           </div>
           <div className="text-3xl font-black text-[#DC2626] font-tabular mt-1">
             {notScannedCount}
@@ -583,7 +587,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
               </div>
               <div>
                 <div className="text-[10px] font-black uppercase tracking-wider text-[#B45309]">
-                  ✓ SCANNED — PENDING SAVE
+                  ✓ INWARDED — PENDING SAVE
                 </div>
                 <div className="font-mono text-sm font-bold text-[#78350F]">
                   {scanSuccessToast.classId} • {scanSuccessToast.memberId}
@@ -689,7 +693,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         {/* Navigation Tabs */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-[#CBD5E1] bg-[#F8FAFC] px-4 pt-2 gap-2">
           <div className="flex items-center gap-1 overflow-x-auto">
-            {/* TAB 1: SCANNED BOOKLETS */}
+            {/* TAB 1: INWARDED BOOKLETS */}
             <button
               type="button"
               onClick={() => setActiveTab('scanned')}
@@ -699,10 +703,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                   : 'border-transparent text-[#64748B] hover:text-[#172033]'
               }`}
             >
-              SCANNED ({totalScanned})
+              INWARDED ({totalScanned})
             </button>
 
-            {/* TAB 2: NOT SCANNED */}
+            {/* TAB 2: NOT INWARDED */}
             <button
               type="button"
               onClick={() => setActiveTab('not_scanned')}
@@ -712,7 +716,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                   : 'border-transparent text-[#64748B] hover:text-[#172033]'
               }`}
             >
-              NOT SCANNED ({notScannedCount})
+              NOT INWARDED ({notScannedCount})
             </button>
 
             {/* TAB 3: ALL IMPORTED */}
@@ -787,7 +791,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
 
                     {isSaved ? (
                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-[10px] font-bold uppercase tracking-wider rounded-md">
-                        Saved ✓
+                        Inwarded ✓
                       </span>
                     ) : isPending ? (
                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#FEF3C7] border border-[#FDE68A] text-[#92400E] text-[10px] font-bold uppercase tracking-wider rounded-md">
@@ -795,7 +799,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
                       </span>
                     ) : (
                       <span className="inline-flex items-center px-2.5 py-0.5 bg-[#FEF2F2] border border-[#FECACA] text-[#DC2626] text-[10px] font-bold uppercase tracking-wider rounded-md">
-                        NOT SCANNED
+                        NOT INWARDED
                       </span>
                     )}
 
