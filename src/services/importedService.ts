@@ -77,16 +77,24 @@ export interface ImportInwardedRecord {
   created_at: string;
 }
 
-// Table 2: Manually inwarded records
+// Table 2: Manually inwarded records (public.manual_inward_data)
 export interface ManualInwardedRecord {
   id: string;
-  college_name: string;
+  session_code?: string;
+  bundle_code?: string;
   class_id: string;
-  member_id: string;
-  source: 'MANUAL';
-  created_by?: string;
+  school_id?: string;
+  room_number?: string;
+  subject_name?: string;
+  booklet_barcode?: string;
+  roll_number?: string;
+  member_id?: string;
+  college_name?: string;
+  status: string;
+  inwarded_by?: string;
+  notes?: string;
+  scanned_at?: string;
   created_at: string;
-  updated_at: string;
 }
 
 // Table 3: Active bundle scan session
@@ -371,6 +379,11 @@ class ImportedService {
           { event: '*', schema: 'public', table: 'scan_session_items' },
           (payload) => this.handleRealtimeEvent('scan_session_items', payload)
         )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'manual_inward_data' },
+          (payload) => this.handleRealtimeEvent('manual_inward_data', payload)
+        )
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             console.log('[ImportedService] Supabase Realtime connected');
@@ -510,6 +523,41 @@ class ImportedService {
       } else if (eventType === 'DELETE') {
         if (oldRecord && oldRecord.id) {
           this.scanItems = this.scanItems.filter(i => i.id !== oldRecord.id);
+          stateChanged = true;
+        }
+      }
+    } else if (table === 'manual_inward_data') {
+      if ((eventType === 'INSERT' || eventType === 'UPDATE') && newRecord) {
+        const cleanCid = normalizeIdentifier(newRecord.class_id);
+        const cleanMid = normalizeIdentifier(newRecord.roll_number || newRecord.member_id || newRecord.booklet_barcode || '');
+        const mapped: ManualInwardedRecord = {
+          id: newRecord.id,
+          session_code: newRecord.session_code,
+          bundle_code: newRecord.bundle_code,
+          class_id: cleanCid,
+          school_id: newRecord.school_id,
+          room_number: newRecord.room_number,
+          subject_name: newRecord.subject_name,
+          booklet_barcode: newRecord.booklet_barcode ? normalizeIdentifier(newRecord.booklet_barcode) : undefined,
+          roll_number: cleanMid,
+          member_id: cleanMid,
+          college_name: newRecord.college_name || this.activeUniversity,
+          status: newRecord.status || 'inwarded',
+          inwarded_by: newRecord.inwarded_by || 'Manual Inward',
+          notes: newRecord.notes,
+          scanned_at: newRecord.scanned_at || newRecord.created_at,
+          created_at: newRecord.created_at || new Date().toISOString(),
+        };
+        const idx = this.manualInwarded.findIndex(m => m.id === newRecord.id);
+        if (idx >= 0) {
+          this.manualInwarded[idx] = mapped;
+        } else {
+          this.manualInwarded.push(mapped);
+        }
+        stateChanged = true;
+      } else if (eventType === 'DELETE') {
+        if (oldRecord && oldRecord.id) {
+          this.manualInwarded = this.manualInwarded.filter(m => m.id !== oldRecord.id);
           stateChanged = true;
         }
       }
@@ -659,7 +707,38 @@ class ImportedService {
         this.saveToLocalStorage();
       }
 
-      // 5. Fetch scan_session_items (pending items)
+      // 5. Fetch manual_inward_data
+      try {
+        const { data: manData, error: manErr } = await supabase
+          .from('manual_inward_data')
+          .select('*')
+          .limit(50000);
+        if (!manErr && manData !== null && Array.isArray(manData)) {
+          this.manualInwarded = manData.map((m: any) => ({
+            id: m.id,
+            session_code: m.session_code,
+            bundle_code: m.bundle_code,
+            class_id: normalizeIdentifier(m.class_id),
+            school_id: m.school_id,
+            room_number: m.room_number,
+            subject_name: m.subject_name,
+            booklet_barcode: m.booklet_barcode ? normalizeIdentifier(m.booklet_barcode) : undefined,
+            roll_number: m.roll_number ? normalizeIdentifier(m.roll_number) : undefined,
+            member_id: normalizeIdentifier(m.roll_number || m.booklet_barcode || ''),
+            college_name: m.college_name || this.activeUniversity,
+            status: m.status || 'inwarded',
+            inwarded_by: m.inwarded_by || 'Manual Inward',
+            notes: m.notes,
+            scanned_at: m.scanned_at || m.created_at,
+            created_at: m.created_at || new Date().toISOString(),
+          }));
+          this.saveToLocalStorage();
+        }
+      } catch (e) {
+        console.warn('[ImportedService] Supabase manual_inward_data sync note:', e);
+      }
+
+      // 6. Fetch scan_session_items (pending items)
       try {
         const { data: itemsData, error: itemsErr } = await supabase.from('scan_session_items').select('*').limit(20000);
         if (!itemsErr && itemsData !== null && Array.isArray(itemsData)) {
@@ -851,12 +930,32 @@ class ImportedService {
       expectedMap.set(cid, (expectedMap.get(cid) || 0) + 1);
     }
 
-    // 2. Count saved scans per class from saved_scanned_data
+    // 2. Count saved scans & manual inwards per class from saved_scanned_data AND manual_inward_data (distinct members)
     const savedMap = new Map<string, number>();
+    const inwardedMembersByClass = new Map<string, Set<string>>();
+
     for (const s of this.savedScanned) {
       const cid = normalizeIdentifier(s.class_id);
-      if (!cid) continue;
-      savedMap.set(cid, (savedMap.get(cid) || 0) + 1);
+      const mid = normalizeIdentifier(s.member_id);
+      if (!cid || !mid) continue;
+      if (!inwardedMembersByClass.has(cid)) {
+        inwardedMembersByClass.set(cid, new Set());
+      }
+      inwardedMembersByClass.get(cid)!.add(mid.toLowerCase());
+    }
+
+    for (const m of this.manualInwarded) {
+      const cid = normalizeIdentifier(m.class_id);
+      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
+      if (!cid || !mid) continue;
+      if (!inwardedMembersByClass.has(cid)) {
+        inwardedMembersByClass.set(cid, new Set());
+      }
+      inwardedMembersByClass.get(cid)!.add(mid.toLowerCase());
+    }
+
+    for (const [cid, members] of inwardedMembersByClass.entries()) {
+      savedMap.set(cid, members.size);
     }
 
     // 3. Count pending unsaved scans per class from scan_session_items
@@ -963,6 +1062,18 @@ class ImportedService {
       savedMap.set(normalizeIdentifier(s.member_id).toLowerCase(), s);
     }
 
+    // Manual inwards for this class from manual_inward_data
+    const manual = this.manualInwarded.filter(
+      m => normalizeIdentifier(m.class_id).toLowerCase() === clean
+    );
+    const manualMap = new Map<string, ManualInwardedRecord>();
+    for (const m of manual) {
+      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
+      if (mid) {
+        manualMap.set(mid.toLowerCase(), m);
+      }
+    }
+
     // Pending scans for this class
     const pending = this.scanItems.filter(
       i => normalizeIdentifier(i.class_id).toLowerCase() === clean && i.status === 'PENDING_SAVE'
@@ -979,6 +1090,7 @@ class ImportedService {
       const midLower = mid.toLowerCase();
 
       const sv = savedMap.get(midLower);
+      const man = manualMap.get(midLower);
       const pend = pendingMap.get(midLower);
 
       if (sv) {
@@ -992,6 +1104,18 @@ class ImportedService {
           scanned_at: sv.scanned_at,
           saved_by: sv.saved_by,
           saved_at: sv.saved_at,
+        });
+      } else if (man) {
+        views.push({
+          id: man.id,
+          class_id: exp.class_id,
+          member_id: mid,
+          barcode: man.booklet_barcode || exp.barcode || null,
+          scan_status: 'saved',
+          scanned_by: man.inwarded_by || 'Manual Inward',
+          scanned_at: man.scanned_at || man.created_at,
+          saved_by: man.inwarded_by || 'Manual Inward',
+          saved_at: man.created_at,
         });
       } else if (pend) {
         views.push({
@@ -1718,14 +1842,15 @@ class ImportedService {
 
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
-    const uni =
+    const existingSession = this.scanSessions.find(
+      s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()
+    );
+    const uni: string =
       this.activeUniversity ||
-      session?.college_name ||
+      existingSession?.college_name ||
       this.importInwarded.find(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase())?.university_name ||
       'VIT';
-    const session = this.scanSessions.find(
-      s => (!uni || s.college_name.toLowerCase() === uni.toLowerCase()) && normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()
-    );
+    const session = existingSession;
     const sessId = session?.id || generateUUID();
 
     // Existing saved keys for uniqueness check: college_name + class_id + member_id
@@ -2357,6 +2482,422 @@ class ImportedService {
   public exportClassWiseExcel(customUniversityName?: string) {
     const uni = customUniversityName || this.activeUniversity;
     return this.exportUniversityExcel(uni);
+  }
+
+  // ==============================================================================
+  // MOBILE SCAN WORKFLOW METHODS (STAGE 1 & STAGE 2)
+  // ==============================================================================
+
+  /**
+   * STAGE 1 Validation:
+   * Before opening a class, validate against imported_inward_data WHERE class_id = enteredClassId.
+   */
+  public async validateClassId(rawClassId: string): Promise<{
+    exists: boolean;
+    count: number;
+    classId: string;
+  }> {
+    const cleanCid = normalizeIdentifier(rawClassId);
+    if (!cleanCid) return { exists: false, count: 0, classId: '' };
+
+    // 1. Check local cache
+    const matchingLocal = this.importInwarded.filter(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase()
+    );
+    if (matchingLocal.length > 0) {
+      const canonicalCid = matchingLocal[0].class_id;
+      return { exists: true, count: matchingLocal.length, classId: canonicalCid };
+    }
+
+    // 2. Direct Supabase query
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('imported_inward_data')
+          .select('class_id')
+          .eq('class_id', cleanCid);
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const canonical = normalizeIdentifier(data[0].class_id);
+          // fetch members into cache
+          await this.fetchClassMembers(canonical);
+          return { exists: true, count: data.length, classId: canonical };
+        }
+      } catch (e) {
+        console.warn('validateClassId error:', e);
+      }
+    }
+
+    return { exists: false, count: 0, classId: cleanCid };
+  }
+
+  /**
+   * STAGE 2 Validation:
+   * Validates whether a Member ID belongs to the current Class ID in imported_inward_data.
+   * If not in this class, checks whether it belongs to another class or doesn't exist.
+   */
+  public async validateMemberForClass(
+    activeClassId: string,
+    rawMemberId: string
+  ): Promise<{
+    status: 'VALID' | 'WRONG_CLASS' | 'NOT_FOUND';
+    actualClassId?: string;
+    record?: ImportInwardedRecord;
+  }> {
+    const cleanActiveCid = normalizeIdentifier(activeClassId);
+    const cleanMid = normalizeIdentifier(rawMemberId);
+    if (!cleanActiveCid || !cleanMid) {
+      return { status: 'NOT_FOUND' };
+    }
+
+    const midLower = cleanMid.toLowerCase();
+    const cidLower = cleanActiveCid.toLowerCase();
+
+    // 1. Direct query: WHERE class_id = activeClassId AND member_id = rawMemberId (or barcode = rawMemberId)
+    // Check local memory first
+    const exactLocal = this.importInwarded.find(r => {
+      const rCid = normalizeIdentifier(r.class_id).toLowerCase();
+      const rMid = normalizeIdentifier(r.member_id).toLowerCase();
+      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
+      return rCid === cidLower && (rMid === midLower || rBar === midLower);
+    });
+
+    if (exactLocal) {
+      return { status: 'VALID', record: exactLocal, actualClassId: exactLocal.class_id };
+    }
+
+    // Direct Supabase query for exact class + member match
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('class_id', cleanActiveCid)
+          .or(`member_id.eq.${cleanMid},barcode.eq.${cleanMid}`)
+          .limit(1);
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const row = data[0];
+          const rec: ImportInwardedRecord = {
+            id: row.id || `${row.class_id}_${row.member_id}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(row.class_id),
+            sch_id: row.sch_id,
+            member_id: normalizeIdentifier(row.member_id),
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : undefined,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+          // add to local
+          const existIdx = this.importInwarded.findIndex(r => r.id === rec.id);
+          if (existIdx >= 0) this.importInwarded[existIdx] = rec;
+          else this.importInwarded.push(rec);
+
+          return { status: 'VALID', record: rec, actualClassId: rec.class_id };
+        }
+      } catch (e) {
+        console.warn('Supabase exact member check note:', e);
+      }
+    }
+
+    // 2. If not found in this class, check if member exists in ANY other class!
+    // Check local memory
+    const otherClassLocal = this.importInwarded.find(r => {
+      const rMid = normalizeIdentifier(r.member_id).toLowerCase();
+      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
+      return rMid === midLower || rBar === midLower;
+    });
+
+    if (otherClassLocal) {
+      return {
+        status: 'WRONG_CLASS',
+        actualClassId: otherClassLocal.class_id,
+        record: otherClassLocal,
+      };
+    }
+
+    // Check Supabase for member in any class
+    if (isSupabaseConfigured) {
+      try {
+        const { data: anyData } = await supabase
+          .from('imported_inward_data')
+          .select('*')
+          .or(`member_id.eq.${cleanMid},barcode.eq.${cleanMid}`)
+          .limit(1);
+
+        if (anyData && Array.isArray(anyData) && anyData.length > 0) {
+          const row = anyData[0];
+          return {
+            status: 'WRONG_CLASS',
+            actualClassId: normalizeIdentifier(row.class_id),
+          };
+        }
+      } catch (e) {
+        console.warn('Supabase general member check note:', e);
+      }
+    }
+
+    return { status: 'NOT_FOUND' };
+  }
+
+  /**
+   * Check if a member is already inwarded for the class across:
+   * 1. manual_inward_data
+   * 2. saved_scanned_data
+   * 3. pending scan_session_items
+   */
+  public isMemberAlreadyInwarded(classId: string, memberId: string): boolean {
+    const cleanCid = normalizeIdentifier(classId).toLowerCase();
+    const cleanMid = normalizeIdentifier(memberId).toLowerCase();
+
+    // 1. Check saved_scanned_data
+    const isSaved = this.savedScanned.some(
+      s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid &&
+           normalizeIdentifier(s.member_id).toLowerCase() === cleanMid
+    );
+    if (isSaved) return true;
+
+    // 2. Check manual_inward_data
+    const isManual = this.manualInwarded.some(
+      m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid &&
+           normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '').toLowerCase() === cleanMid
+    );
+    if (isManual) return true;
+
+    // 3. Check pending scan items
+    const isPending = this.scanItems.some(
+      i => normalizeIdentifier(i.class_id).toLowerCase() === cleanCid &&
+           normalizeIdentifier(i.member_id).toLowerCase() === cleanMid &&
+           i.status === 'PENDING_SAVE'
+    );
+    if (isPending) return true;
+
+    return false;
+  }
+
+  /**
+   * MANUAL INWARD DATABASE INSERTION:
+   * Inserts the manual inward operation strictly into public.manual_inward_data.
+   * Does NOT write into imported_inward_data.
+   * Associates with active scan session where supported.
+   * Immediately updates class bundle counts and dispatches notifications.
+   */
+  public async recordManualInward(
+    classId: string,
+    memberId: string,
+    options?: { notes?: string }
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    record?: ManualInwardedRecord;
+    bundle?: ClassBundle;
+  }> {
+    const cleanCid = normalizeIdentifier(classId);
+    const cleanMid = normalizeIdentifier(memberId);
+
+    if (!cleanCid || !cleanMid) {
+      return { success: false, error: 'Class ID and Member ID are required.' };
+    }
+
+    // 1. Validation check against imported_inward_data
+    const validation = await this.validateMemberForClass(cleanCid, cleanMid);
+    if (validation.status === 'WRONG_CLASS') {
+      return {
+        success: false,
+        error: `Member belongs to another Class (${validation.actualClassId})`,
+      };
+    }
+    if (validation.status === 'NOT_FOUND') {
+      return {
+        success: false,
+        error: 'Member ID not found in this Class',
+      };
+    }
+
+    // 2. Duplicate Protection
+    if (this.isMemberAlreadyInwarded(cleanCid, cleanMid)) {
+      return {
+        success: false,
+        error: 'Member already inwarded',
+      };
+    }
+
+    // 3. Ensure active session exists
+    const session = await this.ensureScanSession(cleanCid);
+    const now = new Date().toISOString();
+    const currentUser = getCurrentUser();
+    const targetRecord = validation.record;
+
+    const newRecord: ManualInwardedRecord = {
+      id: generateUUID(),
+      session_code: session.id,
+      bundle_code: `bundle_${cleanCid}`,
+      class_id: cleanCid,
+      booklet_barcode: targetRecord?.barcode || cleanMid,
+      roll_number: cleanMid,
+      member_id: cleanMid,
+      college_name: this.activeUniversity || targetRecord?.university_name || 'VIT',
+      status: 'inwarded',
+      inwarded_by: currentUser.name || 'Manual Inward',
+      notes: options?.notes || 'Mobile Manual Inward',
+      scanned_at: now,
+      created_at: now,
+    };
+
+    // 4. Insert strictly into public.manual_inward_data in Supabase
+    if (isSupabaseConfigured) {
+      try {
+        const { error: insErr } = await supabase.from('manual_inward_data').insert({
+          id: newRecord.id,
+          session_code: newRecord.session_code,
+          bundle_code: newRecord.bundle_code,
+          class_id: newRecord.class_id,
+          booklet_barcode: newRecord.booklet_barcode,
+          roll_number: newRecord.roll_number,
+          status: 'inwarded',
+          inwarded_by: newRecord.inwarded_by,
+          notes: newRecord.notes,
+          scanned_at: newRecord.scanned_at,
+          created_at: newRecord.created_at,
+        });
+
+        if (insErr) {
+          console.warn('[ImportedService] manual_inward_data Supabase insert error:', insErr.message);
+        }
+      } catch (err: any) {
+        console.warn('[ImportedService] manual_inward_data Supabase exception:', err?.message || err);
+      }
+    }
+
+    // 5. Update local state and notify subscribers immediately
+    this.manualInwarded.push(newRecord);
+    this.moveClassToTop(cleanCid);
+    this.saveToLocalStorage();
+    this.notify();
+
+    const updatedBundle = this.getClassBundle(cleanCid);
+
+    return {
+      success: true,
+      record: newRecord,
+      bundle: updatedBundle || undefined,
+    };
+  }
+
+  /**
+   * Mobile Member Barcode Scan Handler (STAGE 2):
+   * Enforces:
+   * 1. Decoded barcode -> resolve member belonging to currently selected class.
+   * 2. If barcode belongs to another class -> "Member belongs to another Class".
+   * 3. If barcode not found -> "Member ID not found in this Class".
+   * 4. If already inwarded -> "Member already inwarded".
+   * 5. If valid -> inward and update bundle statistics immediately.
+   */
+  public async processMobileMemberBarcodeScan(
+    activeClassId: string,
+    rawBarcode: string
+  ): Promise<ScanResult> {
+    const normalized = normalizeIdentifier(rawBarcode);
+    const cleanActiveCid = normalizeIdentifier(activeClassId);
+
+    if (!normalized) {
+      return { success: false, message: 'Please provide a valid barcode.' };
+    }
+
+    console.log('[MOBILE SCANNER] Member barcode scan:', normalized, 'for class:', cleanActiveCid);
+
+    // 1. Authoritative lookup in imported_inward_data
+    const match = await this.lookupImportedRecord(normalized);
+
+    if (!match) {
+      return {
+        success: false,
+        isUnknownMember: true,
+        class_id: activeClassId,
+        detectedClassId: activeClassId,
+        detectedMemberId: normalized,
+        barcode: normalized,
+        message: 'Member ID not found in this Class',
+      };
+    }
+
+    // If barcode decoded as a Class ID only:
+    if (match.isClassOnly) {
+      if (normalizeIdentifier(match.classId || '').toLowerCase() !== cleanActiveCid.toLowerCase()) {
+        return {
+          success: false,
+          isWrongClass: true,
+          currentClassId: activeClassId,
+          detectedClassId: match.classId,
+          barcode: normalized,
+          message: 'Member belongs to another Class',
+        };
+      }
+      return {
+        success: false,
+        message: `Class ID ${activeClassId} barcode detected. Please scan a Member booklet barcode.`,
+      };
+    }
+
+    const targetRecord = match.record!;
+
+    // 2. Class ID Mismatch Check
+    if (normalizeIdentifier(targetRecord.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) {
+      return {
+        success: false,
+        isWrongClass: true,
+        currentClassId: activeClassId,
+        detectedClassId: targetRecord.class_id,
+        detectedMemberId: targetRecord.member_id,
+        barcode: normalized,
+        message: 'Member belongs to another Class',
+      };
+    }
+
+    // 3. Duplicate check across all tables
+    if (this.isMemberAlreadyInwarded(cleanActiveCid, targetRecord.member_id)) {
+      return {
+        success: false,
+        isDuplicate: true,
+        class_id: activeClassId,
+        member_id: targetRecord.member_id,
+        barcode: normalized,
+        message: 'Member already inwarded',
+      };
+    }
+
+    // 4. Inward booklet: Stage into active session as PENDING_SAVE
+    const session = await this.ensureScanSession(activeClassId);
+    const now = new Date().toISOString();
+    const currentUser = getCurrentUser();
+
+    const pendingItem: ScanSessionItem = {
+      id: generateUUID(),
+      scan_session_id: session.id,
+      class_id: cleanActiveCid,
+      member_id: targetRecord.member_id,
+      barcode: normalized,
+      detected_at: now,
+      detected_by: currentUser.name,
+      status: 'PENDING_SAVE',
+      created_at: now,
+    };
+    this.scanItems.push(pendingItem);
+    this.saveToLocalStorage();
+    this.notify();
+
+    const updatedBundle = this.getClassBundle(activeClassId);
+
+    return {
+      success: true,
+      class_id: activeClassId,
+      member_id: targetRecord.member_id,
+      barcode: normalized,
+      bundle: updatedBundle || undefined,
+      message: `Inwarded Member ${targetRecord.member_id} in Class ${activeClassId}`,
+    };
   }
 
   public clearAll() {

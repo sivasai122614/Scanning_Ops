@@ -48,13 +48,15 @@ import {
   CameraStreamResult,
   BarcodeScanResult,
 } from '../../utils/universalBarcodeScanner';
+import { useIsMobile } from '../../utils/useIsMobile';
+import { MobileScanningView } from '../scanner/MobileScanningView';
 
 interface ScanningDashboardViewProps {
   onNavigateToImport?: () => void;
   onNavigateToSessions?: () => void;
 }
 
-export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
+const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   onNavigateToImport,
 }) => {
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
@@ -1106,3 +1108,19 @@ export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     </div>
   );
 };
+
+export const ScanningDashboardView: React.FC<ScanningDashboardViewProps> = (props) => {
+  const isMobile = useIsMobile(768);
+
+  if (isMobile) {
+    return (
+      <MobileScanningView
+        onNavigateToImport={props.onNavigateToImport}
+        onNavigateToSessions={props.onNavigateToSessions}
+      />
+    );
+  }
+
+  return <DesktopScanningDashboardView {...props} />;
+};
+
