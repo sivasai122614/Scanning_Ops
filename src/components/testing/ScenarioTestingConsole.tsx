@@ -123,7 +123,7 @@ export const ScenarioTestingConsole: React.FC = () => {
       category: 'Authentication',
       description: 'Trigger enterprise password reset request; verify audit log stream records the event.',
       run: async () => {
-        const testEmail = user?.email || 'admin@yourdomain.com';
+        const testEmail = user?.email || 'officer@institution.edu';
         const res = enterpriseStore.requestPasswordReset(testEmail);
         if (res.success) {
           return {

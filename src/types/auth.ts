@@ -38,10 +38,31 @@ export interface RolePermission {
   created_at: string;
 }
 
+export type AppRole = 'admin' | 'inward';
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  username: string;
+  role: AppRole;
+  is_active: boolean;
+  status?: UserStatus;
+  full_name: string;
+  role_id?: string;
+  badge_number?: string;
+  department?: string;
+  phone?: string | null;
+  must_change_password?: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
 export interface Profile {
   id: string;
   email: string;
   full_name: string;
+  username?: string;
+  appRole?: AppRole;
   role_id: string;
   badge_number: string;
   phone?: string | null;

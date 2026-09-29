@@ -53,31 +53,6 @@ class EnterpriseStore {
         this.users = [];
       }
 
-      // Ensure root administrator account exists so internal authorized staff can immediately sign in
-      if (this.users.length === 0) {
-        const adminProfile: Profile = {
-          id: 'usr-admin-root',
-          email: 'admin@yourdomain.com',
-          full_name: 'Administrator (Chief Controller of Examinations)',
-          role_id: SYSTEM_ROLES[0].id,
-          badge_number: 'ADMIN-001',
-          phone: '+91 9876543210',
-          department: 'Examination Directorate',
-          status: 'ACTIVE',
-          must_change_password: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          role: SYSTEM_ROLES[0],
-        };
-
-        this.users.push({
-          email: 'admin@yourdomain.com',
-          passwordHash: 'admin123',
-          profile: adminProfile,
-        });
-        this.saveUsers();
-      }
-
       const storedAudit = localStorage.getItem(AUDIT_STORAGE_KEY);
       if (storedAudit) {
         const parsed = JSON.parse(storedAudit);
@@ -145,90 +120,16 @@ class EnterpriseStore {
   // AUTHENTICATION OPERATIONS (Native Supabase Auth Equivalent)
   // ============================================================================
 
-  public authenticate(email: string, password: string): {
+  public authenticate(_email: string, _password: string): {
     success: boolean;
     profile?: Profile;
     role?: Role;
     permissions?: string[];
     error?: string;
   } {
-    const normalizedEmail = email.trim().toLowerCase();
-    let account = this.users.find(u => u.email.toLowerCase() === normalizedEmail);
-
-    // Support common admin emails or newly entered staff admin accounts seamlessly
-    if (!account) {
-      const isSuperAdmin = normalizedEmail.includes('admin') || this.users.length === 0;
-      const newProfile: Profile = {
-        id: 'usr-' + Date.now(),
-        email: normalizedEmail,
-        full_name: isSuperAdmin ? 'Staff Administrator' : 'Examination Officer',
-        role_id: isSuperAdmin ? SYSTEM_ROLES[0].id : SYSTEM_ROLES[1].id,
-        badge_number: 'ADM-' + Math.floor(100 + Math.random() * 900),
-        department: 'Examination Directorate',
-        status: 'ACTIVE',
-        must_change_password: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        role: isSuperAdmin ? SYSTEM_ROLES[0] : SYSTEM_ROLES[1],
-      };
-
-      account = {
-        email: normalizedEmail,
-        passwordHash: password || 'admin123',
-        profile: newProfile,
-      };
-      this.users.push(account);
-      this.saveUsers();
-    }
-
-    // Allow password match or admin fallback, updating password if provided
-    if (account.passwordHash !== password && password !== 'admin' && password !== 'admin123') {
-      account.passwordHash = password;
-      this.saveUsers();
-    }
-
-    if (account.profile.status === 'DEACTIVATED') {
-      return {
-        success: false,
-        error: 'Account has been DEACTIVATED by the Examination Directorate. Access denied.',
-      };
-    }
-
-    if (account.profile.status === 'SUSPENDED') {
-      return {
-        success: false,
-        error: 'Account is currently SUSPENDED pending review. Please contact your Valuation Supervisor.',
-      };
-    }
-
-    // Update last activity
-    account.profile.last_activity_at = new Date().toISOString();
-    this.saveUsers();
-
-    const role = SYSTEM_ROLES.find(r => r.id === account.profile.role_id) || SYSTEM_ROLES[6];
-    const permissions = this.getRolePermissions(role.code);
-
-    const enrichedProfile: Profile = {
-      ...account.profile,
-      role,
-    };
-
-    // Log LOGIN audit event
-    this.recordAudit({
-      actor_id: account.profile.id,
-      actor_email: account.profile.email,
-      actor_role: role.code,
-      action: 'LOGIN',
-      entity_name: 'auth.session',
-      entity_id: account.profile.id,
-      new_values: { ip: '10.240.18.22', user_agent: navigator.userAgent },
-    });
-
     return {
-      success: true,
-      profile: enrichedProfile,
-      role,
-      permissions,
+      success: false,
+      error: 'Direct store authentication is disabled. Supabase Auth is strictly required.',
     };
   }
 

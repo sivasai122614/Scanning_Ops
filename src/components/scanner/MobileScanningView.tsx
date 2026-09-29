@@ -57,12 +57,14 @@ import {
 interface MobileScanningViewProps {
   onNavigateToImport?: () => void;
   onNavigateToSessions?: () => void;
+  isRestrictedInward?: boolean;
 }
 
 export type ScannerMode = 'CLASS_MODE' | 'MEMBER_MODE';
 
 export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   onNavigateToImport,
+  isRestrictedInward = false,
 }) => {
   const [selectedClassId, setSelectedClassId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
@@ -196,6 +198,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       setBundleRecords([]);
     }
   }, [selectedClassId]);
+
+  const reconcileLiveStatus = useCallback((_cid?: string) => {
+    loadData();
+  }, [loadData]);
 
   useEffect(() => {
     loadData();
@@ -700,10 +706,6 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     progress: bundleProgress,
   };
 
-  const reconcileLiveStatus = (_cid?: string) => {
-    loadData();
-  };
-
   // Filtered member records for active bundle
   const filteredMemberRecords = bundleRecords.filter(r => {
     if (memberSearch.trim()) {
@@ -755,12 +757,13 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             NO IMPORTED DATA
           </div>
           <p className="text-xs text-[#64748B] mt-2.5 leading-relaxed">
-            Please import your Excel data before starting booklet scanning.
-            The camera scanner and barcode detection will be enabled once your Class ID and Member ID dataset is imported.
+            {isRestrictedInward
+              ? 'No examination records are currently imported. Please contact an authorized Administrator to upload the examination dataset.'
+              : 'Please import your Excel data before starting booklet scanning. The camera scanner and barcode detection will be enabled once your Class ID and Member ID dataset is imported.'}
           </p>
 
-          <div className="mt-5">
-            {onNavigateToImport && (
+          {!isRestrictedInward && onNavigateToImport && (
+            <div className="mt-5">
               <button
                 type="button"
                 onClick={onNavigateToImport}
@@ -769,8 +772,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 <span>GO TO IMPORT</span>
                 <ArrowRight className="h-4 w-4" />
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1056,7 +1059,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                   : 'bg-[#16A34A] hover:bg-[#15803D]'
               }`}
             >
-              {scannerMode === 'CLASS_MODE' ? 'OPEN CLASS' : 'INWARD'}
+              {scannerMode === 'CLASS_MODE' ? 'OPEN CLASS ID' : 'INWARD'}
             </button>
 
             <input
@@ -1298,7 +1301,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              Invalid Class Barcode
+              Invalid Class ID Barcode
             </div>
 
             <div className="text-xs text-[#7F1D1D] mt-2 mb-2">
