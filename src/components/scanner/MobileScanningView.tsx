@@ -1125,7 +1125,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              Member ID not found in this Class
+              Not Imported
             </div>
 
             <div className="my-3 text-xs space-y-1">
@@ -1138,7 +1138,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-xs text-[#7F1D1D] mb-5">
-              This identifier does not match any booklet in the imported data for Class {memberNotFoundModal.classId}.
+              This barcode was not found in the imported dataset.
             </div>
 
             <button

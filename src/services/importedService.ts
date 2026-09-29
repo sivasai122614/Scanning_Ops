@@ -166,6 +166,7 @@ export interface ScanResult {
   isDuplicate?: boolean;
   isUnknownClass?: boolean;
   isUnknownMember?: boolean;
+  isNotImported?: boolean;
   isWrongClass?: boolean;
   currentClassId?: string;
   detectedClassId?: string;
@@ -2788,12 +2789,20 @@ class ImportedService {
 
   /**
    * Mobile Member Barcode Scan Handler (STAGE 2):
-   * Enforces:
-   * 1. Decoded barcode -> resolve member belonging to currently selected class.
-   * 2. If barcode belongs to another class -> "Member belongs to another Class".
-   * 3. If barcode not found -> "Member ID not found in this Class".
-   * 4. If already inwarded -> "Member already inwarded".
-   * 5. If valid -> inward and update bundle statistics immediately.
+   * Enforces 3-State Model:
+   *   1. IMPORTED: Member exists in public.imported_inward_data (authoritative lookup by barcode)
+   *   2. INWARDED: Member exists in saved_scanned_data or manual_inward_data
+   *   3. NOT INWARDED: Member exists in imported_inward_data but NOT yet inwarded -> Allow Inward
+   *
+   * Flow:
+   *   STEP 1: Decode barcode
+   *   STEP 2: Normalize without removing leading zeros (via normalizeIdentifier)
+   *   STEP 3: Find member in public.imported_inward_data using barcode
+   *   STEP 4: Obtain member_id, class_id, barcode
+   *   STEP 5: Verify class_id matches active Class ID (if not, "Member belongs to another Class", NEVER "Not Imported")
+   *   STEP 6: Check inward status across saved_scanned_data, manual_inward_data, pending scans
+   *           - If already inwarded -> "Member already inwarded"
+   *           - If not inwarded -> Allow Inward -> Inwarded!
    */
   public async processMobileMemberBarcodeScan(
     activeClassId: string,
@@ -2802,73 +2811,299 @@ class ImportedService {
     const normalized = normalizeIdentifier(rawBarcode);
     const cleanActiveCid = normalizeIdentifier(activeClassId);
 
+    console.log('[MEMBER SCAN] Raw barcode:', rawBarcode);
+    console.log('[MEMBER SCAN] Normalized barcode:', normalized);
+    console.log('[MEMBER SCAN] Current class:', activeClassId);
+    console.log('[MEMBER SCAN] Looking up imported_inward_data.barcode:', normalized);
+
     if (!normalized) {
-      return { success: false, message: 'Please provide a valid barcode.' };
-    }
+      console.log('[MEMBER SCAN] Imported row:', null);
+      console.log('[MEMBER SCAN] Resolved member_id:', null);
+      console.log('[MEMBER SCAN] Resolved class_id:', null);
+      console.log('[MEMBER SCAN] Checking inward status:');
+      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
+      console.log('[MEMBER SCAN] manual_inward_data result:', null);
+      console.log('[MEMBER SCAN] Final status:', 'Not Imported');
 
-    console.log('[MOBILE SCANNER] Member barcode scan:', normalized, 'for class:', cleanActiveCid);
-
-    // 1. Authoritative lookup in imported_inward_data
-    const match = await this.lookupImportedRecord(normalized);
-
-    if (!match) {
       return {
         success: false,
         isUnknownMember: true,
+        isNotImported: true,
+        barcode: rawBarcode,
+        message: 'Not Imported',
+      };
+    }
+
+    // STEP 3: Find member in public.imported_inward_data using authoritative imported barcode field
+    let importedRow: ImportInwardedRecord | null = null;
+
+    // 3a. Direct Supabase query (if configured)
+    if (isSupabaseConfigured) {
+      try {
+        // Query imported_inward_data WHERE barcode = normalized
+        const { data: byBar, error: barErr } = await supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('barcode', normalized)
+          .limit(1);
+
+        if (!barErr && byBar && byBar.length > 0) {
+          const row = byBar[0];
+          importedRow = {
+            id: row.id || `${row.class_id}_${row.member_id}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(row.class_id),
+            sch_id: row.sch_id,
+            member_id: normalizeIdentifier(row.member_id),
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+        }
+      } catch {
+        // fallback
+      }
+
+      // Also check import_inwarded_data table in Supabase
+      if (!importedRow) {
+        try {
+          const { data: impBar, error: impErr } = await supabase
+            .from('import_inwarded_data')
+            .select('*')
+            .eq('barcode', normalized)
+            .limit(1);
+
+          if (!impErr && impBar && impBar.length > 0) {
+            const row = impBar[0];
+            importedRow = {
+              id: row.id || `${row.class_id}_${row.member_id}`,
+              import_session_id: row.import_session_id || 'default_session',
+              college_name: row.university_name || row.college_name || this.activeUniversity || '',
+              university_name: row.university_name || row.college_name || this.activeUniversity || '',
+              class_id: normalizeIdentifier(row.class_id),
+              sch_id: row.sch_id,
+              member_id: normalizeIdentifier(row.member_id),
+              barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+              created_by: row.created_by,
+              created_at: row.created_at || new Date().toISOString(),
+            };
+          }
+        } catch {
+          // fallback
+        }
+      }
+    }
+
+    // 3b. Authoritative local dataset search (this.importInwarded) which powers the working Not Inwarded list
+    if (!importedRow) {
+      // 1. Direct barcode match
+      const localBarMatch = this.importInwarded.find(r =>
+        r.barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalized.toLowerCase()
+      );
+      if (localBarMatch) {
+        importedRow = localBarMatch;
+      }
+    }
+
+    // Fallback: If barcode was identical to member_id or member_id scanned directly
+    if (!importedRow) {
+      const localMemMatch = this.importInwarded.find(r =>
+        normalizeIdentifier(r.member_id).toLowerCase() === normalized.toLowerCase()
+      );
+      if (localMemMatch) {
+        importedRow = localMemMatch;
+      }
+    }
+
+    // Fallback: Compound match (class_id + member_id)
+    if (!importedRow) {
+      const localCompoundMatch = this.importInwarded.find(r => {
+        const c = normalizeIdentifier(r.class_id).toLowerCase();
+        const m = normalizeIdentifier(r.member_id).toLowerCase();
+        return `${c}${m}` === normalized.toLowerCase() || `${c}_${m}` === normalized.toLowerCase();
+      });
+      if (localCompoundMatch) {
+        importedRow = localCompoundMatch;
+      }
+    }
+
+    // Fallback: Check Supabase for member_id match if not found yet
+    if (!importedRow && isSupabaseConfigured) {
+      try {
+        const { data: memData } = await supabase
+          .from('imported_inward_data')
+          .select('*')
+          .eq('member_id', normalized)
+          .limit(1);
+
+        if (memData && memData.length > 0) {
+          const row = memData[0];
+          importedRow = {
+            id: row.id || `${row.class_id}_${row.member_id}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(row.class_id),
+            sch_id: row.sch_id,
+            member_id: normalizeIdentifier(row.member_id),
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
+          };
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // If imported row was retrieved from Supabase, synchronize into this.importInwarded
+    if (importedRow) {
+      const existIdx = this.importInwarded.findIndex(r => r.id === importedRow!.id);
+      if (existIdx >= 0) {
+        this.importInwarded[existIdx] = importedRow;
+      } else {
+        this.importInwarded.push(importedRow);
+      }
+    }
+
+    // If not found in imported_inward_data -> "Not Imported"
+    if (!importedRow) {
+      console.log('[MEMBER SCAN] Imported row:', null);
+      console.log('[MEMBER SCAN] Resolved member_id:', null);
+      console.log('[MEMBER SCAN] Resolved class_id:', null);
+      console.log('[MEMBER SCAN] Checking inward status:');
+      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
+      console.log('[MEMBER SCAN] manual_inward_data result:', null);
+      console.log('[MEMBER SCAN] Final status:', 'Not Imported');
+
+      return {
+        success: false,
+        isUnknownMember: true,
+        isNotImported: true,
         class_id: activeClassId,
         detectedClassId: activeClassId,
         detectedMemberId: normalized,
         barcode: normalized,
-        message: 'Member ID not found in this Class',
+        message: 'Not Imported',
       };
     }
 
-    // If barcode decoded as a Class ID only:
-    if (match.isClassOnly) {
-      if (normalizeIdentifier(match.classId || '').toLowerCase() !== cleanActiveCid.toLowerCase()) {
-        return {
-          success: false,
-          isWrongClass: true,
-          currentClassId: activeClassId,
-          detectedClassId: match.classId,
-          barcode: normalized,
-          message: 'Member belongs to another Class',
-        };
-      }
-      return {
-        success: false,
-        message: `Class ID ${activeClassId} barcode detected. Please scan a Member booklet barcode.`,
-      };
-    }
+    // STEP 4: From matching imported row, obtain member_id, class_id, barcode
+    const resolvedMemberId = normalizeIdentifier(importedRow.member_id);
+    const resolvedClassId = normalizeIdentifier(importedRow.class_id);
+    const resolvedBarcode = importedRow.barcode ? normalizeIdentifier(importedRow.barcode) : normalized;
 
-    const targetRecord = match.record!;
+    console.log('[MEMBER SCAN] Imported row:', importedRow);
+    console.log('[MEMBER SCAN] Resolved member_id:', resolvedMemberId);
+    console.log('[MEMBER SCAN] Resolved class_id:', resolvedClassId);
 
-    // 2. Class ID Mismatch Check
-    if (normalizeIdentifier(targetRecord.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) {
+    // STEP 5: Verify resolved class_id matches active Class ID
+    if (resolvedClassId.toLowerCase() !== cleanActiveCid.toLowerCase()) {
+      console.log('[MEMBER SCAN] Checking inward status:');
+      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
+      console.log('[MEMBER SCAN] manual_inward_data result:', null);
+      console.log('[MEMBER SCAN] Final status:', 'Member belongs to another Class');
+
       return {
         success: false,
         isWrongClass: true,
         currentClassId: activeClassId,
-        detectedClassId: targetRecord.class_id,
-        detectedMemberId: targetRecord.member_id,
+        detectedClassId: resolvedClassId,
+        detectedMemberId: resolvedMemberId,
         barcode: normalized,
         message: 'Member belongs to another Class',
       };
     }
 
-    // 3. Duplicate check across all tables
-    if (this.isMemberAlreadyInwarded(cleanActiveCid, targetRecord.member_id)) {
+    // STEP 6: Check whether this member has already been inwarded
+    console.log('[MEMBER SCAN] Checking inward status:');
+
+    // Check saved_scanned_data
+    let savedScannedResult: any = this.savedScanned.find(s =>
+      normalizeIdentifier(s.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
+      (
+        normalizeIdentifier(s.member_id).toLowerCase() === resolvedMemberId.toLowerCase() ||
+        (s.barcode && normalizeIdentifier(s.barcode).toLowerCase() === normalized.toLowerCase())
+      )
+    ) || null;
+
+    if (!savedScannedResult && isSupabaseConfigured) {
+      try {
+        const { data: svData } = await supabase
+          .from('saved_scanned_data')
+          .select('*')
+          .eq('class_id', cleanActiveCid)
+          .eq('member_id', resolvedMemberId)
+          .limit(1);
+
+        if (svData && svData.length > 0) {
+          savedScannedResult = svData[0];
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Check manual_inward_data
+    let manualInwardResult: any = this.manualInwarded.find(m =>
+      normalizeIdentifier(m.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
+      (
+        normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '').toLowerCase() === resolvedMemberId.toLowerCase() ||
+        (m.booklet_barcode && normalizeIdentifier(m.booklet_barcode).toLowerCase() === normalized.toLowerCase())
+      )
+    ) || null;
+
+    if (!manualInwardResult && isSupabaseConfigured) {
+      try {
+        const { data: manData } = await supabase
+          .from('manual_inward_data')
+          .select('*')
+          .eq('class_id', cleanActiveCid)
+          .or(`member_id.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
+          .limit(1);
+
+        if (manData && manData.length > 0) {
+          manualInwardResult = manData[0];
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Check pending session items (staged before save)
+    const pendingResult = this.scanItems.find(i =>
+      normalizeIdentifier(i.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
+      (
+        normalizeIdentifier(i.member_id).toLowerCase() === resolvedMemberId.toLowerCase() ||
+        (i.barcode && normalizeIdentifier(i.barcode).toLowerCase() === normalized.toLowerCase())
+      ) &&
+      i.status === 'PENDING_SAVE'
+    ) || null;
+
+    console.log('[MEMBER SCAN] saved_scanned_data result:', savedScannedResult);
+    console.log('[MEMBER SCAN] manual_inward_data result:', manualInwardResult);
+
+    const alreadyInwarded = Boolean(savedScannedResult || manualInwardResult || pendingResult);
+
+    if (alreadyInwarded) {
+      console.log('[MEMBER SCAN] Final status:', 'Member already inwarded');
+
       return {
         success: false,
         isDuplicate: true,
         class_id: activeClassId,
-        member_id: targetRecord.member_id,
+        member_id: resolvedMemberId,
         barcode: normalized,
         message: 'Member already inwarded',
       };
     }
 
-    // 4. Inward booklet: Stage into active session as PENDING_SAVE
+    // Member is IMPORTED + NOT INWARDED -> Allow inward!
+    console.log('[MEMBER SCAN] Final status:', 'Inwarded');
+
+    // Stage as PENDING_SAVE in active session
     const session = await this.ensureScanSession(activeClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
@@ -2877,26 +3112,46 @@ class ImportedService {
       id: generateUUID(),
       scan_session_id: session.id,
       class_id: cleanActiveCid,
-      member_id: targetRecord.member_id,
-      barcode: normalized,
+      member_id: resolvedMemberId,
+      barcode: resolvedBarcode,
       detected_at: now,
       detected_by: currentUser.name,
       status: 'PENDING_SAVE',
       created_at: now,
     };
+
     this.scanItems.push(pendingItem);
     this.saveToLocalStorage();
     this.notify();
+
+    // Persist to Supabase scan_session_items if configured
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.from('scan_session_items').insert([{
+          id: pendingItem.id,
+          scan_session_id: pendingItem.scan_session_id,
+          class_id: pendingItem.class_id,
+          member_id: pendingItem.member_id,
+          barcode: pendingItem.barcode,
+          detected_at: pendingItem.detected_at,
+          detected_by: pendingItem.detected_by,
+          status: 'PENDING_SAVE',
+          created_at: pendingItem.created_at,
+        }]);
+      } catch (err) {
+        console.warn('[MEMBER SCAN] Supabase scan_session_items insert note:', err);
+      }
+    }
 
     const updatedBundle = this.getClassBundle(activeClassId);
 
     return {
       success: true,
       class_id: activeClassId,
-      member_id: targetRecord.member_id,
-      barcode: normalized,
+      member_id: resolvedMemberId,
+      barcode: resolvedBarcode,
       bundle: updatedBundle || undefined,
-      message: `Inwarded Member ${targetRecord.member_id} in Class ${activeClassId}`,
+      message: `Inwarded Member ${resolvedMemberId} in Class ${activeClassId}`,
     };
   }
 
