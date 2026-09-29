@@ -44,6 +44,7 @@ import {
   ScanResult,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
+import { normalizeIdentifier } from '../../utils/normalize';
 import {
   requestCameraStream,
   startContinuousDualScanning,
@@ -92,6 +93,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     classId: string;
   } | null>(null);
 
+  const [invalidClassBarcodeModal, setInvalidClassBarcodeModal] = useState<{
+    barcode: string;
+  } | null>(null);
+
   const [wrongClassModal, setWrongClassModal] = useState<{
     currentClass: string;
     detectedClass: string;
@@ -101,12 +106,25 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const [memberNotFoundModal, setMemberNotFoundModal] = useState<{
     classId: string;
     memberId: string;
+    title?: string;
   } | null>(null);
 
   const [duplicateModal, setDuplicateModal] = useState<{
     classId: string;
     memberId: string;
   } | null>(null);
+
+  // Synchronous refs for mode & class ID to prevent stale closures during camera loop
+  const scannerModeRef = useRef<ScannerMode>('CLASS_MODE');
+  const selectedClassIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    scannerModeRef.current = scannerMode;
+  }, [scannerMode]);
+
+  useEffect(() => {
+    selectedClassIdRef.current = selectedClassId;
+  }, [selectedClassId]);
 
   // Camera States
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -240,6 +258,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   const dismissModals = () => {
     setClassNotFoundModal(null);
+    setInvalidClassBarcodeModal(null);
     setWrongClassModal(null);
     setMemberNotFoundModal(null);
     setDuplicateModal(null);
@@ -249,53 +268,110 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // Open a Class Bundle and transition to MEMBER_MODE
   const openClassBundle = (classId: string) => {
+    console.log('[CLASS SCAN] Opening class:', classId);
+    console.log('[SCAN MODE] Switching to MEMBER_MODE');
+
+    // 1. Stop / cleanup class scanner
+    stopCamera();
+
+    // 2. Set mode to MEMBER_MODE and assign currentClassId synchronously
     setSelectedClassId(classId);
+    selectedClassIdRef.current = classId;
     setScannerMode('MEMBER_MODE');
+    scannerModeRef.current = 'MEMBER_MODE';
+
     setManualInput('');
     setMemberTab('inwarded');
     dismissModals();
+
     setSuccessToast({
       title: `CLASS ${classId} OPENED`,
       message: `Now in Member Scanning mode for Class ${classId}.`,
       type: 'class',
     });
     setTimeout(() => setSuccessToast(null), 3500);
+
+    // 3. Re-initialize camera for MEMBER_MODE
+    setTimeout(() => {
+      startCamera();
+    }, 150);
   };
 
   // Exit back to CLASS_MODE
   const backToClassSelection = () => {
+    // 1. Stop / cleanup member scanner
+    stopCamera();
+
+    // 2. Reset mode to CLASS_MODE and clear class ID
     setSelectedClassId(null);
+    selectedClassIdRef.current = null;
     setScannerMode('CLASS_MODE');
+    scannerModeRef.current = 'CLASS_MODE';
+
     setManualInput('');
     dismissModals();
+
+    // 3. Re-initialize camera for CLASS_MODE
+    setTimeout(() => {
+      startCamera();
+    }, 150);
   };
 
   // ==============================================================================
   // STAGE 1 CAMERA SCAN: Detect Class ID
+  // Barcode contains Class ID in the first 4 digits (e.g. 00201234567890 -> 0020)
+  // Leading zeros must be preserved as a string
   // ==============================================================================
-  const handleStage1ClassScan = async (code: string) => {
-    const val = await importedService.validateClassId(code);
+  const handleStage1ClassScan = async (rawCode: string) => {
+    console.log('[SCAN MODE] CLASS_MODE');
+    console.log('[CLASS SCAN] Raw barcode:', rawCode);
+
+    const rawStr = String(rawCode || '').trim();
+    const first4 = rawStr.length >= 4 ? rawStr.substring(0, 4) : '';
+    const isValid4Digits = /^\d{4}$/.test(first4);
+
+    console.log('[CLASS SCAN] Extracted first 4 digits:', first4);
+
+    if (!isValid4Digits) {
+      console.log('[CLASS SCAN] Class barcode validation failed: first 4 digits must be numeric.');
+      playScanWarningSound();
+      setInvalidClassBarcodeModal({ barcode: rawCode });
+      return;
+    }
+
+    const normalizedClassId = normalizeIdentifier(first4);
+    console.log('[CLASS SCAN] Normalized class ID:', normalizedClassId);
+    console.log('[CLASS SCAN] Class lookup started:', normalizedClassId);
+
+    const val = await importedService.validateClassId(normalizedClassId);
+    console.log('[CLASS SCAN] Class lookup result:', val.exists ? 'Found' : 'Not found');
+
     if (val.exists) {
       playScanSuccessSound();
       openClassBundle(val.classId);
     } else {
       playScanWarningSound();
-      setClassNotFoundModal({ classId: code });
+      setClassNotFoundModal({ classId: normalizedClassId });
     }
   };
 
   // ==============================================================================
   // STAGE 2 CAMERA SCAN: Detect Member ID
+  // Scans member barcode against imported_inward_data.barcode
+  // Validates member against currentClassId
+  // NEVER performs Class ID lookup in MEMBER_MODE
   // ==============================================================================
   const handleStage2MemberScan = async (code: string) => {
-    if (!selectedClassId) return;
+    const activeCid = selectedClassIdRef.current || selectedClassId;
+    if (!activeCid) return;
 
-    const result: ScanResult = await importedService.processMobileMemberBarcodeScan(selectedClassId, code);
+    console.log('[SCAN MODE] MEMBER_MODE');
+    const result: ScanResult = await importedService.processMobileMemberBarcodeScan(activeCid, code);
 
     if (result.isWrongClass) {
       playScanWarningSound();
       setWrongClassModal({
-        currentClass: selectedClassId,
+        currentClass: activeCid,
         detectedClass: result.detectedClassId || 'Other Class',
         memberId: result.detectedMemberId || code,
       });
@@ -305,8 +381,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     if (result.isUnknownMember) {
       playScanWarningSound();
       setMemberNotFoundModal({
-        classId: selectedClassId,
+        classId: activeCid,
         memberId: result.detectedMemberId || code,
+        title: 'Member ID not found',
       });
       return;
     }
@@ -314,7 +391,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     if (result.isDuplicate) {
       playScanWarningSound();
       setDuplicateModal({
-        classId: selectedClassId,
+        classId: activeCid,
         memberId: result.member_id || code,
       });
       return;
@@ -350,7 +427,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     lastScannedTimeRef.current = now;
 
     try {
-      if (scannerMode === 'CLASS_MODE') {
+      const currentMode = scannerModeRef.current;
+      if (currentMode === 'CLASS_MODE') {
         await handleStage1ClassScan(code);
       } else {
         await handleStage2MemberScan(code);
@@ -365,7 +443,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // ==============================================================================
   // MANUAL BARCODE / IDENTIFIER ENTRY
   // Context-aware: CLASS_MODE vs MEMBER_MODE
-  // Manual Inward inserts strictly into public.manual_inward_data
+  // In MEMBER_MODE: NEVER performs Class ID lookup, validates member for current class
   // ==============================================================================
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -375,17 +453,31 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setIsSubmittingManual(true);
 
     try {
+      const mode = scannerModeRef.current;
       // ----------------------------------------------------
       // CASE 1: CLASS_MODE — Input is for CLASS ID ONLY
       // ----------------------------------------------------
-      if (scannerMode === 'CLASS_MODE') {
-        const val = await importedService.validateClassId(inputVal);
+      if (mode === 'CLASS_MODE') {
+        let targetCid = inputVal;
+        if (targetCid.length >= 4 && /^\d{4}/.test(targetCid)) {
+          targetCid = targetCid.substring(0, 4);
+        }
+        const cleanCid = normalizeIdentifier(targetCid);
+        console.log('[SCAN MODE] CLASS_MODE');
+        console.log('[CLASS SCAN] Raw barcode:', inputVal);
+        console.log('[CLASS SCAN] Extracted first 4 digits:', targetCid);
+        console.log('[CLASS SCAN] Normalized class ID:', cleanCid);
+        console.log('[CLASS SCAN] Class lookup started:', cleanCid);
+
+        const val = await importedService.validateClassId(cleanCid);
+        console.log('[CLASS SCAN] Class lookup result:', val.exists ? 'Found' : 'Not found');
+
         if (val.exists) {
           playScanSuccessSound();
           openClassBundle(val.classId);
         } else {
           playScanWarningSound();
-          setClassNotFoundModal({ classId: inputVal });
+          setClassNotFoundModal({ classId: cleanCid });
         }
       }
       // ----------------------------------------------------
@@ -393,14 +485,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       // Validates against imported_inward_data WHERE class_id = selectedClassId AND member_id = enteredMemberId
       // Inserts strictly into public.manual_inward_data
       // ----------------------------------------------------
-      else if (scannerMode === 'MEMBER_MODE' && selectedClassId) {
-        // Validate against imported data
-        const validation = await importedService.validateMemberForClass(selectedClassId, inputVal);
+      else if (mode === 'MEMBER_MODE' && (selectedClassIdRef.current || selectedClassId)) {
+        const curClass = (selectedClassIdRef.current || selectedClassId)!;
+        console.log('[SCAN MODE] MEMBER_MODE');
+        console.log('[MEMBER MANUAL] Input member ID:', inputVal);
+        console.log('[MEMBER MANUAL] Current class:', curClass);
+
+        // Validate strictly against current class
+        const validation = await importedService.validateMemberForClass(curClass, inputVal);
 
         if (validation.status === 'WRONG_CLASS') {
           playScanWarningSound();
           setWrongClassModal({
-            currentClass: selectedClassId,
+            currentClass: curClass,
             detectedClass: validation.actualClassId || 'Other Class',
             memberId: inputVal,
           });
@@ -410,24 +507,25 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         if (validation.status === 'NOT_FOUND') {
           playScanWarningSound();
           setMemberNotFoundModal({
-            classId: selectedClassId,
+            classId: curClass,
             memberId: inputVal,
+            title: 'Member ID not found in this Class',
           });
           return;
         }
 
         // Duplicate Check
-        if (importedService.isMemberAlreadyInwarded(selectedClassId, inputVal)) {
+        if (importedService.isMemberAlreadyInwarded(curClass, inputVal)) {
           playScanWarningSound();
           setDuplicateModal({
-            classId: selectedClassId,
+            classId: curClass,
             memberId: inputVal,
           });
           return;
         }
 
         // Insert into public.manual_inward_data
-        const res = await importedService.recordManualInward(selectedClassId, inputVal);
+        const res = await importedService.recordManualInward(curClass, inputVal);
 
         if (res.success && res.record) {
           playScanSuccessSound();
@@ -435,7 +533,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           loadData();
           setSuccessToast({
             title: 'MANUAL INWARD SAVED',
-            message: `Member ${inputVal} recorded in manual_inward_data for Class ${selectedClassId}.`,
+            message: `Member ${inputVal} recorded in manual_inward_data for Class ${curClass}.`,
             type: 'inward',
           });
           setTimeout(() => setSuccessToast(null), 3500);
@@ -474,7 +572,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       if (decoded && decoded.text) {
         handleCameraBarcodeScan(decoded.text);
       } else {
-        alert('Could not decode a barcode from the photo. Please enter identifier manually.');
+        const mode = scannerModeRef.current;
+        if (mode === 'MEMBER_MODE') {
+          playScanWarningSound();
+          alert('Member ID not detected');
+        } else {
+          playScanWarningSound();
+          alert('Class ID not detected');
+        }
       }
     } catch (err: any) {
       alert('Failed to read image file: ' + (err?.message || 'unknown error'));
@@ -1073,6 +1178,40 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         </div>
       )}
 
+      {/* 1b. INVALID CLASS BARCODE */}
+      {invalidClassBarcodeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-sm bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
+              <AlertOctagon className="h-6 w-6" />
+            </div>
+
+            <div className="text-base font-extrabold uppercase text-[#991B1B]">
+              Invalid Class Barcode
+            </div>
+
+            <div className="text-xs text-[#7F1D1D] mt-2 mb-2">
+              Scanned Barcode:
+            </div>
+            <div className="font-mono text-base font-black text-[#991B1B] bg-red-50 py-1 px-3 rounded-lg border border-red-200 inline-block mb-3">
+              {invalidClassBarcodeModal.barcode}
+            </div>
+
+            <div className="text-xs text-[#64748B] mb-5">
+              Barcode must contain a 4-digit numeric Class ID (e.g. 0020).
+            </div>
+
+            <button
+              type="button"
+              onClick={dismissModals}
+              className="w-full py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg cursor-pointer"
+            >
+              DISMISS
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 2. MEMBER BELONGS TO ANOTHER CLASS */}
       {wrongClassModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
@@ -1116,7 +1255,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         </div>
       )}
 
-      {/* 3. MEMBER ID NOT FOUND IN THIS CLASS */}
+      {/* 3. MEMBER ID NOT FOUND */}
       {memberNotFoundModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
           <div className="w-full max-w-sm bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
@@ -1125,7 +1264,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              Not Imported
+              {memberNotFoundModal.title || 'Member ID not found'}
             </div>
 
             <div className="my-3 text-xs space-y-1">
@@ -1138,7 +1277,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-xs text-[#7F1D1D] mb-5">
-              This barcode was not found in the imported dataset.
+              This member identifier or barcode was not found in the imported data for Class {memberNotFoundModal.classId}.
             </div>
 
             <button

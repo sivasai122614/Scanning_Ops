@@ -2498,8 +2498,13 @@ class ImportedService {
     count: number;
     classId: string;
   }> {
-    const cleanCid = normalizeIdentifier(rawClassId);
+    let cleanCid = normalizeIdentifier(rawClassId);
     if (!cleanCid) return { exists: false, count: 0, classId: '' };
+
+    // If input is longer than 4 digits but begins with 4 digits (e.g. barcode 00201234567890), extract first 4 digits
+    if (cleanCid.length > 4 && /^\d{4}/.test(cleanCid)) {
+      cleanCid = cleanCid.slice(0, 4);
+    }
 
     // 1. Check local cache
     const matchingLocal = this.importInwarded.filter(
@@ -2814,23 +2819,22 @@ class ImportedService {
     console.log('[MEMBER SCAN] Raw barcode:', rawBarcode);
     console.log('[MEMBER SCAN] Normalized barcode:', normalized);
     console.log('[MEMBER SCAN] Current class:', activeClassId);
-    console.log('[MEMBER SCAN] Looking up imported_inward_data.barcode:', normalized);
+    console.log('[MEMBER SCAN] Imported barcode lookup started:', normalized);
 
     if (!normalized) {
       console.log('[MEMBER SCAN] Imported row:', null);
-      console.log('[MEMBER SCAN] Resolved member_id:', null);
-      console.log('[MEMBER SCAN] Resolved class_id:', null);
-      console.log('[MEMBER SCAN] Checking inward status:');
-      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
-      console.log('[MEMBER SCAN] manual_inward_data result:', null);
-      console.log('[MEMBER SCAN] Final status:', 'Not Imported');
+      console.log('[MEMBER SCAN] Resolved member ID:', null);
+      console.log('[MEMBER SCAN] Resolved class ID:', null);
+      console.log('[MEMBER SCAN] Class validation:', 'Failed - empty barcode');
+      console.log('[MEMBER SCAN] Inward status:', 'Not inwarded');
+      console.log('[MEMBER SCAN] Final result:', 'Member ID not found');
 
       return {
         success: false,
         isUnknownMember: true,
         isNotImported: true,
         barcode: rawBarcode,
-        message: 'Not Imported',
+        message: 'Member ID not found',
       };
     }
 
@@ -2968,15 +2972,14 @@ class ImportedService {
       }
     }
 
-    // If not found in imported_inward_data -> "Not Imported"
+    // If not found in imported_inward_data -> "Member ID not found"
     if (!importedRow) {
       console.log('[MEMBER SCAN] Imported row:', null);
-      console.log('[MEMBER SCAN] Resolved member_id:', null);
-      console.log('[MEMBER SCAN] Resolved class_id:', null);
-      console.log('[MEMBER SCAN] Checking inward status:');
-      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
-      console.log('[MEMBER SCAN] manual_inward_data result:', null);
-      console.log('[MEMBER SCAN] Final status:', 'Not Imported');
+      console.log('[MEMBER SCAN] Resolved member ID:', null);
+      console.log('[MEMBER SCAN] Resolved class ID:', null);
+      console.log('[MEMBER SCAN] Class validation:', 'Failed - member not imported');
+      console.log('[MEMBER SCAN] Inward status:', 'Not inwarded');
+      console.log('[MEMBER SCAN] Final result:', 'Member ID not found');
 
       return {
         success: false,
@@ -2986,7 +2989,7 @@ class ImportedService {
         detectedClassId: activeClassId,
         detectedMemberId: normalized,
         barcode: normalized,
-        message: 'Not Imported',
+        message: 'Member ID not found',
       };
     }
 
@@ -2996,15 +2999,14 @@ class ImportedService {
     const resolvedBarcode = importedRow.barcode ? normalizeIdentifier(importedRow.barcode) : normalized;
 
     console.log('[MEMBER SCAN] Imported row:', importedRow);
-    console.log('[MEMBER SCAN] Resolved member_id:', resolvedMemberId);
-    console.log('[MEMBER SCAN] Resolved class_id:', resolvedClassId);
+    console.log('[MEMBER SCAN] Resolved member ID:', resolvedMemberId);
+    console.log('[MEMBER SCAN] Resolved class ID:', resolvedClassId);
 
     // STEP 5: Verify resolved class_id matches active Class ID
     if (resolvedClassId.toLowerCase() !== cleanActiveCid.toLowerCase()) {
-      console.log('[MEMBER SCAN] Checking inward status:');
-      console.log('[MEMBER SCAN] saved_scanned_data result:', null);
-      console.log('[MEMBER SCAN] manual_inward_data result:', null);
-      console.log('[MEMBER SCAN] Final status:', 'Member belongs to another Class');
+      console.log('[MEMBER SCAN] Class validation:', `Failed - belongs to Class ${resolvedClassId}, current is ${activeClassId}`);
+      console.log('[MEMBER SCAN] Inward status:', 'Skipped');
+      console.log('[MEMBER SCAN] Final result:', 'Member belongs to another Class');
 
       return {
         success: false,
@@ -3017,9 +3019,9 @@ class ImportedService {
       };
     }
 
-    // STEP 6: Check whether this member has already been inwarded
-    console.log('[MEMBER SCAN] Checking inward status:');
+    console.log('[MEMBER SCAN] Class validation:', `Passed - belongs to current Class ${activeClassId}`);
 
+    // STEP 6: Check whether this member has already been inwarded
     // Check saved_scanned_data
     let savedScannedResult: any = this.savedScanned.find(s =>
       normalizeIdentifier(s.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
@@ -3082,13 +3084,11 @@ class ImportedService {
       i.status === 'PENDING_SAVE'
     ) || null;
 
-    console.log('[MEMBER SCAN] saved_scanned_data result:', savedScannedResult);
-    console.log('[MEMBER SCAN] manual_inward_data result:', manualInwardResult);
-
     const alreadyInwarded = Boolean(savedScannedResult || manualInwardResult || pendingResult);
 
     if (alreadyInwarded) {
-      console.log('[MEMBER SCAN] Final status:', 'Member already inwarded');
+      console.log('[MEMBER SCAN] Inward status:', 'Already inwarded');
+      console.log('[MEMBER SCAN] Final result:', 'Member already inwarded');
 
       return {
         success: false,
@@ -3101,7 +3101,8 @@ class ImportedService {
     }
 
     // Member is IMPORTED + NOT INWARDED -> Allow inward!
-    console.log('[MEMBER SCAN] Final status:', 'Inwarded');
+    console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - saving');
+    console.log('[MEMBER SCAN] Final result:', 'Inwarded');
 
     // Stage as PENDING_SAVE in active session
     const session = await this.ensureScanSession(activeClassId);
