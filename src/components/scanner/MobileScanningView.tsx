@@ -64,8 +64,25 @@ export type ScannerMode = 'CLASS_MODE' | 'MEMBER_MODE';
 export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   onNavigateToImport,
 }) => {
-  const [scannerMode, setScannerMode] = useState<ScannerMode>('CLASS_MODE');
-  const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
+  const [selectedClassId, setSelectedClassId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('examscan_mobile_selected_class_id');
+      if (saved) {
+        return normalizeIdentifier(saved);
+      }
+    }
+    return null;
+  });
+
+  const [scannerMode, setScannerMode] = useState<ScannerMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('examscan_mobile_selected_class_id');
+      if (saved) {
+        return 'MEMBER_MODE';
+      }
+    }
+    return 'CLASS_MODE';
+  });
 
   // Data states
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
@@ -156,9 +173,25 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setBundles(bList);
     setSessionSummary(sum);
 
-    if (selectedClassId) {
-      const recs = importedService.getBundleRecordViews(selectedClassId);
-      setBundleRecords(recs);
+    const curCid = selectedClassIdRef.current || selectedClassId;
+    if (curCid) {
+      const exists = bList.some(
+        b => normalizeIdentifier(b.classId).toLowerCase() === normalizeIdentifier(curCid).toLowerCase()
+      );
+      if (exists) {
+        const recs = importedService.getBundleRecordViews(curCid);
+        setBundleRecords(recs);
+      } else {
+        // Stale or deleted class: reset to CLASS_MODE
+        setSelectedClassId(null);
+        selectedClassIdRef.current = null;
+        setScannerMode('CLASS_MODE');
+        scannerModeRef.current = 'CLASS_MODE';
+        setBundleRecords([]);
+        try {
+          localStorage.removeItem('examscan_mobile_selected_class_id');
+        } catch {}
+      }
     } else {
       setBundleRecords([]);
     }
@@ -270,15 +303,20 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // Open a Class Bundle and transition to MEMBER_MODE
   const openClassBundle = (classId: string) => {
-    console.log('[CLASS SCAN] Opening class:', classId);
+    const cleanCid = normalizeIdentifier(classId);
+    console.log('[CLASS SCAN] Opening class ID:', cleanCid);
     console.log('[SCAN MODE] Switching to MEMBER_MODE');
+
+    try {
+      localStorage.setItem('examscan_mobile_selected_class_id', cleanCid);
+    } catch {}
 
     // 1. Stop / cleanup class scanner
     stopCamera();
 
     // 2. Set mode to MEMBER_MODE and assign currentClassId synchronously
-    setSelectedClassId(classId);
-    selectedClassIdRef.current = classId;
+    setSelectedClassId(cleanCid);
+    selectedClassIdRef.current = cleanCid;
     setScannerMode('MEMBER_MODE');
     scannerModeRef.current = 'MEMBER_MODE';
 
@@ -287,8 +325,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     dismissModals();
 
     setSuccessToast({
-      title: `CLASS ${classId} OPENED`,
-      message: `Now in Member Scanning mode for Class ${classId}.`,
+      title: `CLASS ID ${cleanCid} OPENED`,
+      message: `Now in Member Scanning mode for Class ID ${cleanCid}.`,
       type: 'class',
     });
     setTimeout(() => setSuccessToast(null), 3500);
@@ -301,6 +339,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // Exit back to CLASS_MODE
   const backToClassSelection = () => {
+    try {
+      localStorage.removeItem('examscan_mobile_selected_class_id');
+    } catch {}
+
     // 1. Stop / cleanup member scanner
     stopCamera();
 
@@ -335,8 +377,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         playScanSuccessSound();
         loadData();
         setSuccessToast({
-          title: `CLASS ${curClass} SAVED`,
-          message: res.message || `Class ${curClass} inward operation saved successfully.`,
+          title: `CLASS ID ${curClass} SAVED`,
+          message: res.message || `Class ID ${curClass} inward operation saved successfully.`,
           type: 'class',
         });
         // Continue to the next stage: return to class list view with updated status
@@ -403,6 +445,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     const activeCid = selectedClassIdRef.current || selectedClassId;
     if (!activeCid) return;
 
+    console.log('[LIVE STATUS] Before inward');
     console.log('[SCAN MODE] MEMBER_MODE');
     const result: ScanResult = await importedService.processMobileMemberBarcodeScan(activeCid, code);
 
@@ -410,7 +453,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       playScanWarningSound();
       setWrongClassModal({
         currentClass: activeCid,
-        detectedClass: result.detectedClassId || 'Other Class',
+        detectedClass: result.detectedClassId || 'Other Class ID',
         memberId: result.detectedMemberId || code,
       });
       return;
@@ -436,8 +479,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     }
 
     if (result.success && result.member_id) {
+      console.log('[LIVE STATUS] Inward operation successful');
       playScanSuccessSound();
-      loadData();
+      reconcileLiveStatus(activeCid);
       setSuccessToast({
         title: 'MEMBER INWARDED',
         message: `Member ID: ${result.member_id} successfully inwarded.`,
@@ -525,9 +569,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       // ----------------------------------------------------
       else if (mode === 'MEMBER_MODE' && (selectedClassIdRef.current || selectedClassId)) {
         const curClass = (selectedClassIdRef.current || selectedClassId)!;
+        console.log('[LIVE STATUS] Before inward');
         console.log('[SCAN MODE] MEMBER_MODE');
         console.log('[MEMBER MANUAL] Input member ID:', inputVal);
-        console.log('[MEMBER MANUAL] Current class:', curClass);
+        console.log('[MEMBER MANUAL] Current class ID:', curClass);
 
         // Validate strictly against current class
         const validation = await importedService.validateMemberForClass(curClass, inputVal);
@@ -536,7 +581,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           playScanWarningSound();
           setWrongClassModal({
             currentClass: curClass,
-            detectedClass: validation.actualClassId || 'Other Class',
+            detectedClass: validation.actualClassId || 'Other Class ID',
             memberId: inputVal,
           });
           return;
@@ -547,7 +592,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           setMemberNotFoundModal({
             classId: curClass,
             memberId: inputVal,
-            title: 'Member ID not found in this Class',
+            title: 'Member ID not found in this Class ID',
           });
           return;
         }
@@ -566,12 +611,13 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         const res = await importedService.recordManualInward(curClass, inputVal);
 
         if (res.success && res.record) {
+          console.log('[LIVE STATUS] Inward operation successful');
           playScanSuccessSound();
           setManualInput('');
-          loadData();
+          reconcileLiveStatus(curClass);
           setSuccessToast({
             title: 'MANUAL INWARD SAVED',
-            message: `Member ${inputVal} recorded in manual_inward_data for Class ${curClass}.`,
+            message: `Member ${inputVal} recorded in manual_inward_data for Class ID ${curClass}.`,
             type: 'inward',
           });
           setTimeout(() => setSuccessToast(null), 3500);
@@ -643,11 +689,20 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // Active bundle stats (MEMBER_MODE)
   const bundleExpected = activeBundle?.expectedCount || 0;
-  const bundleInwarded = activeBundle?.savedCount || 0;
-  const bundlePending = activeBundle?.pendingCount || 0;
-  const bundleTotalInwarded = bundleInwarded + bundlePending;
-  const bundleNotInwarded = Math.max(0, bundleExpected - bundleTotalInwarded);
-  const bundleProgress = bundleExpected > 0 ? Math.round((bundleTotalInwarded / bundleExpected) * 100) : 0;
+  const bundleInwarded = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
+  const bundleNotInwarded = Math.max(0, bundleExpected - bundleInwarded);
+  const bundleProgress = bundleExpected > 0 ? Math.round((bundleInwarded / bundleExpected) * 100) : 0;
+
+  const classStats = {
+    importedCount: bundleExpected,
+    inwardedCount: bundleInwarded,
+    notInwardedCount: bundleNotInwarded,
+    progress: bundleProgress,
+  };
+
+  const reconcileLiveStatus = (_cid?: string) => {
+    loadData();
+  };
 
   // Filtered member records for active bundle
   const filteredMemberRecords = bundleRecords.filter(r => {
@@ -759,10 +814,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         <div className="bg-[#1565D8] text-white p-3 rounded-xl shadow-xs flex items-center justify-between">
           <div>
             <div className="text-[10px] uppercase font-bold text-blue-200 tracking-wider">
-              CURRENT CLASS BUNDLE
+              CURRENT CLASS ID BUNDLE
             </div>
             <div className="text-base font-black font-mono tracking-wide">
-              CLASS {selectedClassId}
+              CLASS ID {selectedClassId}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -809,7 +864,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       {scannerMode === 'CLASS_MODE' ? (
         <div className="grid grid-cols-4 gap-2">
           <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-            <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASSES</div>
+            <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
             <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
           </div>
           <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
@@ -829,24 +884,24 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         /* MEMBER_MODE Class Bundle Statistics */
         <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
           <div className="flex items-center justify-between text-xs font-bold text-[#172033]">
-            <span>Class {selectedClassId} Statistics</span>
+            <span>Class ID {selectedClassId} Statistics</span>
             <span className="font-mono text-xs text-[#16A34A] font-black">
-              {bundleTotalInwarded} / {bundleExpected} ({bundleProgress}%)
+              {classStats.inwardedCount} / {classStats.importedCount} ({classStats.progress}%)
             </span>
           </div>
 
           <div className="grid grid-cols-3 gap-2 pt-1 text-center">
             <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-              <div className="text-[9px] font-bold text-[#64748B] uppercase">Expected</div>
-              <div className="text-sm font-black text-[#172033] font-mono">{bundleExpected}</div>
+              <div className="text-[9px] font-bold text-[#64748B] uppercase">Imported</div>
+              <div className="text-sm font-black text-[#172033] font-mono">{classStats.importedCount}</div>
             </div>
             <div className="bg-[#F0FDF4] p-2 border border-[#BBF7D0] rounded-lg">
               <div className="text-[9px] font-bold text-[#16A34A] uppercase">Inwarded</div>
-              <div className="text-sm font-black text-[#16A34A] font-mono">{bundleTotalInwarded}</div>
+              <div className="text-sm font-black text-[#16A34A] font-mono">{classStats.inwardedCount}</div>
             </div>
             <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
               <div className="text-[9px] font-bold text-[#DC2626] uppercase">Not Inwarded</div>
-              <div className="text-sm font-black text-[#DC2626] font-mono">{bundleNotInwarded}</div>
+              <div className="text-sm font-black text-[#DC2626] font-mono">{classStats.notInwardedCount}</div>
             </div>
           </div>
 
@@ -854,24 +909,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 mt-1">
             <div
               className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
-              style={{ width: `${Math.min(100, bundleProgress)}%` }}
+              style={{ width: `${Math.min(100, classStats.progress)}%` }}
             />
           </div>
 
-          {/* Action Row to Save / Finalize Inward for this Class */}
-          <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-            <div className="text-[11px] text-[#64748B] font-medium">
-              Inward Progress: <strong className="text-[#16A34A] font-bold">{bundleTotalInwarded}</strong> / {bundleExpected}
-            </div>
-            <button
-              type="button"
-              onClick={handleSaveClassInward}
-              disabled={isSaving}
-              className="px-3.5 py-1.5 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-            >
-              <Save className="h-3.5 w-3.5" />
-              <span>{isSaving ? 'SAVING...' : `SAVE CLASS ${selectedClassId}`}</span>
-            </button>
+          {/* Action Row - Progress Summary without duplicate SAVE button */}
+          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-[#64748B]">
+            <span>Inward Progress: <strong className="text-[#16A34A] font-bold">{classStats.inwardedCount}</strong> / {classStats.importedCount}</span>
+            <span className="font-mono text-xs font-bold text-[#16A34A]">{classStats.progress}%</span>
           </div>
         </div>
       )}
@@ -883,7 +928,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           <div className="flex items-center gap-1.5 font-bold">
             <ScanIcon className="h-4 w-4 text-[#60A5FA]" />
             <span>
-              {scannerMode === 'CLASS_MODE' ? 'Scan Class ID' : `Scan Member ID (Class ${selectedClassId})`}
+              {scannerMode === 'CLASS_MODE' ? 'Scan Class ID' : `Scan Member ID (Class ID ${selectedClassId})`}
             </span>
           </div>
           <span className="text-[10px] text-slate-400 font-mono">
@@ -981,7 +1026,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         <div className="p-3 bg-[#F8FAFC] border-t border-[#E2E8F0]">
           <div className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider mb-1.5 flex items-center justify-between">
             <span>
-              {scannerMode === 'CLASS_MODE' ? 'Manual Class ID Entry' : `Manual Inward into Class ${selectedClassId}`}
+              {scannerMode === 'CLASS_MODE' ? 'Manual Class ID Entry' : `Manual Inward into Class ID ${selectedClassId}`}
             </span>
             <span className="text-[9px] text-[#1565D8] font-normal">
               {scannerMode === 'CLASS_MODE' ? 'Stage 1' : 'Stage 2'}
@@ -1035,12 +1080,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       {/* 4. CONTENT AREA: CLASS LIST (CLASS_MODE) VS MEMBER LIST (MEMBER_MODE) */}
       {scannerMode === 'CLASS_MODE' ? (
-        /* STAGE 1: CLASS-WISE BUNDLES */
+        /* STAGE 1: CLASS ID BUNDLES */
         <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
           <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
             <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
               <Layers className="h-4 w-4 text-[#1565D8]" />
-              <span>CLASS-WISE BUNDLES</span>
+              <span>CLASS ID BUNDLES</span>
               <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
                 {bundles.length}
               </span>
@@ -1051,7 +1096,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               type="text"
               value={classFilter}
               onChange={e => setClassFilter(e.target.value)}
-              placeholder="Filter Class..."
+              placeholder="Filter Class ID..."
               className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
             />
           </div>
@@ -1076,7 +1121,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-mono font-black text-sm text-[#172033]">
-                          CLASS {b.classId}
+                          CLASS ID {b.classId}
                         </span>
                         <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
                           {b.status}
@@ -1219,7 +1264,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              Class ID not found
+              Class ID Not Found
             </div>
 
             <div className="text-xs text-[#7F1D1D] mt-2 mb-2">
@@ -1287,27 +1332,15 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              Member belongs to another Class
+              Member belongs to another Class ID
             </div>
 
-            <div className="text-xs text-[#7F1D1D] mt-3 space-y-2">
-              <div>
-                CURRENT SELECTED CLASS:
-                <div className="font-mono text-sm font-bold bg-blue-100 text-[#1565D8] px-2 py-0.5 rounded border border-blue-200 mt-0.5">
-                  {wrongClassModal.currentClass}
-                </div>
-              </div>
-
-              <div>
-                ACTUAL CLASS:
-                <div className="font-mono text-sm font-bold bg-red-100 text-[#DC2626] px-2 py-0.5 rounded border border-red-200 mt-0.5">
-                  {wrongClassModal.detectedClass}
-                </div>
-              </div>
+            <div className="text-xs text-[#7F1D1D] my-4 leading-relaxed font-bold bg-red-50 p-3.5 rounded-xl border border-red-200">
+              Member belongs to Class ID {wrongClassModal.detectedClass}, but you are currently inwarding Class ID {wrongClassModal.currentClass}.
             </div>
 
-            <div className="text-xs text-[#7F1D1D] mt-3 mb-5 font-semibold">
-              This member cannot be inwarded into Class {wrongClassModal.currentClass}.
+            <div className="text-[11px] text-[#64748B] mb-5">
+              Please switch to Class ID {wrongClassModal.detectedClass} to inward this member booklet.
             </div>
 
             <button
@@ -1330,7 +1363,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
 
             <div className="text-base font-extrabold uppercase text-[#991B1B]">
-              {memberNotFoundModal.title || 'Member ID not found'}
+              Member ID Not Found
             </div>
 
             <div className="my-3 text-xs space-y-1">
@@ -1338,12 +1371,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 {memberNotFoundModal.memberId}
               </div>
               <div className="text-[#64748B]">
-                Class: <strong className="text-[#172033]">{memberNotFoundModal.classId}</strong>
+                Class ID: <strong className="text-[#172033]">{memberNotFoundModal.classId}</strong>
               </div>
             </div>
 
             <div className="text-xs text-[#7F1D1D] mb-5">
-              This member identifier or barcode was not found in the imported data for Class {memberNotFoundModal.classId}.
+              Member ID was not found in the imported dataset.
             </div>
 
             <button
@@ -1374,7 +1407,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               <strong className="font-mono text-sm text-[#172033] block mt-1 font-bold">
                 {duplicateModal.memberId}
               </strong>
-              in Class <strong>{duplicateModal.classId}</strong>
+              in Class ID <strong>{duplicateModal.classId}</strong>
               <div className="mt-2 font-semibold">
                 This member has already been recorded. Count remains unchanged.
               </div>

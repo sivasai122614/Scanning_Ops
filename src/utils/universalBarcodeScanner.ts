@@ -66,8 +66,9 @@ export const NATIVE_BARCODE_FORMATS = [
 export function createZXingReader(): BrowserMultiFormatReader {
   const hints = new Map();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, ZXING_ALL_FORMATS);
-  hints.set(DecodeHintType.TRY_HARDER, true);
-  return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 40 });
+  // Do not use TRY_HARDER on continuous camera streams: allows 25-30fps live detection instead of CPU bottleneck
+  hints.set(DecodeHintType.TRY_HARDER, false);
+  return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 30 });
 }
 
 /**
@@ -299,18 +300,14 @@ export function startContinuousDualScanning(
     console.warn('[SCANNER] ZXing init error:', zxingErr);
   }
 
-  // 3. Auxiliary Frame Loop (native BarcodeDetector + Canvas fallback)
-  // Ensures barcode is captured even if decodeFromVideoElement had a frame stall
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
+  // 3. Auxiliary Hardware-Accelerated Native Frame Loop
+  // If native BarcodeDetector is available, this provides instantaneous <10ms detection on mobile hardware
   const runFrameLoop = async () => {
     if (!isRunning) return;
 
     if (!isProcessing && videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
       isProcessing = true;
       try {
-        // A. Native BarcodeDetector if available
         if (detectorInstance) {
           try {
             const barcodes = await detectorInstance.detect(videoEl);
@@ -318,7 +315,7 @@ export function startContinuousDualScanning(
               for (const b of barcodes) {
                 if (b.rawValue && b.rawValue.trim()) {
                   const cleaned = b.rawValue.trim();
-                  console.log('[SCANNER] Barcode detected:', cleaned);
+                  console.log('[SCANNER] Barcode detected (Hardware):', cleaned);
                   console.log('[SCANNER] Normalized barcode:', normalizeIdentifier(cleaned));
                   onBarcodeDetected({
                     text: cleaned,
@@ -333,29 +330,6 @@ export function startContinuousDualScanning(
             // Frame drop
           }
         }
-
-        // B. Canvas snapshot fallback for difficult 1D barcodes
-        if (ctx && zxingReaderInstance && (!zxingControls || Math.random() < 0.3)) {
-          canvas.width = videoEl.videoWidth;
-          canvas.height = videoEl.videoHeight;
-          ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-          try {
-            const res = zxingReaderInstance.decodeFromCanvas(canvas);
-            if (res && res.getText()) {
-              const cleaned = res.getText().trim();
-              console.log('[SCANNER] Barcode detected:', cleaned);
-              console.log('[SCANNER] Normalized barcode:', normalizeIdentifier(cleaned));
-              onBarcodeDetected({
-                text: cleaned,
-                format: res.getBarcodeFormat() ? String(res.getBarcodeFormat()) : undefined,
-              });
-              isProcessing = false;
-              return;
-            }
-          } catch {
-            // No barcode in frame
-          }
-        }
       } catch {
         // Frame processing exception
       } finally {
@@ -364,11 +338,11 @@ export function startContinuousDualScanning(
     }
 
     if (isRunning) {
-      frameTimerId = setTimeout(runFrameLoop, options?.throttleMs || 90);
+      frameTimerId = setTimeout(runFrameLoop, options?.throttleMs || 60);
     }
   };
 
-  frameTimerId = setTimeout(runFrameLoop, 120);
+  frameTimerId = setTimeout(runFrameLoop, 80);
 
   return {
     stop: () => {

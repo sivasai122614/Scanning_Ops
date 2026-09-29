@@ -2688,9 +2688,19 @@ class ImportedService {
   }
 
   /**
-   * STAGE 2 Validation:
-   * Validates whether a Member ID belongs to the current Class ID in imported_inward_data.
-   * If not in this class, checks whether it belongs to another class or doesn't exist.
+   * STAGE 2 Validation for Manual Inward:
+   * Current Class ID = X
+   * Entered Member ID = Y
+   *
+   * First find the member in public.imported_inward_data by member_id.
+   * Member ID and barcode are different fields. Do not use barcode lookup for manual Member ID input.
+   *
+   * If member does not exist anywhere:
+   *   → "Member ID Not Found" (status: 'NOT_FOUND')
+   * If member exists and imported class_id === currentClassId:
+   *   → allow inward (status: 'VALID')
+   * If member exists but imported class_id !== currentClassId:
+   *   → "Member belongs to Class ID XXXX, but you are currently inwarding Class ID YYYY." (status: 'WRONG_CLASS')
    */
   public async validateMemberForClass(
     activeClassId: string,
@@ -2709,32 +2719,23 @@ class ImportedService {
     const midLower = cleanMid.toLowerCase();
     const cidLower = cleanActiveCid.toLowerCase();
 
-    // 1. Direct query: WHERE class_id = activeClassId AND member_id = rawMemberId (or barcode = rawMemberId)
-    // Check local memory first
-    const exactLocal = this.importInwarded.find(r => {
-      const rCid = normalizeIdentifier(r.class_id).toLowerCase();
-      const rMid = normalizeIdentifier(r.member_id).toLowerCase();
-      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
-      return rCid === cidLower && (rMid === midLower || rBar === midLower);
-    });
+    // 1. Look for member strictly by member_id in local cache (public.imported_inward_data)
+    let foundRecord = this.importInwarded.find(r =>
+      normalizeIdentifier(r.member_id).toLowerCase() === midLower
+    );
 
-    if (exactLocal) {
-      return { status: 'VALID', record: exactLocal, actualClassId: exactLocal.class_id };
-    }
-
-    // Direct Supabase query for exact class + member match
-    if (isSupabaseConfigured) {
+    // 2. If not found in memory, query public.imported_inward_data strictly by member_id
+    if (!foundRecord && isSupabaseConfigured) {
       try {
         const { data, error } = await supabase
           .from('imported_inward_data')
           .select('*')
-          .eq('class_id', cleanActiveCid)
-          .or(`member_id.eq.${cleanMid},barcode.eq.${cleanMid}`)
+          .eq('member_id', cleanMid)
           .limit(1);
 
         if (!error && Array.isArray(data) && data.length > 0) {
           const row = data[0];
-          const rec: ImportInwardedRecord = {
+          foundRecord = {
             id: row.id || `${row.class_id}_${row.member_id}`,
             import_session_id: row.import_session_id || 'default_session',
             college_name: row.university_name || row.college_name || this.activeUniversity || '',
@@ -2746,56 +2747,65 @@ class ImportedService {
             created_by: row.created_by,
             created_at: row.created_at || new Date().toISOString(),
           };
-          // add to local
-          const existIdx = this.importInwarded.findIndex(r => r.id === rec.id);
-          if (existIdx >= 0) this.importInwarded[existIdx] = rec;
-          else this.importInwarded.push(rec);
-
-          return { status: 'VALID', record: rec, actualClassId: rec.class_id };
+          const existIdx = this.importInwarded.findIndex(r => r.id === foundRecord!.id);
+          if (existIdx >= 0) this.importInwarded[existIdx] = foundRecord;
+          else this.importInwarded.push(foundRecord);
         }
       } catch (e) {
-        console.warn('Supabase exact member check note:', e);
+        console.warn('Supabase member_id lookup note:', e);
       }
     }
 
-    // 2. If not found in this class, check if member exists in ANY other class!
-    // Check local memory
-    const otherClassLocal = this.importInwarded.find(r => {
-      const rMid = normalizeIdentifier(r.member_id).toLowerCase();
-      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
-      return rMid === midLower || rBar === midLower;
-    });
-
-    if (otherClassLocal) {
-      return {
-        status: 'WRONG_CLASS',
-        actualClassId: otherClassLocal.class_id,
-        record: otherClassLocal,
-      };
-    }
-
-    // Check Supabase for member in any class
-    if (isSupabaseConfigured) {
+    // Also check import_inwarded_data in Supabase if not found yet
+    if (!foundRecord && isSupabaseConfigured) {
       try {
-        const { data: anyData } = await supabase
-          .from('imported_inward_data')
+        const { data: impData } = await supabase
+          .from('import_inwarded_data')
           .select('*')
-          .or(`member_id.eq.${cleanMid},barcode.eq.${cleanMid}`)
+          .eq('member_id', cleanMid)
           .limit(1);
 
-        if (anyData && Array.isArray(anyData) && anyData.length > 0) {
-          const row = anyData[0];
-          return {
-            status: 'WRONG_CLASS',
-            actualClassId: normalizeIdentifier(row.class_id),
+        if (impData && Array.isArray(impData) && impData.length > 0) {
+          const row = impData[0];
+          foundRecord = {
+            id: row.id || `${row.class_id}_${row.member_id}`,
+            import_session_id: row.import_session_id || 'default_session',
+            college_name: row.university_name || row.college_name || this.activeUniversity || '',
+            university_name: row.university_name || row.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(row.class_id),
+            sch_id: row.sch_id,
+            member_id: normalizeIdentifier(row.member_id),
+            barcode: row.barcode ? normalizeIdentifier(row.barcode) : undefined,
+            created_by: row.created_by,
+            created_at: row.created_at || new Date().toISOString(),
           };
+          const existIdx = this.importInwarded.findIndex(r => r.id === foundRecord!.id);
+          if (existIdx >= 0) this.importInwarded[existIdx] = foundRecord;
+          else this.importInwarded.push(foundRecord);
         }
-      } catch (e) {
-        console.warn('Supabase general member check note:', e);
+      } catch {
+        // ignore
       }
     }
 
-    return { status: 'NOT_FOUND' };
+    // If member does not exist anywhere in imported dataset
+    if (!foundRecord) {
+      return { status: 'NOT_FOUND' };
+    }
+
+    const importedClassId = normalizeIdentifier(foundRecord.class_id);
+
+    // If member exists and imported class_id === currentClassId
+    if (importedClassId.toLowerCase() === cidLower) {
+      return { status: 'VALID', record: foundRecord, actualClassId: importedClassId };
+    }
+
+    // If member exists but imported class_id !== currentClassId
+    return {
+      status: 'WRONG_CLASS',
+      actualClassId: importedClassId,
+      record: foundRecord,
+    };
   }
 
   /**
@@ -2825,7 +2835,7 @@ class ImportedService {
     // 2. Check manual_inward_data
     const isManual = this.manualInwarded.some(
       m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid &&
-           normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '').toLowerCase() === cleanMid
+           normalizeIdentifier(m.member_id || m.roll_number || '').toLowerCase() === cleanMid
     );
     if (isManual) return true;
 

@@ -42,7 +42,28 @@ type ActiveView =
 
 const AuthenticatedApp: React.FC = () => {
   const { isLocked, mustChangePassword } = useAuth();
-  const [activeView, setActiveView] = useState<ActiveView>('home');
+  const [activeView, setActiveView] = useState<ActiveView>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('examscan_mobile_active_view');
+      const validViews: ActiveView[] = [
+        'home',
+        'import-data',
+        'sessions',
+        'scan',
+        'reports',
+        'more',
+        'users-directory',
+        'role-permissions',
+        'audit-logs',
+        'test-suite',
+        'my-profile',
+      ];
+      if (saved && validViews.includes(saved as ActiveView)) {
+        return saved as ActiveView;
+      }
+    }
+    return 'home';
+  });
   const [previousView, setPreviousView] = useState<ActiveView>('home');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [scannerTargetSchedule, setScannerTargetSchedule] = useState<string | undefined>(undefined);
@@ -51,6 +72,11 @@ const AuthenticatedApp: React.FC = () => {
   const navigateTo = (view: ActiveView) => {
     setPreviousView(activeView);
     setActiveView(view);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('examscan_mobile_active_view', view);
+      } catch {}
+    }
   };
 
   // Determine title and back button state for AppHeader
