@@ -295,9 +295,64 @@ class ImportedService {
       } else if (this.importInwarded.length > 0) {
         this.activeUniversity = this.importInwarded[0].college_name || this.importInwarded[0].university_name || '';
       }
+
+      // Immediately reconcile with imported reference dataset to eliminate any stale orphan inward state
+      this.reconcileInwardStateWithImportedData();
     } catch (e) {
       console.warn('[ImportedService] Error loading local storage:', e);
     }
+  }
+
+  /**
+   * TASK 3 DATA MODEL RULE:
+   * public.imported_inward_data is the authoritative reference dataset.
+   * A member being present in imported_inward_data means IMPORTED.
+   * If a class or member is absent from imported_inward_data, any inward record
+   * (saved_scanned_data, manual_inward_data, scan_session_items) referencing it is an orphan and is pruned.
+   * If imported_inward_data has 0 records, ALL inward records and sessions are purged.
+   */
+  public reconcileInwardStateWithImportedData() {
+    if (this.importInwarded.length === 0) {
+      this.savedScanned = [];
+      this.manualInwarded = [];
+      this.scanItems = [];
+      this.scanSessions = [];
+      this.importSessions = [];
+      this.classOrder = [];
+      this.activeSessionId = null;
+      this.saveToLocalStorage();
+      return;
+    }
+
+    const validClassMembers = new Set(
+      this.importInwarded.map(r => `${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
+    );
+    const validClasses = new Set(
+      this.importInwarded.map(r => normalizeIdentifier(r.class_id).toLowerCase())
+    );
+
+    // Prune saved scans that are not in current imported_inward_data
+    this.savedScanned = this.savedScanned.filter(s =>
+      validClassMembers.has(`${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
+    );
+
+    // Prune manual inwards that are not in current imported_inward_data
+    this.manualInwarded = this.manualInwarded.filter(m => {
+      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
+      return validClassMembers.has(`${normalizeIdentifier(m.class_id).toLowerCase()}::${mid.toLowerCase()}`);
+    });
+
+    // Prune pending items that are not in current imported_inward_data
+    this.scanItems = this.scanItems.filter(i =>
+      validClassMembers.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
+    );
+
+    // Prune scan sessions for classes that are not in current imported_inward_data
+    this.scanSessions = this.scanSessions.filter(s =>
+      validClasses.has(normalizeIdentifier(s.class_id).toLowerCase())
+    );
+
+    this.saveToLocalStorage();
   }
 
   private saveToLocalStorage() {
@@ -656,6 +711,22 @@ class ImportedService {
           this.importSessions = [];
           this.classOrder = [];
           this.activeSessionId = null;
+          this.savedScanned = [];
+          this.manualInwarded = [];
+          this.scanItems = [];
+          this.scanSessions = [];
+
+          if (isSupabaseConfigured) {
+            try {
+              // Delete orphaned records when imported reference dataset was completely deleted
+              await supabase.from('saved_scanned_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+              await supabase.from('manual_inward_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+              await supabase.from('scan_session_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+              await supabase.from('scan_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            } catch (err) {
+              console.warn('[ImportedService] Supabase orphan table cleanup note:', err);
+            }
+          }
         } else {
           // Align active university with imported records
           const firstUni = this.importInwarded[0].university_name || this.importInwarded[0].college_name;
@@ -756,6 +827,9 @@ class ImportedService {
           }));
         }
       } catch {}
+
+      // Reconcile inward records with authoritative imported reference dataset
+      this.reconcileInwardStateWithImportedData();
 
       // Write authoritative state to localStorage and notify all subscribers
       this.saveToLocalStorage();
@@ -935,24 +1009,43 @@ class ImportedService {
     const savedMap = new Map<string, number>();
     const inwardedMembersByClass = new Map<string, Set<string>>();
 
+    // Map of valid imported members per class from authoritative imported_inward_data
+    const validMembersByClass = new Map<string, Set<string>>();
+    for (const r of this.importInwarded) {
+      const cid = normalizeIdentifier(r.class_id).toLowerCase();
+      const mid = normalizeIdentifier(r.member_id).toLowerCase();
+      if (!validMembersByClass.has(cid)) validMembersByClass.set(cid, new Set());
+      validMembersByClass.get(cid)!.add(mid);
+    }
+
     for (const s of this.savedScanned) {
       const cid = normalizeIdentifier(s.class_id);
       const mid = normalizeIdentifier(s.member_id);
       if (!cid || !mid) continue;
+      const cidLower = cid.toLowerCase();
+      const midLower = mid.toLowerCase();
+      // Only count if member actually exists in authoritative imported_inward_data for this class
+      if (!validMembersByClass.get(cidLower)?.has(midLower)) continue;
+
       if (!inwardedMembersByClass.has(cid)) {
         inwardedMembersByClass.set(cid, new Set());
       }
-      inwardedMembersByClass.get(cid)!.add(mid.toLowerCase());
+      inwardedMembersByClass.get(cid)!.add(midLower);
     }
 
     for (const m of this.manualInwarded) {
       const cid = normalizeIdentifier(m.class_id);
       const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
       if (!cid || !mid) continue;
+      const cidLower = cid.toLowerCase();
+      const midLower = mid.toLowerCase();
+      // Only count if member actually exists in authoritative imported_inward_data for this class
+      if (!validMembersByClass.get(cidLower)?.has(midLower)) continue;
+
       if (!inwardedMembersByClass.has(cid)) {
         inwardedMembersByClass.set(cid, new Set());
       }
-      inwardedMembersByClass.get(cid)!.add(mid.toLowerCase());
+      inwardedMembersByClass.get(cid)!.add(midLower);
     }
 
     for (const [cid, members] of inwardedMembersByClass.entries()) {
@@ -964,7 +1057,11 @@ class ImportedService {
     for (const item of this.scanItems) {
       if (item.status === 'PENDING_SAVE') {
         const cid = normalizeIdentifier(item.class_id);
-        if (!cid) continue;
+        const mid = normalizeIdentifier(item.member_id);
+        if (!cid || !mid) continue;
+        const cidLower = cid.toLowerCase();
+        const midLower = mid.toLowerCase();
+        if (!validMembersByClass.get(cidLower)?.has(midLower)) continue;
         pendingMap.set(cid, (pendingMap.get(cid) || 0) + 1);
       }
     }
@@ -1820,12 +1917,45 @@ class ImportedService {
     );
 
     if (pendingForClass.length === 0) {
-      const alreadySavedCount = this.savedScanned.filter(s => s.class_id.toLowerCase() === cleanCid.toLowerCase()).length;
+      const now = new Date().toISOString();
+      const currentUser = getCurrentUser();
+      const session = await this.ensureScanSession(cleanCid);
+      const expectedTotal = this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase()).length;
+      const totalSavedForThisClass = this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()).length +
+        this.manualInwarded.filter(m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid.toLowerCase()).length;
+
+      if (session) {
+        session.saved_at = now;
+        session.saved_by = currentUser.name;
+        if (totalSavedForThisClass >= expectedTotal && expectedTotal > 0) {
+          session.status = 'COMPLETED';
+        } else {
+          session.status = 'SAVED';
+        }
+        if (isSupabaseConfigured) {
+          try {
+            await supabase.from('scan_sessions').upsert({
+              id: session.id,
+              college_name: session.college_name,
+              import_session_id: session.import_session_id,
+              class_id: session.class_id,
+              status: session.status,
+              saved_at: now,
+              saved_by: currentUser.name,
+              last_activity_at: now,
+            });
+          } catch {}
+        }
+      }
+
+      this.saveToLocalStorage();
+      this.notify();
+
       return {
         success: true,
         savedCount: 0,
-        totalSavedForClass: alreadySavedCount,
-        message: 'All scanned records for this class are already saved.',
+        totalSavedForClass: totalSavedForThisClass,
+        message: `Class ${cleanCid} inward saved successfully (${totalSavedForThisClass} inwarded).`,
         bundle: this.getClassBundle(cleanCid) || undefined,
       };
     }
@@ -2189,6 +2319,26 @@ class ImportedService {
     const importedClasses = Array.from(new Set(newRecords.map(r => r.class_id)));
     this.classOrder = [...this.classOrder.filter(c => !importedClasses.includes(c)), ...importedClasses];
 
+    // Authoritative clean: Purge any old inward records for the newly imported classes so new members start un-inwarded
+    const importedClassLower = new Set(importedClasses.map(c => normalizeIdentifier(c).toLowerCase()));
+    this.savedScanned = this.savedScanned.filter(s => !importedClassLower.has(normalizeIdentifier(s.class_id).toLowerCase()));
+    this.manualInwarded = this.manualInwarded.filter(m => !importedClassLower.has(normalizeIdentifier(m.class_id).toLowerCase()));
+    this.scanItems = this.scanItems.filter(i => !importedClassLower.has(normalizeIdentifier(i.class_id).toLowerCase()));
+    this.scanSessions = this.scanSessions.filter(s => !importedClassLower.has(normalizeIdentifier(s.class_id).toLowerCase()));
+
+    if (isSupabaseConfigured) {
+      try {
+        const classList = Array.from(importedClasses);
+        await supabase.from('saved_scanned_data').delete().in('class_id', classList);
+        await supabase.from('manual_inward_data').delete().in('class_id', classList);
+        await supabase.from('scan_session_items').delete().in('class_id', classList);
+        await supabase.from('scan_sessions').delete().in('class_id', classList);
+      } catch (e) {
+        console.warn('[ImportedService] Note cleaning old inward data on import:', e);
+      }
+    }
+
+    this.reconcileInwardStateWithImportedData();
     this.saveToLocalStorage();
     this.notify();
 
@@ -2657,6 +2807,13 @@ class ImportedService {
   public isMemberAlreadyInwarded(classId: string, memberId: string): boolean {
     const cleanCid = normalizeIdentifier(classId).toLowerCase();
     const cleanMid = normalizeIdentifier(memberId).toLowerCase();
+
+    // TASK 3: Authoritative verification — member must exist in imported_inward_data for this class
+    const isImported = this.importInwarded.some(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid &&
+           normalizeIdentifier(r.member_id).toLowerCase() === cleanMid
+    );
+    if (!isImported) return false;
 
     // 1. Check saved_scanned_data
     const isSaved = this.savedScanned.some(

@@ -34,6 +34,7 @@ import {
   ArrowLeft,
   Search,
   Scan as ScanIcon,
+  Save,
 } from 'lucide-react';
 import {
   importedService,
@@ -80,6 +81,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // Manual input state
   const [manualInput, setManualInput] = useState<string>('');
   const [isSubmittingManual, setIsSubmittingManual] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // Success & notification toasts
   const [successToast, setSuccessToast] = useState<{
@@ -315,6 +317,42 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setTimeout(() => {
       startCamera();
     }, 150);
+  };
+
+  // ==============================================================================
+  // SAVE CLASS INWARD ACTION (STAGE 2)
+  // Persists pending scans & finalizes inward operation for the selected Class ID
+  // Allows user to click SAVE after class inward operation & continue to next stage
+  // ==============================================================================
+  const handleSaveClassInward = async () => {
+    const curClass = selectedClassIdRef.current || selectedClassId;
+    if (!curClass || isSaving) return;
+
+    setIsSaving(true);
+    try {
+      const res = await importedService.saveActiveBundle(curClass);
+      if (res.success) {
+        playScanSuccessSound();
+        loadData();
+        setSuccessToast({
+          title: `CLASS ${curClass} SAVED`,
+          message: res.message || `Class ${curClass} inward operation saved successfully.`,
+          type: 'class',
+        });
+        // Continue to the next stage: return to class list view with updated status
+        setTimeout(() => {
+          backToClassSelection();
+        }, 1200);
+      } else {
+        playScanWarningSound();
+        alert(res.error || res.message || 'Failed to save class inward.');
+      }
+    } catch (err: any) {
+      playScanWarningSound();
+      alert('Error saving class inward: ' + (err?.message || 'unknown error'));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // ==============================================================================
@@ -727,14 +765,26 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               CLASS {selectedClassId}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={backToClassSelection}
-            className="px-3 py-1.5 bg-white/15 hover:bg-white/25 text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors border border-white/20 flex items-center gap-1 cursor-pointer"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span>Change Class</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSaveClassInward}
+              disabled={isSaving}
+              className="px-3.5 py-1.5 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              title="Save Class Inward and continue"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={backToClassSelection}
+              className="px-2.5 py-1.5 bg-white/15 hover:bg-white/25 text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors border border-white/20 flex items-center gap-1 cursor-pointer"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>Change</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -806,6 +856,22 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
               style={{ width: `${Math.min(100, bundleProgress)}%` }}
             />
+          </div>
+
+          {/* Action Row to Save / Finalize Inward for this Class */}
+          <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+            <div className="text-[11px] text-[#64748B] font-medium">
+              Inward Progress: <strong className="text-[#16A34A] font-bold">{bundleTotalInwarded}</strong> / {bundleExpected}
+            </div>
+            <button
+              type="button"
+              onClick={handleSaveClassInward}
+              disabled={isSaving}
+              className="px-3.5 py-1.5 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>{isSaving ? 'SAVING...' : `SAVE CLASS ${selectedClassId}`}</span>
+            </button>
           </div>
         </div>
       )}
