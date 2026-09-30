@@ -46,6 +46,7 @@ import {
   CameraStreamResult,
   BarcodeScanResult,
 } from '../../utils/universalBarcodeScanner';
+import { ScannerTopToast, ScannerToastData } from '../scanner/ScannerTopToast';
 
 interface BundleStatisticsViewProps {
   classId: string;
@@ -68,31 +69,18 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
-  // Scan feedback
-  const [scanSuccessToast, setScanSuccessToast] = useState<{
-    classId: string;
-    memberId: string;
-    isPending: boolean;
-  } | null>(null);
+  // Top Toast Notification state (Non-blocking, auto-dismissing, Part 10-12)
+  const [topToast, setTopToast] = useState<ScannerToastData | null>(null);
+
+  const showToast = useCallback((toastData: ScannerToastData) => {
+    setTopToast({
+      ...toastData,
+      id: Date.now(),
+    });
+  }, []);
 
   // Eye/View Modal for Booklet Record Details
   const [viewingRecord, setViewingRecord] = useState<BundleRecordView | null>(null);
-
-  // Error Modals
-  const [classMismatchModal, setClassMismatchModal] = useState<{
-    scannedClassId: string;
-    barcode: string;
-  } | null>(null);
-
-  const [memberNotFoundModal, setMemberNotFoundModal] = useState<{
-    memberId: string;
-    barcode: string;
-  } | null>(null);
-
-  const [alreadyScannedModal, setAlreadyScannedModal] = useState<{
-    memberId: string;
-    barcode: string;
-  } | null>(null);
 
   // Camera States
   const [cameraActive, setCameraActive] = useState(false);
@@ -180,10 +168,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           videoRef.current,
           (detected: BarcodeScanResult) => {
             if (detected.text) {
-              handleBarcodeScan(detected.text);
+              handleBarcodeScan(detected);
             }
           },
-          { throttleMs: 80 }
+          { throttleMs: 25 }
         );
         scannerControllerRef.current = controller;
       }
@@ -199,9 +187,6 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   };
 
   const resumeScanning = () => {
-    setClassMismatchModal(null);
-    setMemberNotFoundModal(null);
-    setAlreadyScannedModal(null);
     isProcessingRef.current = false;
     lastScannedCodeRef.current = null;
     if (!cameraActive) {
@@ -212,20 +197,27 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   /**
    * Barcode Scan Processing within active class bundle
    */
-  const handleBarcodeScan = async (rawCode: string) => {
+  const handleBarcodeScan = async (detectedOrRaw: BarcodeScanResult | string) => {
+    const rawCode = typeof detectedOrRaw === 'string' ? detectedOrRaw : detectedOrRaw.text;
+    const perfInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.perf : undefined;
+    const formatInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.format : 'code_39';
+
     const code = sanitizeBarcode(rawCode);
     if (!code) return;
 
-    // Debounce duplicate reads within 1.2s
+    // STEP 15: Debounce duplicate reads of the exact SAME barcode while it stays in front of the lens (1.5s)
     const now = Date.now();
-    if (lastScannedCodeRef.current === code && now - lastScannedTimeRef.current < 1200) {
+    if (lastScannedCodeRef.current === code && now - lastScannedTimeRef.current < 1500) {
       return;
     }
     if (isProcessingRef.current) return;
 
+    // STEP 12: Lightweight processing lock
     isProcessingRef.current = true;
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
+
+    const tProcStart = performance.now();
 
     try {
       const result: ScanResult = await importedService.processBundleScan(classId, code);
@@ -233,9 +225,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       // Section 9: CLASS ID MISMATCH PROTECTION
       if (result.isWrongClass) {
         playScanWarningSound();
-        setClassMismatchModal({
-          scannedClassId: result.detectedClassId || 'UNKNOWN',
-          barcode: code,
+        showToast({
+          type: 'warning',
+          title: '⚠ Wrong Class ID',
+          subtitle: `Belongs to Class ${result.detectedClassId || 'Other Class'}`,
         });
         return;
       }
@@ -243,9 +236,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       // Section 10: MEMBER ID NOT FOUND
       if (result.isUnknownMember) {
         playScanWarningSound();
-        setMemberNotFoundModal({
-          memberId: result.detectedMemberId || code,
-          barcode: code,
+        showToast({
+          type: 'error',
+          title: '✕ Member Not Found',
+          subtitle: result.detectedMemberId || code,
         });
         return;
       }
@@ -253,9 +247,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       // Section 14: DUPLICATE SCAN PROTECTION
       if (result.isDuplicate) {
         playScanWarningSound();
-        setAlreadyScannedModal({
-          memberId: result.member_id || code,
-          barcode: code,
+        showToast({
+          type: 'warning',
+          title: '⚠ Already Inwarded',
+          subtitle: result.member_id || code,
         });
         return;
       }
@@ -263,19 +258,41 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       // Section 13: VALID BOOKLET -> STAGED AS PENDING SAVE
       if (result.success && result.member_id) {
         playScanSuccessSound();
-        setScanSuccessToast({
-          classId,
-          memberId: result.member_id,
-          isPending: true,
+        showToast({
+          type: 'success',
+          title: '✓ Member Inwarded Successfully',
+          subtitle: result.member_id,
         });
-        setTimeout(() => setScanSuccessToast(null), 2500);
         loadData();
       } else {
         playScanWarningSound();
+        showToast({
+          type: 'error',
+          title: '✕ Inward Failed',
+          subtitle: 'Please try again',
+        });
       }
+
+      // STEP 19: Performance metrics in console
+      const procMs = Math.round(performance.now() - tProcStart);
+      const detMs = perfInfo?.detectionMs ?? 0;
+      const engine = perfInfo?.engine ?? 'direct';
+      console.log(`[SCAN PERF] ========================================`);
+      console.log(`[SCAN PERF] BUNDLE SCAN:  ${code} (${formatInfo})`);
+      console.log(`[SCAN PERF] Engine:       ${engine}`);
+      console.log(`[SCAN PERF] Detection:    ${detMs}ms`);
+      console.log(`[SCAN PERF] Validation:   ${procMs}ms`);
+      console.log(`[SCAN PERF] Total Time:   ${detMs + procMs}ms`);
+      console.log(`[SCAN PERF] ========================================`);
     } catch (err) {
       console.warn('Scan bundle error:', err);
+      showToast({
+        type: 'error',
+        title: '✕ Inward Failed',
+        subtitle: 'Please try again',
+      });
     } finally {
+      // STEP 11 & 12: Camera continuously available, immediately ready for next scan
       isProcessingRef.current = false;
     }
   };
@@ -391,7 +408,10 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
   });
 
   return (
-    <div className="space-y-4 font-sans max-w-4xl mx-auto pb-24">
+    <div className="space-y-4 font-sans max-w-4xl mx-auto pb-24 relative">
+      {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
+      <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={1800} />
+
       {/* 1. Header (Sections 6 & 9) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center gap-3">
@@ -553,6 +573,24 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
 
+          {/* PART 7: Targeted Barcode Aiming Guide Overlay */}
+          {cameraActive && (
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div className="relative w-[80%] h-[40%] rounded-xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
+                {/* Corner Reticle Accents */}
+                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
+                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
+                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
+                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
+                {/* Subtle Red Aiming Laser Line */}
+                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+                <div className="absolute -bottom-6 inset-x-0 text-center text-[10px] font-mono text-emerald-300 font-bold uppercase tracking-wider drop-shadow-md">
+                  Align Code 39 Barcode
+                </div>
+              </div>
+            </div>
+          )}
+
           {cameraLoading && (
             <div className="text-center text-white px-4">
               <div className="h-8 w-8 border-3 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-2" />
@@ -577,28 +615,6 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             </div>
           )}
         </div>
-
-        {/* Scan feedback toast below camera */}
-        {scanSuccessToast && (
-          <div className="mx-3 mt-3 p-3 bg-[#FEF3C7] border border-[#FDE68A] text-[#92400E] rounded-xl flex items-center justify-between shadow-xs animate-in fade-in duration-150">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#D97706] text-white shrink-0">
-                <Check className="h-4 w-4 stroke-[3]" />
-              </div>
-              <div>
-                <div className="text-[10px] font-black uppercase tracking-wider text-[#B45309]">
-                  ✓ INWARDED — PENDING SAVE
-                </div>
-                <div className="font-mono text-sm font-bold text-[#78350F]">
-                  {scanSuccessToast.classId} • {scanSuccessToast.memberId}
-                </div>
-              </div>
-            </div>
-            <span className="text-[10px] uppercase font-bold text-[#B45309] bg-white px-2 py-0.5 rounded border border-[#FDE68A]">
-              Press SAVE to finalize
-            </span>
-          </div>
-        )}
 
         {/* Camera Controls */}
         <div className="p-3 bg-white border-t border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2">
@@ -909,127 +925,6 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         </div>
       )}
 
-      {/* SECTION 9: CLASS ID MISMATCH WARNING MODAL */}
-      {classMismatchModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
-              <AlertOctagon className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
-              CLASS ID MISMATCH
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-3 leading-relaxed">
-              CURRENT SCANNING CLASS:
-              <div className="font-mono text-sm font-bold bg-blue-100 text-[#1565D8] px-2 py-0.5 rounded border border-blue-300 mt-1">
-                {classId}
-              </div>
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-2 leading-relaxed">
-              DETECTED CLASS:
-              <div className="font-mono text-sm font-bold bg-red-100 text-[#DC2626] px-2 py-0.5 rounded border border-red-300 mt-1">
-                {classMismatchModal.scannedClassId}
-              </div>
-            </div>
-
-            <div className="text-xs font-mono text-[#64748B] bg-slate-100 p-2 border border-slate-200 rounded-lg mt-3">
-              Barcode: {classMismatchModal.barcode}
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-3 mb-4 font-semibold">
-              This booklet does not belong to Class ID {classId}.
-              <span className="block mt-1 font-normal">
-                Please scan a valid booklet belonging to Class ID {classId}.
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              SCAN AGAIN
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 10: MEMBER ID NOT FOUND MODAL */}
-      {memberNotFoundModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
-              <AlertTriangle className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
-              MEMBER ID NOT FOUND
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 my-3 text-xs">
-              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-                <span className="text-[#64748B] block text-[10px] uppercase font-bold">Class ID</span>
-                <span className="font-mono font-bold text-[#172033]">{classId}</span>
-              </div>
-              <div className="bg-[#FEE2E2] p-2 border border-[#FECACA] rounded-lg">
-                <span className="text-[#991B1B] block text-[10px] uppercase font-bold">Member ID</span>
-                <span className="font-mono font-bold text-[#991B1B]">
-                  {memberNotFoundModal.memberId}
-                </span>
-              </div>
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mb-4">
-              This Member ID was not found in the imported Excel data for Class ID {classId}.
-              <span className="block mt-1 font-semibold">The booklet has NOT been marked as received.</span>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#1565D8] text-white text-xs font-bold hover:bg-[#0D47A1] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              SCAN AGAIN
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 14: ALREADY SCANNED MODAL */}
-      {alreadyScannedModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FDE68A] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#F59E0B] text-white rounded-xl mx-auto mb-3">
-              <AlertTriangle className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#B45309]">
-              ALREADY SCANNED
-            </div>
-
-            <div className="text-xs text-[#78350F] mt-2 mb-4 leading-relaxed">
-              Member ID:{' '}
-              <strong className="font-mono text-sm text-[#172033] font-bold">
-                {alreadyScannedModal.memberId}
-              </strong>
-              <div className="mt-1 font-semibold">
-                This booklet was already scanned for Class {classId}.
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#D97706] text-white text-xs font-bold hover:bg-[#B45309] transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              DISMISS
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

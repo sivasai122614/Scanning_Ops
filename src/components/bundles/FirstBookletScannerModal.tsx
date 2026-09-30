@@ -171,7 +171,7 @@ export const FirstBookletScannerModal: React.FC<FirstBookletScannerModalProps> =
         videoRef.current.setAttribute('playsinline', 'true');
         await videoRef.current.play();
 
-        // Start dual-engine continuous scanning
+        // Start high-speed continuous scanning
         const controller = startContinuousDualScanning(
           videoRef.current,
           (detected: BarcodeScanResult) => {
@@ -179,7 +179,7 @@ export const FirstBookletScannerModal: React.FC<FirstBookletScannerModalProps> =
               handleBarcodeDetection(detected.text);
             }
           },
-          { throttleMs: 70 }
+          { throttleMs: 25 }
         );
         scannerControllerRef.current = controller;
       }

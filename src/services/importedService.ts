@@ -3005,13 +3005,31 @@ class ImportedService {
       };
     }
 
-    // STEP 3: Find member in public.imported_inward_data using authoritative imported barcode field
-    let importedRow: ImportInwardedRecord | null = null;
+    // STEP 3: Find member in authoritative local dataset first (instantaneous < 0.1ms)
+    // 1. Direct barcode match
+    let importedRow: ImportInwardedRecord | null = this.importInwarded.find(r =>
+      r.barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalized.toLowerCase()
+    ) || null;
 
-    // 3a. Direct Supabase query (if configured)
-    if (isSupabaseConfigured) {
+    // 2. Direct member_id match
+    if (!importedRow) {
+      importedRow = this.importInwarded.find(r =>
+        normalizeIdentifier(r.member_id).toLowerCase() === normalized.toLowerCase()
+      ) || null;
+    }
+
+    // 3. Compound match (class_id + member_id)
+    if (!importedRow) {
+      importedRow = this.importInwarded.find(r => {
+        const c = normalizeIdentifier(r.class_id).toLowerCase();
+        const m = normalizeIdentifier(r.member_id).toLowerCase();
+        return `${c}${m}` === normalized.toLowerCase() || `${c}_${m}` === normalized.toLowerCase();
+      }) || null;
+    }
+
+    // Fallback: Check Supabase only if not found in memory
+    if (!importedRow && isSupabaseConfigured) {
       try {
-        // Query imported_inward_data WHERE barcode = normalized
         const { data: byBar, error: barErr } = await supabase
           .from('imported_inward_data')
           .select('*')
@@ -3037,16 +3055,15 @@ class ImportedService {
         // fallback
       }
 
-      // Also check import_inwarded_data table in Supabase
       if (!importedRow) {
         try {
-          const { data: impBar, error: impErr } = await supabase
+          const { data: impBar } = await supabase
             .from('import_inwarded_data')
             .select('*')
             .eq('barcode', normalized)
             .limit(1);
 
-          if (!impErr && impBar && impBar.length > 0) {
+          if (impBar && impBar.length > 0) {
             const row = impBar[0];
             importedRow = {
               id: row.id || `${row.class_id}_${row.member_id}`,
@@ -3065,67 +3082,33 @@ class ImportedService {
           // fallback
         }
       }
-    }
 
-    // 3b. Authoritative local dataset search (this.importInwarded) which powers the working Not Inwarded list
-    if (!importedRow) {
-      // 1. Direct barcode match
-      const localBarMatch = this.importInwarded.find(r =>
-        r.barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalized.toLowerCase()
-      );
-      if (localBarMatch) {
-        importedRow = localBarMatch;
-      }
-    }
+      if (!importedRow) {
+        try {
+          const { data: memData } = await supabase
+            .from('imported_inward_data')
+            .select('*')
+            .eq('member_id', normalized)
+            .limit(1);
 
-    // Fallback: If barcode was identical to member_id or member_id scanned directly
-    if (!importedRow) {
-      const localMemMatch = this.importInwarded.find(r =>
-        normalizeIdentifier(r.member_id).toLowerCase() === normalized.toLowerCase()
-      );
-      if (localMemMatch) {
-        importedRow = localMemMatch;
-      }
-    }
-
-    // Fallback: Compound match (class_id + member_id)
-    if (!importedRow) {
-      const localCompoundMatch = this.importInwarded.find(r => {
-        const c = normalizeIdentifier(r.class_id).toLowerCase();
-        const m = normalizeIdentifier(r.member_id).toLowerCase();
-        return `${c}${m}` === normalized.toLowerCase() || `${c}_${m}` === normalized.toLowerCase();
-      });
-      if (localCompoundMatch) {
-        importedRow = localCompoundMatch;
-      }
-    }
-
-    // Fallback: Check Supabase for member_id match if not found yet
-    if (!importedRow && isSupabaseConfigured) {
-      try {
-        const { data: memData } = await supabase
-          .from('imported_inward_data')
-          .select('*')
-          .eq('member_id', normalized)
-          .limit(1);
-
-        if (memData && memData.length > 0) {
-          const row = memData[0];
-          importedRow = {
-            id: row.id || `${row.class_id}_${row.member_id}`,
-            import_session_id: row.import_session_id || 'default_session',
-            college_name: row.university_name || row.college_name || this.activeUniversity || '',
-            university_name: row.university_name || row.college_name || this.activeUniversity || '',
-            class_id: normalizeIdentifier(row.class_id),
-            sch_id: row.sch_id,
-            member_id: normalizeIdentifier(row.member_id),
-            barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
-            created_by: row.created_by,
-            created_at: row.created_at || new Date().toISOString(),
-          };
+          if (memData && memData.length > 0) {
+            const row = memData[0];
+            importedRow = {
+              id: row.id || `${row.class_id}_${row.member_id}`,
+              import_session_id: row.import_session_id || 'default_session',
+              college_name: row.university_name || row.college_name || this.activeUniversity || '',
+              university_name: row.university_name || row.college_name || this.activeUniversity || '',
+              class_id: normalizeIdentifier(row.class_id),
+              sch_id: row.sch_id,
+              member_id: normalizeIdentifier(row.member_id),
+              barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+              created_by: row.created_by,
+              created_at: row.created_at || new Date().toISOString(),
+            };
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
     }
 
@@ -3189,7 +3172,7 @@ class ImportedService {
     console.log('[MEMBER SCAN] Class validation:', `Passed - belongs to current Class ${activeClassId}`);
 
     // STEP 6: Check whether this member has already been inwarded
-    // Check saved_scanned_data
+    // Authoritative in-memory lookup first (sub-millisecond)
     let savedScannedResult: any = this.savedScanned.find(s =>
       normalizeIdentifier(s.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
       (
@@ -3198,24 +3181,6 @@ class ImportedService {
       )
     ) || null;
 
-    if (!savedScannedResult && isSupabaseConfigured) {
-      try {
-        const { data: svData } = await supabase
-          .from('saved_scanned_data')
-          .select('*')
-          .eq('class_id', cleanActiveCid)
-          .eq('member_id', resolvedMemberId)
-          .limit(1);
-
-        if (svData && svData.length > 0) {
-          savedScannedResult = svData[0];
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // Check manual_inward_data
     let manualInwardResult: any = this.manualInwarded.find(m =>
       normalizeIdentifier(m.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
       (
@@ -3223,23 +3188,6 @@ class ImportedService {
         (m.booklet_barcode && normalizeIdentifier(m.booklet_barcode).toLowerCase() === normalized.toLowerCase())
       )
     ) || null;
-
-    if (!manualInwardResult && isSupabaseConfigured) {
-      try {
-        const { data: manData } = await supabase
-          .from('manual_inward_data')
-          .select('*')
-          .eq('class_id', cleanActiveCid)
-          .or(`member_id.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
-          .limit(1);
-
-        if (manData && manData.length > 0) {
-          manualInwardResult = manData[0];
-        }
-      } catch {
-        // ignore
-      }
-    }
 
     // Check pending session items (staged before save)
     const pendingResult = this.scanItems.find(i =>
@@ -3250,6 +3198,33 @@ class ImportedService {
       ) &&
       i.status === 'PENDING_SAVE'
     ) || null;
+
+    // Only fallback to Supabase query if service has never been initialized
+    if (!this.isInitialized && isSupabaseConfigured) {
+      if (!savedScannedResult) {
+        try {
+          const { data: svData } = await supabase
+            .from('saved_scanned_data')
+            .select('*')
+            .eq('class_id', cleanActiveCid)
+            .eq('member_id', resolvedMemberId)
+            .limit(1);
+          if (svData && svData.length > 0) savedScannedResult = svData[0];
+        } catch {}
+      }
+
+      if (!manualInwardResult) {
+        try {
+          const { data: manData } = await supabase
+            .from('manual_inward_data')
+            .select('*')
+            .eq('class_id', cleanActiveCid)
+            .or(`member_id.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
+            .limit(1);
+          if (manData && manData.length > 0) manualInwardResult = manData[0];
+        } catch {}
+      }
+    }
 
     const alreadyInwarded = Boolean(savedScannedResult || manualInwardResult || pendingResult);
 
@@ -3288,14 +3263,10 @@ class ImportedService {
       created_at: now,
     };
 
-    this.scanItems.push(pendingItem);
-    this.saveToLocalStorage();
-    this.notify();
-
     // Persist to Supabase scan_session_items if configured
     if (isSupabaseConfigured) {
       try {
-        await supabase.from('scan_session_items').insert([{
+        const { error: insErr } = await supabase.from('scan_session_items').insert([{
           id: pendingItem.id,
           scan_session_id: pendingItem.scan_session_id,
           class_id: pendingItem.class_id,
@@ -3306,10 +3277,26 @@ class ImportedService {
           status: 'PENDING_SAVE',
           created_at: pendingItem.created_at,
         }]);
-      } catch (err) {
+
+        if (insErr) {
+          console.warn('[MEMBER SCAN] Supabase scan_session_items insert error:', insErr.message);
+          return {
+            success: false,
+            message: 'Inward Failed: Supabase database error',
+          };
+        }
+      } catch (err: any) {
         console.warn('[MEMBER SCAN] Supabase scan_session_items insert note:', err);
+        return {
+          success: false,
+          message: 'Inward Failed: Connection lost',
+        };
       }
     }
+
+    this.scanItems.push(pendingItem);
+    this.saveToLocalStorage();
+    this.notify();
 
     const updatedBundle = this.getClassBundle(activeClassId);
 

@@ -33,8 +33,8 @@ import { InwardSchedule, ScannedScript } from '../../types/exam';
 import { PrimaryButton, StatusBadge, EmptyState } from '../ui/Elements';
 import { useAuth } from '../../context/AuthContext';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
-import { BrowserMultiFormatReader } from '@zxing/browser';
-import { createZXingReader } from '../../utils/universalBarcodeScanner';
+import { startContinuousDualScanning, BarcodeScanResult } from '../../utils/universalBarcodeScanner';
+import { ScannerTopToast, ScannerToastData } from './ScannerTopToast';
 import { importedService, ClassBundle } from '../../services/importedService';
 import { BundleStatisticsView } from '../bundles/BundleStatisticsView';
 import { FirstBookletScannerModal } from '../bundles/FirstBookletScannerModal';
@@ -69,12 +69,20 @@ export const BarcodeScannerView: React.FC<{
   // STRICT REQUIREMENT 6 & 8: Duplicate or unrecognized warning overlay
   const [scanWarningFlash, setScanWarningFlash] = useState<{ title: string; message: string } | null>(null);
 
+  // Top Toast Notification state (Non-blocking, auto-dismissing, Part 10-12)
+  const [topToast, setTopToast] = useState<ScannerToastData | null>(null);
+
+  const showToast = useCallback((toastData: ScannerToastData) => {
+    setTopToast({
+      ...toastData,
+      id: Date.now(),
+    });
+  }, []);
+
   // Scanner loop & debounce references (STRICT REQUIREMENT 6)
   const lastScannedCodeRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
   const isProcessingRef = useRef<boolean>(false);
-  const zxingReaderRef = useRef<BrowserMultiFormatReader | null>(null);
-  const zxingControlsRef = useRef<{ stop: () => void } | null>(null);
   const successTimeoutRef = useRef<any>(null);
   const warningTimeoutRef = useRef<any>(null);
 
@@ -208,6 +216,11 @@ export const BarcodeScannerView: React.FC<{
     if (warningTimeoutRef.current) clearTimeout(warningTimeoutRef.current);
     setScanWarningFlash(null);
     setScanSuccessFlash({ barcode });
+    showToast({
+      type: 'success',
+      title: '✓ Member Inwarded Successfully',
+      subtitle: barcode,
+    });
     successTimeoutRef.current = setTimeout(() => {
       setScanSuccessFlash(null);
     }, 900);
@@ -219,6 +232,18 @@ export const BarcodeScannerView: React.FC<{
     playScanWarningSound();
     setScanSuccessFlash(null);
     setScanWarningFlash({ title, message });
+
+    const isAlready = title.toLowerCase().includes('duplicate') || title.toLowerCase().includes('already');
+    const isNotFound = title.toLowerCase().includes('not found');
+    const toastTitle = isAlready ? '⚠ Already Inwarded' : isNotFound ? '✕ Member Not Found' : '✕ Invalid Barcode';
+    const toastSub = isAlready ? message.replace(/^Already scanned:\s*/i, '') : isNotFound ? message : 'Please scan a valid booklet barcode';
+
+    showToast({
+      type: isAlready ? 'warning' : 'error',
+      title: toastTitle,
+      subtitle: toastSub,
+    });
+
     warningTimeoutRef.current = setTimeout(() => {
       setScanWarningFlash(null);
     }, 1600);
@@ -368,82 +393,22 @@ export const BarcodeScannerView: React.FC<{
     }
   };
 
-  // Continuous Barcode Detection loop (Native BarcodeDetector + @zxing/browser fallback)
+  // Continuous Barcode Detection loop (PART 5 & 6: Single high-speed loop)
   useEffect(() => {
-    if (!cameraActive || !isScanning || subTab !== 'scanner') return;
+    if (!cameraActive || !isScanning || subTab !== 'scanner' || !videoRef.current) return;
 
-    let intervalId: any = null;
-    let isCancelled = false;
-
-    if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
-      try {
-        const detector = new (window as any).BarcodeDetector({
-          formats: [
-            'code_128',
-            'code_39',
-            'qr_code',
-            'ean_13',
-            'upc_a',
-            'data_matrix',
-            'codabar',
-            'itf',
-          ],
-        });
-
-        intervalId = setInterval(async () => {
-          if (isCancelled || isProcessingRef.current) return;
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
-          try {
-            const detected = await detector.detect(videoRef.current);
-            if (detected && detected.length > 0 && detected[0].rawValue) {
-              handleContinuousBarcode(detected[0].rawValue);
-            }
-          } catch (e) {
-            // frame drop
-          }
-        }, 140);
-      } catch (e) {
-        console.warn('Native BarcodeDetector note:', e);
-      }
-    } else {
-      // Fallback for browsers without native BarcodeDetector
-      try {
-        if (!zxingReaderRef.current) {
-          zxingReaderRef.current = createZXingReader();
+    const controller = startContinuousDualScanning(
+      videoRef.current,
+      (detected: BarcodeScanResult) => {
+        if (detected.text) {
+          handleContinuousBarcode(detected);
         }
-        if (videoRef.current) {
-          zxingReaderRef.current
-            .decodeFromVideoElement(videoRef.current, (result, error) => {
-              if (isCancelled || isProcessingRef.current) return;
-              if (result) {
-                handleContinuousBarcode(result.getText());
-              }
-            })
-            .then(controls => {
-              if (isCancelled) {
-                controls.stop();
-              } else {
-                zxingControlsRef.current = controls;
-              }
-            })
-            .catch(err => {
-              console.warn('ZXing loop note:', err);
-            });
-        }
-      } catch (e) {
-        console.warn('ZXing fallback error:', e);
-      }
-    }
+      },
+      { throttleMs: 25 }
+    );
 
     return () => {
-      isCancelled = true;
-      if (intervalId) clearInterval(intervalId);
-      if (zxingControlsRef.current) {
-        try {
-          zxingControlsRef.current.stop();
-        } catch (e) {}
-        zxingControlsRef.current = null;
-      }
+      controller.stop();
     };
   }, [cameraActive, isScanning, subTab, currentSchedule, scannedCount, expectedCount]);
 
@@ -523,16 +488,19 @@ export const BarcodeScannerView: React.FC<{
   };
 
   // Continuous Barcode Handler with frame debounce & validation (STRICT REQUIREMENT 6 & 8 & V3)
-  const handleContinuousBarcode = (rawCode: string) => {
+  const handleContinuousBarcode = (detectedOrRaw: BarcodeScanResult | string) => {
+    const rawCode = typeof detectedOrRaw === 'string' ? detectedOrRaw : detectedOrRaw.text;
+    const perfInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.perf : undefined;
+    const formatInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.format : 'code_39';
+
     // Strip Code 39 start/stop asterisks (e.g. *003121MIS0074* -> 003121MIS0074)
     const code = rawCode.trim().replace(/^\*+|\*+$/g, '').toUpperCase();
     if (!code) return;
 
-    // STRICT REQUIREMENT 6: Frame Debouncing
+    // STEP 15: Frame Debouncing
     // If the same barcode remains in front of the camera for multiple frames: IGNORE!
     const now = Date.now();
-    if (code === lastScannedCodeRef.current && now - lastScannedTimeRef.current < 2500) {
-      // Frame 2, 3, 4: IGNORE!
+    if (code === lastScannedCodeRef.current && now - lastScannedTimeRef.current < 1500) {
       return;
     }
 
@@ -545,7 +513,18 @@ export const BarcodeScannerView: React.FC<{
       return;
     }
 
+    const tProcStart = performance.now();
     handleAttemptScan(code);
+    const procMs = Math.round(performance.now() - tProcStart);
+    const detMs = perfInfo?.detectionMs ?? 0;
+    const engine = perfInfo?.engine ?? 'direct';
+    console.log(`[SCAN PERF] ========================================`);
+    console.log(`[SCAN PERF] VERIFY SCAN:  ${code} (${formatInfo})`);
+    console.log(`[SCAN PERF] Engine:       ${engine}`);
+    console.log(`[SCAN PERF] Detection:    ${detMs}ms`);
+    console.log(`[SCAN PERF] Processing:   ${procMs}ms`);
+    console.log(`[SCAN PERF] Total Time:   ${detMs + procMs}ms`);
+    console.log(`[SCAN PERF] ========================================`);
   };
 
   // Handle Attempt Scan with Expected Count Check (Requirement 7)
@@ -664,7 +643,10 @@ export const BarcodeScannerView: React.FC<{
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 relative">
+      {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
+      <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={1800} />
+
       {/* Schedule Selection & Sub-Tab Bar */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
         {/* Schedule Selector & Quick Setup Button */}
@@ -852,6 +834,24 @@ export const BarcodeScannerView: React.FC<{
                 cameraActive ? 'opacity-100' : 'opacity-0'
               }`}
             />
+
+            {/* PART 7: Targeted Barcode Aiming Guide Overlay */}
+            {cameraActive && (
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div className="relative w-[80%] h-[40%] rounded-xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
+                  {/* Corner Reticle Accents */}
+                  <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
+                  <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
+                  <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
+                  {/* Subtle Red Aiming Laser Line */}
+                  <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+                  <div className="absolute -bottom-6 inset-x-0 text-center text-[10px] font-mono text-emerald-300 font-bold uppercase tracking-wider drop-shadow-md">
+                    Align Code 39 Barcode
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Loading Indicator */}
             {cameraLoading && (

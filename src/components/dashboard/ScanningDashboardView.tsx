@@ -48,6 +48,7 @@ import {
   CameraStreamResult,
   BarcodeScanResult,
 } from '../../utils/universalBarcodeScanner';
+import { ScannerTopToast, ScannerToastData } from '../scanner/ScannerTopToast';
 import { useIsMobile } from '../../utils/useIsMobile';
 import { MobileScanningView } from '../scanner/MobileScanningView';
 
@@ -70,34 +71,16 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
 
   // Export notifications & feedback
   const [exportNotification, setExportNotification] = useState<string | null>(null);
-  const [scanSuccessToast, setScanSuccessToast] = useState<{
-    classId: string;
-    memberId: string;
-  } | null>(null);
 
-  // Modals
-  const [unknownClassModal, setUnknownClassModal] = useState<{
-    barcode: string;
-    classId: string;
-  } | null>(null);
+  // Top Toast Notification state (Non-blocking, auto-dismissing, Part 10-12)
+  const [topToast, setTopToast] = useState<ScannerToastData | null>(null);
 
-  const [classMismatchModal, setClassMismatchModal] = useState<{
-    barcode: string;
-    currentClass: string;
-    detectedClass: string;
-  } | null>(null);
-
-  const [unknownMemberModal, setUnknownMemberModal] = useState<{
-    barcode: string;
-    classId: string;
-    memberId: string;
-  } | null>(null);
-
-  const [duplicateModal, setDuplicateModal] = useState<{
-    barcode: string;
-    memberId: string;
-    classId: string;
-  } | null>(null);
+  const showToast = useCallback((toastData: ScannerToastData) => {
+    setTopToast({
+      ...toastData,
+      id: Date.now(),
+    });
+  }, []);
 
   // Camera States
   const [cameraActive, setCameraActive] = useState(false);
@@ -202,10 +185,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           videoRef.current,
           (detected: BarcodeScanResult) => {
             if (detected.text) {
-              handleBarcodeScan(detected.text);
+              handleBarcodeScan(detected);
             }
           },
-          { throttleMs: 70 }
+          { throttleMs: 25 }
         );
         scannerControllerRef.current = controller;
       }
@@ -221,10 +204,6 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   };
 
   const resumeScanning = () => {
-    setUnknownClassModal(null);
-    setClassMismatchModal(null);
-    setUnknownMemberModal(null);
-    setDuplicateModal(null);
     isProcessingRef.current = false;
     lastScannedCodeRef.current = null;
     if (hasImportedData && !cameraActive) {
@@ -235,22 +214,29 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   /**
    * Barcode Scan Handling on Main Scan Screen (Sections 3, 4, 5, 6, 7)
    */
-  const handleBarcodeScan = async (rawCode: string) => {
+  const handleBarcodeScan = async (detectedOrRaw: BarcodeScanResult | string) => {
+    const rawCode = typeof detectedOrRaw === 'string' ? detectedOrRaw : detectedOrRaw.text;
+    const perfInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.perf : undefined;
+    const formatInfo = typeof detectedOrRaw === 'object' ? detectedOrRaw.format : 'code_39';
+
     const code = sanitizeBarcode(rawCode);
     if (!code) return;
 
     if (!hasImportedData) return;
 
-    // Debounce duplicate reads within 1.2s
+    // STEP 15: Debounce duplicate reads of the exact SAME barcode within 1.5s
     const now = Date.now();
-    if (lastScannedCodeRef.current === code && now - lastScannedTimeRef.current < 1200) {
+    if (lastScannedCodeRef.current === code && now - lastScannedTimeRef.current < 1500) {
       return;
     }
     if (isProcessingRef.current) return;
 
+    // STEP 12: Lightweight processing lock
     isProcessingRef.current = true;
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
+
+    const tProcStart = performance.now();
 
     try {
       const result: ScanResult = await importedService.processScanningDashboardScan(code);
@@ -264,9 +250,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       // Section 5: CLASS NOT IMPORTED
       if (result.isUnknownClass) {
         playScanWarningSound();
-        setUnknownClassModal({
-          barcode: code,
-          classId: result.detectedClassId || 'UNKNOWN',
+        showToast({
+          type: 'error',
+          title: '✕ Class ID Not Found',
+          subtitle: result.detectedClassId || 'UNKNOWN',
         });
         return;
       }
@@ -274,10 +261,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       // Section 5: CLASS ID MISMATCH
       if (result.isWrongClass) {
         playScanWarningSound();
-        setClassMismatchModal({
-          barcode: code,
-          currentClass: result.currentClassId || 'Not selected yet',
-          detectedClass: result.detectedClassId || 'UNKNOWN',
+        showToast({
+          type: 'warning',
+          title: '⚠ Wrong Class ID',
+          subtitle: `Belongs to Class ${result.detectedClassId || 'UNKNOWN'}`,
         });
         return;
       }
@@ -285,10 +272,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       // Section 5: MEMBER ID NOT FOUND
       if (result.isUnknownMember) {
         playScanWarningSound();
-        setUnknownMemberModal({
-          barcode: code,
-          classId: result.detectedClassId || result.class_id || 'UNKNOWN',
-          memberId: result.detectedMemberId || 'UNKNOWN',
+        showToast({
+          type: 'error',
+          title: '✕ Member Not Found',
+          subtitle: result.detectedMemberId || code,
         });
         return;
       }
@@ -296,10 +283,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       // Section 5: DUPLICATE BOOKLET
       if (result.isDuplicate) {
         playScanWarningSound();
-        setDuplicateModal({
-          barcode: code,
-          memberId: result.member_id || code,
-          classId: result.class_id || 'UNKNOWN',
+        showToast({
+          type: 'warning',
+          title: '⚠ Already Inwarded',
+          subtitle: result.member_id || code,
         });
         return;
       }
@@ -307,9 +294,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       // Section 3 & 4: VALID FIRST SCAN -> AUTOMATIC IMMEDIATE REDIRECT TO BUNDLE SCAN
       if (result.success && result.class_id) {
         playScanSuccessSound();
-        setScanSuccessToast({
-          classId: result.class_id,
-          memberId: result.member_id || code,
+        showToast({
+          type: 'success',
+          title: '✓ Member Inwarded Successfully',
+          subtitle: result.member_id || code,
         });
 
         // Move Class to top and update data
@@ -320,10 +308,33 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         setActiveClassId(result.class_id);
       } else {
         playScanWarningSound();
+        showToast({
+          type: 'error',
+          title: '✕ Inward Failed',
+          subtitle: 'Please try again',
+        });
       }
+
+      // STEP 19: Performance metrics in console
+      const procMs = Math.round(performance.now() - tProcStart);
+      const detMs = perfInfo?.detectionMs ?? 0;
+      const engine = perfInfo?.engine ?? 'direct';
+      console.log(`[SCAN PERF] ========================================`);
+      console.log(`[SCAN PERF] DASHBOARD SCAN: ${code} (${formatInfo})`);
+      console.log(`[SCAN PERF] Engine:         ${engine}`);
+      console.log(`[SCAN PERF] Detection:      ${detMs}ms`);
+      console.log(`[SCAN PERF] Processing:     ${procMs}ms`);
+      console.log(`[SCAN PERF] Total Time:     ${detMs + procMs}ms`);
+      console.log(`[SCAN PERF] ========================================`);
     } catch (err) {
       console.warn('Scan process error:', err);
+      showToast({
+        type: 'error',
+        title: '✕ Inward Failed',
+        subtitle: 'Please try again',
+      });
     } finally {
+      // PART 9: Ready for next scan
       isProcessingRef.current = false;
     }
   };
@@ -348,7 +359,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     try {
       const decoded = await decodeBarcodeFromImageFile(file);
       if (decoded && decoded.text) {
-        handleBarcodeScan(decoded.text);
+        handleBarcodeScan(decoded);
       } else {
         alert('Could not decode a barcode from the selected image. Please try a clearer picture.');
       }
@@ -473,7 +484,10 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   // ACTIVE SCAN SCREEN (When Excel Data is Imported)
   // ==============================================================================
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-24">
+    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-24 relative">
+      {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
+      <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={1800} />
+
       {/* 1. Header Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="flex items-center gap-3">
@@ -575,6 +589,24 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             autoPlay
             className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
+
+          {/* PART 7: Targeted Barcode Aiming Guide Overlay */}
+          {cameraActive && (
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div className="relative w-[80%] h-[40%] rounded-xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
+                {/* Corner Reticle Accents */}
+                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
+                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
+                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
+                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
+                {/* Subtle Red Aiming Laser Line */}
+                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+                <div className="absolute -bottom-6 inset-x-0 text-center text-[10px] font-mono text-emerald-300 font-bold uppercase tracking-wider drop-shadow-md">
+                  Align Code 39 Barcode
+                </div>
+              </div>
+            </div>
+          )}
 
           {cameraLoading && (
             <div className="text-center text-white px-4">
@@ -942,169 +974,6 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           </div>
         )}
       </div>
-
-      {/* SECTION 5: CLASS NOT IMPORTED WARNING MODAL */}
-      {unknownClassModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
-              <AlertOctagon className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
-              CLASS NOT IMPORTED
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-2 mb-1">
-              Class ID:
-            </div>
-            <div className="font-mono text-lg font-black text-[#991B1B] bg-red-100 py-1 px-3 rounded-lg border border-red-300 inline-block mb-3">
-              {unknownClassModal.classId}
-            </div>
-
-            <div className="text-xs font-mono text-[#64748B] bg-slate-100 p-2 border border-slate-200 rounded-lg mb-3">
-              Barcode: {unknownClassModal.barcode}
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mb-4 leading-relaxed font-semibold">
-              This Class ID is not available in the imported data.
-              <span className="block mt-1 font-normal">
-                Please scan a valid imported booklet.
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              SCAN AGAIN
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 5: CLASS ID MISMATCH MODAL */}
-      {classMismatchModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
-              <AlertOctagon className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
-              CLASS ID MISMATCH
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-3 leading-relaxed">
-              CURRENT SCANNING CLASS:
-              <div className="font-mono text-sm font-bold bg-blue-100 text-[#1565D8] px-2 py-1 rounded border border-blue-300 mt-1">
-                {classMismatchModal.currentClass}
-              </div>
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-2 leading-relaxed">
-              DETECTED CLASS:
-              <div className="font-mono text-sm font-bold bg-red-100 text-[#DC2626] px-2 py-1 rounded border border-red-300 mt-1">
-                {classMismatchModal.detectedClass}
-              </div>
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mt-3 mb-4 leading-relaxed font-semibold">
-              This booklet does not belong to the imported scanning data.
-              <span className="block mt-1 font-normal">
-                Please scan a valid imported booklet.
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              SCAN AGAIN
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 5: MEMBER ID NOT FOUND MODAL */}
-      {unknownMemberModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FECACA] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EF4444] text-white rounded-xl mx-auto mb-3">
-              <AlertTriangle className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#991B1B]">
-              MEMBER ID NOT FOUND
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 my-3 text-xs">
-              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-                <span className="text-[#64748B] block text-[10px] uppercase font-bold">Class ID</span>
-                <span className="font-mono font-bold text-[#172033]">{unknownMemberModal.classId}</span>
-              </div>
-              <div className="bg-[#FEE2E2] p-2 border border-[#FECACA] rounded-lg">
-                <span className="text-[#991B1B] block text-[10px] uppercase font-bold">Member ID</span>
-                <span className="font-mono font-bold text-[#991B1B]">
-                  {unknownMemberModal.memberId}
-                </span>
-              </div>
-            </div>
-
-            <div className="text-xs text-[#7F1D1D] mb-4">
-              This Member ID was not found in the imported Excel data for Class {unknownMemberModal.classId}.
-              <span className="block mt-1 font-semibold">The booklet has NOT been marked as received.</span>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              SCAN AGAIN
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* DUPLICATE MODAL */}
-      {duplicateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-[#FDE68A] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#F59E0B] text-white rounded-xl mx-auto mb-3">
-              <AlertTriangle className="h-7 w-7" />
-            </div>
-
-            <div className="text-base font-extrabold tracking-wide uppercase text-[#B45309]">
-              ALREADY SCANNED
-            </div>
-
-            <div className="text-xs text-[#78350F] mt-2 mb-4 leading-relaxed">
-              Member ID:{' '}
-              <strong className="font-mono text-sm text-[#172033] font-bold">
-                {duplicateModal.memberId}
-              </strong>{' '}
-              in Class{' '}
-              <strong className="font-mono text-sm text-[#172033] font-bold">
-                {duplicateModal.classId}
-              </strong>
-              <div className="mt-1 font-semibold">
-                This booklet was already scanned. Count remains unchanged.
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={resumeScanning}
-              className="w-full py-2.5 bg-[#D97706] hover:bg-[#B45309] text-white text-xs font-bold transition-colors uppercase tracking-wider rounded-lg cursor-pointer"
-            >
-              DISMISS
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
