@@ -217,6 +217,14 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
 
+    // PART 6 & 15: IMMEDIATELY show "✓ Barcode Detected" at top
+    showToast({
+      type: 'info',
+      title: '✓ Barcode Detected',
+      subtitle: code,
+      duration: 800,
+    });
+
     const tProcStart = performance.now();
 
     try {
@@ -229,6 +237,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           type: 'warning',
           title: '⚠ Wrong Class ID',
           subtitle: `Belongs to Class ${result.detectedClassId || 'Other Class'}`,
+          duration: 1200,
         });
         return;
       }
@@ -240,6 +249,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           type: 'error',
           title: '✕ Member Not Found',
           subtitle: result.detectedMemberId || code,
+          duration: 1500,
         });
         return;
       }
@@ -251,6 +261,7 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
           type: 'warning',
           title: '⚠ Already Inwarded',
           subtitle: result.member_id || code,
+          duration: 1200,
         });
         return;
       }
@@ -260,8 +271,9 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         playScanSuccessSound();
         showToast({
           type: 'success',
-          title: '✓ Member Inwarded Successfully',
+          title: '✓ Member Inwarded',
           subtitle: result.member_id,
+          duration: 1100,
         });
         loadData();
       } else {
@@ -269,7 +281,8 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         showToast({
           type: 'error',
           title: '✕ Inward Failed',
-          subtitle: 'Please try again',
+          subtitle: result.message || 'Validation or database error',
+          duration: 2000,
         });
       }
 
@@ -284,12 +297,13 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
       console.log(`[SCAN PERF] Validation:   ${procMs}ms`);
       console.log(`[SCAN PERF] Total Time:   ${detMs + procMs}ms`);
       console.log(`[SCAN PERF] ========================================`);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Scan bundle error:', err);
       showToast({
         type: 'error',
         title: '✕ Inward Failed',
-        subtitle: 'Please try again',
+        subtitle: err?.message || 'Unexpected scanning error',
+        duration: 2000,
       });
     } finally {
       // STEP 11 & 12: Camera continuously available, immediately ready for next scan

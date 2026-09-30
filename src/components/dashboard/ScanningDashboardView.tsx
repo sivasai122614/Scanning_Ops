@@ -236,6 +236,14 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
 
+    // PART 6 & 15: IMMEDIATELY show "✓ Barcode Detected" at top
+    showToast({
+      type: 'info',
+      title: '✓ Barcode Detected',
+      subtitle: code,
+      duration: 800,
+    });
+
     const tProcStart = performance.now();
 
     try {
@@ -254,6 +262,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           type: 'error',
           title: '✕ Class ID Not Found',
           subtitle: result.detectedClassId || 'UNKNOWN',
+          duration: 1500,
         });
         return;
       }
@@ -265,6 +274,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           type: 'warning',
           title: '⚠ Wrong Class ID',
           subtitle: `Belongs to Class ${result.detectedClassId || 'UNKNOWN'}`,
+          duration: 1200,
         });
         return;
       }
@@ -276,6 +286,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           type: 'error',
           title: '✕ Member Not Found',
           subtitle: result.detectedMemberId || code,
+          duration: 1500,
         });
         return;
       }
@@ -287,6 +298,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           type: 'warning',
           title: '⚠ Already Inwarded',
           subtitle: result.member_id || code,
+          duration: 1200,
         });
         return;
       }
@@ -296,8 +308,9 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         playScanSuccessSound();
         showToast({
           type: 'success',
-          title: '✓ Member Inwarded Successfully',
+          title: '✓ Member Inwarded',
           subtitle: result.member_id || code,
+          duration: 1100,
         });
 
         // Move Class to top and update data
@@ -311,7 +324,8 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         showToast({
           type: 'error',
           title: '✕ Inward Failed',
-          subtitle: 'Please try again',
+          subtitle: result.message || 'Validation or database error',
+          duration: 2000,
         });
       }
 
@@ -326,12 +340,13 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
       console.log(`[SCAN PERF] Processing:     ${procMs}ms`);
       console.log(`[SCAN PERF] Total Time:     ${detMs + procMs}ms`);
       console.log(`[SCAN PERF] ========================================`);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Scan process error:', err);
       showToast({
         type: 'error',
         title: '✕ Inward Failed',
-        subtitle: 'Please try again',
+        subtitle: err?.message || 'Unexpected scanning error',
+        duration: 2000,
       });
     } finally {
       // PART 9: Ready for next scan

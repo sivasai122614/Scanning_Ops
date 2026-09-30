@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, AlertTriangle, AlertOctagon, X } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, AlertOctagon, ScanLine } from 'lucide-react';
 
 export interface ScannerToastData {
   type: 'success' | 'warning' | 'error' | 'info';
   title: string;
   subtitle?: string;
   id?: number | string;
+  duration?: number;
 }
 
 interface ScannerTopToastProps {
@@ -17,7 +18,7 @@ interface ScannerTopToastProps {
 export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
   toast,
   onDismiss,
-  duration = 1800,
+  duration = 1200,
 }) => {
   const [visible, setVisible] = useState(false);
 
@@ -28,10 +29,11 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
     }
 
     setVisible(true);
+    const activeDuration = toast.duration ?? duration ?? 1200;
     const timer = setTimeout(() => {
       setVisible(false);
       if (onDismiss) onDismiss();
-    }, duration);
+    }, activeDuration);
 
     return () => clearTimeout(timer);
   }, [toast, duration, onDismiss]);
@@ -41,6 +43,7 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
   const isSuccess = toast.type === 'success';
   const isWarning = toast.type === 'warning';
   const isError = toast.type === 'error';
+  const isInfo = toast.type === 'info';
 
   return (
     <div
@@ -54,6 +57,8 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
             ? 'bg-emerald-950/90 border-emerald-500/60 text-emerald-100 shadow-emerald-950/40'
             : isWarning
             ? 'bg-amber-950/90 border-amber-500/60 text-amber-100 shadow-amber-950/40'
+            : isInfo
+            ? 'bg-blue-950/90 border-blue-500/60 text-blue-100 shadow-blue-950/40'
             : 'bg-rose-950/90 border-rose-500/60 text-rose-100 shadow-rose-950/40'
         }`}
       >
@@ -66,6 +71,11 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
           {isWarning && (
             <div className="h-7 w-7 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-400/30">
               <AlertTriangle className="h-4 w-4 stroke-[2.5]" />
+            </div>
+          )}
+          {isInfo && (
+            <div className="h-7 w-7 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center border border-blue-400/30">
+              <ScanLine className="h-4 w-4 stroke-[2.5]" />
             </div>
           )}
           {isError && (
@@ -82,6 +92,8 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
                 ? 'text-emerald-200'
                 : isWarning
                 ? 'text-amber-200'
+                : isInfo
+                ? 'text-blue-200'
                 : 'text-rose-200'
             }`}
           >

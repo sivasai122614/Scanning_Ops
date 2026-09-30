@@ -15,6 +15,68 @@ import { normalizeIdentifier, sanitizeBarcode } from '../utils/normalize';
 
 export { normalizeIdentifier, sanitizeBarcode };
 
+/**
+ * Authoritative Barcode -> Member ID normalization function.
+ * Given a barcode like "002124EMBA1627" and Class ID "0021":
+ * Produces the exact canonical Member ID "24EMBA1627" expected by the database & manual inward workflow.
+ * Preserves leading zeros and keeps all identifiers strictly as strings.
+ */
+export function extractMemberIdFromBarcode(
+  rawInput: string,
+  activeClassId?: string,
+  knownImportedRecords?: ImportInwardedRecord[]
+): string {
+  const normalized = normalizeIdentifier(rawInput);
+  if (!normalized) return '';
+
+  const cleanCid = activeClassId ? normalizeIdentifier(activeClassId) : '';
+  const normLower = normalized.toLowerCase();
+  const cidLower = cleanCid.toLowerCase();
+
+  // 1. If known imported records are available:
+  if (knownImportedRecords && knownImportedRecords.length > 0) {
+    // If exact member_id match in active class exists, return it
+    const exactMem = knownImportedRecords.find(
+      r => (!cleanCid || normalizeIdentifier(r.class_id).toLowerCase() === cidLower) &&
+           normalizeIdentifier(r.member_id).toLowerCase() === normLower
+    );
+    if (exactMem) return normalizeIdentifier(exactMem.member_id);
+
+    // If exact barcode match in active class exists, return that record's member_id
+    const exactBar = knownImportedRecords.find(
+      r => (!cleanCid || normalizeIdentifier(r.class_id).toLowerCase() === cidLower) &&
+           r.barcode && normalizeIdentifier(r.barcode).toLowerCase() === normLower
+    );
+    if (exactBar) return normalizeIdentifier(exactBar.member_id);
+
+    // If starts with class ID, check if stripped suffix matches a member_id
+    if (cleanCid && normLower.startsWith(cidLower) && normalized.length > cleanCid.length) {
+      const stripped = normalized.slice(cleanCid.length);
+      const strippedMem = knownImportedRecords.find(
+        r => normalizeIdentifier(r.class_id).toLowerCase() === cidLower &&
+             normalizeIdentifier(r.member_id).toLowerCase() === stripped.toLowerCase()
+      );
+      if (strippedMem) return normalizeIdentifier(strippedMem.member_id);
+    }
+  }
+
+  // 2. If activeClassId is provided and barcode starts with it (e.g. "0021" + "24EMBA1627")
+  if (cleanCid && normLower.startsWith(cidLower) && normalized.length > cleanCid.length) {
+    return normalized.slice(cleanCid.length);
+  }
+
+  // 3. If barcode has 4-digit class prefix matching /^\d{4}/ and length > 4
+  if (normalized.length > 4 && /^\d{4}/.test(normalized)) {
+    const prefix4 = normalized.substring(0, 4);
+    if (!cleanCid || prefix4.toLowerCase() === cidLower) {
+      return normalized.substring(4);
+    }
+  }
+
+  // 4. Fallback to normalized input as string
+  return normalized;
+}
+
 export type BundleStatus = 'NOT STARTED' | 'IN PROGRESS' | 'COMPLETED' | 'PARTIAL / SAVED';
 
 export interface ClassBundle {
@@ -1369,6 +1431,15 @@ class ImportedService {
   }
 
   /**
+   * Helper to extract/normalize Member ID from a barcode or manual input.
+   * Format example: Barcode "002124EMBA1627" with Class ID "0021" -> Member ID "24EMBA1627".
+   * Preserves leading zeros and keeps all identifiers strictly as strings.
+   */
+  public extractMemberIdFromBarcode(rawInput: string, activeClassId?: string): string {
+    return extractMemberIdFromBarcode(rawInput, activeClassId, this.importInwarded);
+  }
+
+  /**
    * Unified authoritative lookup used by both Barcode Scanner and Manual Search.
    * Flow:
    * 1. Normalize barcode / input string (preserve leading zeros e.g. "0021", "002124EMBA1159")
@@ -1389,6 +1460,7 @@ class ImportedService {
     console.log('[SCANNER] Supabase lookup started');
     const cleanLower = normalized.toLowerCase();
     const cleanClass = optionalClassId ? normalizeIdentifier(optionalClassId) : undefined;
+    const extractedMid = this.extractMemberIdFromBarcode(normalized, cleanClass);
 
     // 1. Authoritative direct Supabase query FIRST
     if (isSupabaseConfigured) {
@@ -1432,6 +1504,46 @@ class ImportedService {
           }
 
           return { record: matchedRec };
+        }
+
+        // Step A2: Search imported_inward_data.member_id with extracted normalized member ID
+        if (extractedMid && extractedMid !== normalized) {
+          let qExt = supabase
+            .from('imported_inward_data')
+            .select('*')
+            .eq('member_id', extractedMid);
+          if (cleanClass) {
+            qExt = qExt.eq('class_id', cleanClass);
+          }
+          const { data: byExt, error: extErr } = await qExt.limit(1);
+          if (!extErr && byExt && byExt.length > 0) {
+            const row = byExt[0];
+            const matchedMemberId = normalizeIdentifier(row.member_id);
+            const matchedClassId = normalizeIdentifier(row.class_id);
+            console.log(`[SCANNER] Supabase lookup result: Found member ${matchedMemberId} for class ${matchedClassId} via normalized ID`);
+
+            const matchedRec: ImportInwardedRecord = {
+              id: row.id || `${matchedClassId}_${matchedMemberId}`,
+              import_session_id: row.import_session_id || 'default_session',
+              college_name: row.university_name || row.college_name || this.activeUniversity || '',
+              university_name: row.university_name || row.college_name || this.activeUniversity || '',
+              class_id: matchedClassId,
+              sch_id: row.sch_id,
+              member_id: matchedMemberId,
+              barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+              created_by: row.created_by,
+              created_at: row.created_at || new Date().toISOString(),
+            };
+
+            const existingIdx = this.importInwarded.findIndex(r => r.id === matchedRec.id);
+            if (existingIdx >= 0) {
+              this.importInwarded[existingIdx] = matchedRec;
+            } else {
+              this.importInwarded.push(matchedRec);
+            }
+
+            return { record: matchedRec };
+          }
         }
 
         // Step B: Case-insensitive ILIKE barcode
@@ -1549,6 +1661,7 @@ class ImportedService {
 
       // 3. Member ID fallback
       if (rMem === cleanLower) return true;
+      if (extractedMid && rMem === extractedMid.toLowerCase()) return true;
 
       return false;
     };
@@ -2718,73 +2831,86 @@ class ImportedService {
 
     const midLower = cleanMid.toLowerCase();
     const cidLower = cleanActiveCid.toLowerCase();
+    const extractedMid = this.extractMemberIdFromBarcode(cleanMid, cleanActiveCid);
+    const extractedLower = extractedMid.toLowerCase();
+    const strippedCandidate = midLower.startsWith(cidLower) ? midLower.slice(cidLower.length) : midLower;
 
-    // 1. Look for member strictly by member_id in local cache (public.imported_inward_data)
-    let foundRecord = this.importInwarded.find(r =>
-      normalizeIdentifier(r.member_id).toLowerCase() === midLower
+    // Helper to test if an import record matches the query
+    const matchRecord = (r: ImportInwardedRecord) => {
+      const rMem = normalizeIdentifier(r.member_id).toLowerCase();
+      const rBar = r.barcode ? normalizeIdentifier(r.barcode).toLowerCase() : '';
+      const rCls = normalizeIdentifier(r.class_id).toLowerCase();
+
+      // 1. Direct member_id match
+      if (rMem === midLower || rMem === extractedLower || rMem === strippedCandidate) return true;
+
+      // 2. Direct barcode match
+      if (rBar && (rBar === midLower || rBar === extractedLower || rBar === strippedCandidate)) return true;
+
+      // 3. Compound matches
+      if (`${rCls}${rMem}` === midLower || `${rCls}${rMem}` === extractedLower) return true;
+      if (`${rCls}_${rMem}` === midLower || `${rCls}_${rMem}` === extractedLower) return true;
+
+      // 4. Inward with active class prepended
+      if (`${cidLower}${rMem}` === midLower || `${cidLower}${rMem}` === extractedLower) return true;
+
+      return false;
+    };
+
+    // 1. First look in active class records (priority)
+    let foundRecord = this.importInwarded.find(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cidLower && matchRecord(r)
     );
 
-    // 2. If not found in memory, query public.imported_inward_data strictly by member_id
+    // 2. If not found in active class, look across all imported records (detects WRONG_CLASS)
+    if (!foundRecord) {
+      foundRecord = this.importInwarded.find(matchRecord);
+    }
+
+    // 3. If not found in memory, query Supabase imported_inward_data
     if (!foundRecord && isSupabaseConfigured) {
       try {
-        const { data, error } = await supabase
-          .from('imported_inward_data')
-          .select('*')
-          .eq('member_id', cleanMid)
-          .limit(1);
+        const queries = [
+          supabase.from('imported_inward_data').select('*').eq('member_id', cleanMid).limit(1),
+          supabase.from('imported_inward_data').select('*').eq('barcode', cleanMid).limit(1),
+        ];
 
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const row = data[0];
-          foundRecord = {
-            id: row.id || `${row.class_id}_${row.member_id}`,
-            import_session_id: row.import_session_id || 'default_session',
-            college_name: row.university_name || row.college_name || this.activeUniversity || '',
-            university_name: row.university_name || row.college_name || this.activeUniversity || '',
-            class_id: normalizeIdentifier(row.class_id),
-            sch_id: row.sch_id,
-            member_id: normalizeIdentifier(row.member_id),
-            barcode: row.barcode ? normalizeIdentifier(row.barcode) : undefined,
-            created_by: row.created_by,
-            created_at: row.created_at || new Date().toISOString(),
-          };
-          const existIdx = this.importInwarded.findIndex(r => r.id === foundRecord!.id);
-          if (existIdx >= 0) this.importInwarded[existIdx] = foundRecord;
-          else this.importInwarded.push(foundRecord);
+        if (extractedMid && extractedMid.toLowerCase() !== midLower) {
+          queries.push(
+            supabase.from('imported_inward_data').select('*').eq('member_id', extractedMid).limit(1)
+          );
+        }
+
+        if (strippedCandidate !== midLower && strippedCandidate !== extractedLower) {
+          queries.push(
+            supabase.from('imported_inward_data').select('*').eq('member_id', strippedCandidate).limit(1)
+          );
+        }
+
+        const results = await Promise.allSettled(queries);
+        for (const res of results) {
+          if (res.status === 'fulfilled' && res.value.data && res.value.data.length > 0) {
+            const row = res.value.data[0];
+            foundRecord = {
+              id: row.id || `${row.class_id}_${row.member_id}`,
+              import_session_id: row.import_session_id || 'default_session',
+              college_name: row.university_name || row.college_name || this.activeUniversity || '',
+              university_name: row.university_name || row.college_name || this.activeUniversity || '',
+              class_id: normalizeIdentifier(row.class_id),
+              sch_id: row.sch_id,
+              member_id: normalizeIdentifier(row.member_id),
+              barcode: row.barcode ? normalizeIdentifier(row.barcode) : undefined,
+              created_by: row.created_by,
+              created_at: row.created_at || new Date().toISOString(),
+            };
+            const existIdx = this.importInwarded.findIndex(r => r.id === foundRecord!.id);
+            if (existIdx >= 0) this.importInwarded[existIdx] = foundRecord;
+            else this.importInwarded.push(foundRecord);
+            break;
+          }
         }
       } catch (e) {
         console.warn('Supabase member_id lookup note:', e);
-      }
-    }
-
-    // Also check import_inwarded_data in Supabase if not found yet
-    if (!foundRecord && isSupabaseConfigured) {
-      try {
-        const { data: impData } = await supabase
-          .from('import_inwarded_data')
-          .select('*')
-          .eq('member_id', cleanMid)
-          .limit(1);
-
-        if (impData && Array.isArray(impData) && impData.length > 0) {
-          const row = impData[0];
-          foundRecord = {
-            id: row.id || `${row.class_id}_${row.member_id}`,
-            import_session_id: row.import_session_id || 'default_session',
-            college_name: row.university_name || row.college_name || this.activeUniversity || '',
-            university_name: row.university_name || row.college_name || this.activeUniversity || '',
-            class_id: normalizeIdentifier(row.class_id),
-            sch_id: row.sch_id,
-            member_id: normalizeIdentifier(row.member_id),
-            barcode: row.barcode ? normalizeIdentifier(row.barcode) : undefined,
-            created_by: row.created_by,
-            created_at: row.created_at || new Date().toISOString(),
-          };
-          const existIdx = this.importInwarded.findIndex(r => r.id === foundRecord!.id);
-          if (existIdx >= 0) this.importInwarded[existIdx] = foundRecord;
-          else this.importInwarded.push(foundRecord);
-        }
-      } catch {
-        // ignore
       }
     }
 
@@ -2814,36 +2940,53 @@ class ImportedService {
    * 2. saved_scanned_data
    * 3. pending scan_session_items
    */
-  public isMemberAlreadyInwarded(classId: string, memberId: string): boolean {
+  public isMemberAlreadyInwarded(classId: string, memberIdOrBarcode: string): boolean {
     const cleanCid = normalizeIdentifier(classId).toLowerCase();
-    const cleanMid = normalizeIdentifier(memberId).toLowerCase();
+    const cleanQuery = normalizeIdentifier(memberIdOrBarcode).toLowerCase();
+    const extractedMid = this.extractMemberIdFromBarcode(memberIdOrBarcode, classId).toLowerCase();
+    const strippedQuery = cleanQuery.startsWith(cleanCid) ? cleanQuery.slice(cleanCid.length) : cleanQuery;
 
-    // TASK 3: Authoritative verification — member must exist in imported_inward_data for this class
+    const matchesId = (candidateId: string, candidateBarcode?: string) => {
+      const cLower = candidateId.toLowerCase();
+      const bLower = candidateBarcode ? candidateBarcode.toLowerCase() : '';
+      return (
+        cLower === cleanQuery ||
+        cLower === extractedMid ||
+        cLower === strippedQuery ||
+        (cleanCid + cLower) === cleanQuery ||
+        (bLower && (bLower === cleanQuery || bLower === extractedMid || bLower === strippedQuery))
+      );
+    };
+
+    // 1. Authoritative verification: member must exist in imported_inward_data for this class
     const isImported = this.importInwarded.some(
       r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid &&
-           normalizeIdentifier(r.member_id).toLowerCase() === cleanMid
+           matchesId(normalizeIdentifier(r.member_id), r.barcode ? normalizeIdentifier(r.barcode) : undefined)
     );
     if (!isImported) return false;
 
-    // 1. Check saved_scanned_data
+    // 2. Check saved_scanned_data
     const isSaved = this.savedScanned.some(
       s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid &&
-           normalizeIdentifier(s.member_id).toLowerCase() === cleanMid
+           matchesId(normalizeIdentifier(s.member_id), s.barcode ? normalizeIdentifier(s.barcode) : undefined)
     );
     if (isSaved) return true;
 
-    // 2. Check manual_inward_data
+    // 3. Check manual_inward_data
     const isManual = this.manualInwarded.some(
       m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid &&
-           normalizeIdentifier(m.member_id || m.roll_number || '').toLowerCase() === cleanMid
+           matchesId(
+             normalizeIdentifier(m.member_id || m.roll_number || ''),
+             m.booklet_barcode ? normalizeIdentifier(m.booklet_barcode) : undefined
+           )
     );
     if (isManual) return true;
 
-    // 3. Check pending scan items
+    // 4. Check pending scan items
     const isPending = this.scanItems.some(
       i => normalizeIdentifier(i.class_id).toLowerCase() === cleanCid &&
-           normalizeIdentifier(i.member_id).toLowerCase() === cleanMid &&
-           i.status === 'PENDING_SAVE'
+           i.status === 'PENDING_SAVE' &&
+           matchesId(normalizeIdentifier(i.member_id), i.barcode ? normalizeIdentifier(i.barcode) : undefined)
     );
     if (isPending) return true;
 
@@ -2860,10 +3003,11 @@ class ImportedService {
   public async recordManualInward(
     classId: string,
     memberId: string,
-    options?: { notes?: string }
+    options?: { notes?: string; bookletBarcode?: string }
   ): Promise<{
     success: boolean;
     error?: string;
+    code?: string;
     record?: ManualInwardedRecord;
     bundle?: ClassBundle;
   }> {
@@ -2871,7 +3015,7 @@ class ImportedService {
     const cleanMid = normalizeIdentifier(memberId);
 
     if (!cleanCid || !cleanMid) {
-      return { success: false, error: 'Class ID and Member ID are required.' };
+      return { success: false, code: 'PARAM_MISSING', error: 'Class ID and Member ID are required.' };
     }
 
     // 1. Validation check against imported_inward_data
@@ -2879,12 +3023,14 @@ class ImportedService {
     if (validation.status === 'WRONG_CLASS') {
       return {
         success: false,
+        code: 'WRONG_CLASS',
         error: `Member belongs to another Class (${validation.actualClassId})`,
       };
     }
     if (validation.status === 'NOT_FOUND') {
       return {
         success: false,
+        code: 'NOT_FOUND',
         error: 'Member ID not found in this Class',
       };
     }
@@ -2893,6 +3039,7 @@ class ImportedService {
     if (this.isMemberAlreadyInwarded(cleanCid, cleanMid)) {
       return {
         success: false,
+        code: 'ALREADY_INWARDED',
         error: 'Member already inwarded',
       };
     }
@@ -2902,15 +3049,16 @@ class ImportedService {
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
     const targetRecord = validation.record;
+    const canonicalMid = targetRecord?.member_id ? normalizeIdentifier(targetRecord.member_id) : cleanMid;
 
     const newRecord: ManualInwardedRecord = {
       id: generateUUID(),
       session_code: session.id,
       bundle_code: `bundle_${cleanCid}`,
       class_id: cleanCid,
-      booklet_barcode: targetRecord?.barcode || cleanMid,
-      roll_number: cleanMid,
-      member_id: cleanMid,
+      booklet_barcode: options?.bookletBarcode || targetRecord?.barcode || cleanMid,
+      roll_number: canonicalMid,
+      member_id: canonicalMid,
       college_name: this.activeUniversity || targetRecord?.university_name || 'VIT',
       status: 'inwarded',
       inwarded_by: currentUser.name || 'Manual Inward',
@@ -2937,10 +3085,20 @@ class ImportedService {
         });
 
         if (insErr) {
-          console.warn('[ImportedService] manual_inward_data Supabase insert error:', insErr.message);
+          console.error('[ImportedService] Supabase manual_inward_data insert error:', insErr);
+          return {
+            success: false,
+            code: insErr.code,
+            error: insErr.message || 'Database insert failed',
+          };
         }
       } catch (err: any) {
-        console.warn('[ImportedService] manual_inward_data Supabase exception:', err?.message || err);
+        console.error('[ImportedService] manual_inward_data Supabase exception:', err);
+        return {
+          success: false,
+          code: err?.code || 'CONN_ERROR',
+          error: err?.message || 'Database connection error',
+        };
       }
     }
 

@@ -430,66 +430,144 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   };
 
   // ==============================================================================
+  // UNIFIED MEMBER INWARD PROCESSING (Source of Truth)
+  // Used by BOTH Camera Barcode Scanning and Manual Member ID Entry.
+  // Ensures identical validation, duplicate protection, Supabase insert, and toasts.
+  // ==============================================================================
+  const executeMemberInward = async (
+    targetClassId: string,
+    rawInputOrBarcode: string,
+    source: 'CAMERA' | 'MANUAL'
+  ): Promise<boolean> => {
+    const cleanCid = normalizeIdentifier(targetClassId);
+    const cleanRaw = sanitizeBarcode(rawInputOrBarcode);
+    if (!cleanCid || !cleanRaw) return false;
+
+    // PART 2: Normalize barcode to extract Member ID exactly as expected by manual inward
+    const extractedMid = importedService.extractMemberIdFromBarcode(cleanRaw, cleanCid);
+
+    console.log('[BARCODE FLOW] ========================================');
+    console.log('[BARCODE FLOW] Source:            ', source);
+    console.log('[BARCODE FLOW] Raw:               ', cleanRaw);
+    console.log('[BARCODE FLOW] Normalized barcode:', cleanRaw);
+    console.log('[BARCODE FLOW] Class ID:          ', cleanCid);
+    console.log('[BARCODE FLOW] Member ID:         ', extractedMid);
+
+    try {
+      // 1. Validate strictly against active class
+      const validation = await importedService.validateMemberForClass(cleanCid, extractedMid);
+      console.log('[BARCODE FLOW] Validation result: ', validation.status);
+
+      if (validation.status === 'WRONG_CLASS') {
+        playScanWarningSound();
+        console.warn(`[BARCODE FLOW] Class mismatch: Belongs to Class ${validation.actualClassId}`);
+        showToast({
+          type: 'warning',
+          title: '⚠ Wrong Class ID',
+          subtitle: `Belongs to Class ${validation.actualClassId || 'Other Class'}`,
+          duration: 1500,
+        });
+        return false;
+      }
+
+      if (validation.status === 'NOT_FOUND') {
+        playScanWarningSound();
+        console.warn(`[BARCODE FLOW] Member not found in imported dataset for ${extractedMid}`);
+        showToast({
+          type: 'error',
+          title: '✕ Member Not Found',
+          subtitle: extractedMid,
+          duration: 1500,
+        });
+        return false;
+      }
+
+      // Canonical member ID from imported record
+      const canonicalMemberId = validation.record
+        ? normalizeIdentifier(validation.record.member_id)
+        : extractedMid;
+      console.log('[BARCODE FLOW] Member ID:         ', canonicalMemberId);
+      console.log('[BARCODE FLOW] Validation:        PASS');
+
+      // 2. Duplicate Check
+      const alreadyInwarded = importedService.isMemberAlreadyInwarded(cleanCid, canonicalMemberId);
+      console.log('[BARCODE FLOW] Existing inward:   ', alreadyInwarded ? 'YES' : 'NO');
+
+      if (alreadyInwarded) {
+        playScanWarningSound();
+        showToast({
+          type: 'warning',
+          title: '⚠ Already Inwarded',
+          subtitle: canonicalMemberId,
+          duration: 1200,
+        });
+        return false;
+      }
+
+      // 3. Insert strictly into public.manual_inward_data
+      const res = await importedService.recordManualInward(cleanCid, canonicalMemberId, {
+        notes: source === 'CAMERA' ? 'Mobile Camera Inward' : 'Mobile Manual Inward',
+        bookletBarcode: cleanRaw,
+      });
+
+      if (res.success && res.record) {
+        console.log('[BARCODE FLOW] Insert:            PASS');
+        console.log('[BARCODE FLOW] Supabase operation: manual_inward_data insert success');
+        console.log('[LIVE STATUS] Inward operation successful');
+        playScanSuccessSound();
+        if (source === 'MANUAL') {
+          setManualInput('');
+        }
+        reconcileLiveStatus(cleanCid);
+
+        // Immediate fast non-blocking success toast (Part 14)
+        showToast({
+          type: 'success',
+          title: '✓ Member Inwarded',
+          subtitle: canonicalMemberId,
+          duration: 1100,
+        });
+        return true;
+      } else {
+        console.error('[BARCODE FLOW] Insert:            FAIL');
+        console.error('[BARCODE FLOW] Supabase error:    ', res.error);
+        console.error('[BARCODE FLOW] Error code:        ', res.code || 'INSERT_FAILED');
+        console.error('[BARCODE FLOW] Error message:     ', res.error || 'Failed to insert inward record');
+        playScanWarningSound();
+        showToast({
+          type: 'error',
+          title: '✕ Inward Failed',
+          subtitle: res.error || canonicalMemberId,
+          duration: 2000,
+        });
+        return false;
+      }
+    } catch (err: any) {
+      console.error('[BARCODE FLOW] Exception:         ', err?.message || err);
+      console.error('[BARCODE FLOW] Error code:        ', err?.code || 'UNHANDLED_EXCEPTION');
+      console.error('[BARCODE FLOW] Error message:     ', err?.message || err);
+      playScanWarningSound();
+      showToast({
+        type: 'error',
+        title: '✕ Inward Failed',
+        subtitle: err?.message || cleanRaw,
+        duration: 2000,
+      });
+      return false;
+    } finally {
+      console.log('[BARCODE FLOW] ========================================');
+    }
+  };
+
+  // ==============================================================================
   // STAGE 2 CAMERA SCAN: Detect Member ID
-  // Scans member barcode against imported_inward_data.barcode
-  // Validates member against currentClassId
-  // NEVER performs Class ID lookup in MEMBER_MODE
+  // Feeds camera-detected barcode directly into the unified inward function.
   // ==============================================================================
   const handleStage2MemberScan = async (code: string) => {
     const activeCid = selectedClassIdRef.current || selectedClassId;
     if (!activeCid) return;
 
-    console.log('[LIVE STATUS] Before inward');
-    console.log('[SCAN MODE] MEMBER_MODE');
-    const result: ScanResult = await importedService.processMobileMemberBarcodeScan(activeCid, code);
-
-    if (result.isWrongClass) {
-      playScanWarningSound();
-      showToast({
-        type: 'warning',
-        title: '⚠ Wrong Class ID',
-        subtitle: `Belongs to Class ${result.detectedClassId || 'Other Class'}`,
-      });
-      return;
-    }
-
-    if (result.isUnknownMember) {
-      playScanWarningSound();
-      showToast({
-        type: 'error',
-        title: '✕ Member Not Found',
-        subtitle: result.detectedMemberId || code,
-      });
-      return;
-    }
-
-    if (result.isDuplicate) {
-      playScanWarningSound();
-      showToast({
-        type: 'warning',
-        title: '⚠ Already Inwarded',
-        subtitle: result.member_id || code,
-      });
-      return;
-    }
-
-    if (result.success && result.member_id) {
-      console.log('[LIVE STATUS] Inward operation successful');
-      playScanSuccessSound();
-      reconcileLiveStatus(activeCid);
-      showToast({
-        type: 'success',
-        title: '✓ Member Inwarded Successfully',
-        subtitle: result.member_id,
-      });
-    } else {
-      playScanWarningSound();
-      showToast({
-        type: 'error',
-        title: '✕ Inward Failed',
-        subtitle: 'Please try again',
-      });
-    }
+    await executeMemberInward(activeCid, code, 'CAMERA');
   };
 
   // Router for Camera Scan depending on current Scanner Mode
@@ -515,6 +593,16 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
 
+    // PART 6 & 15: IMMEDIATELY show "✓ Barcode Detected" at top
+    if (scannerModeRef.current === 'MEMBER_MODE') {
+      showToast({
+        type: 'info',
+        title: '✓ Barcode Detected',
+        subtitle: code,
+        duration: 800,
+      });
+    }
+
     const tProcStart = performance.now();
 
     try {
@@ -536,12 +624,13 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       console.log(`[SCAN PERF] Inward/DB:   ${procMs}ms`);
       console.log(`[SCAN PERF] Total Time:  ${detMs + procMs}ms`);
       console.log(`[SCAN PERF] ========================================`);
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[MobileScanner] scan error:', e);
       showToast({
         type: 'error',
         title: '✕ Inward Failed',
-        subtitle: 'Please try again',
+        subtitle: e?.message || 'Scanner processing error',
+        duration: 2000,
       });
     } finally {
       // STEP 11 & 12: Camera continuously available, immediately unlock for next barcode
@@ -552,7 +641,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // ==============================================================================
   // MANUAL BARCODE / IDENTIFIER ENTRY
   // Context-aware: CLASS_MODE vs MEMBER_MODE
-  // In MEMBER_MODE: NEVER performs Class ID lookup, validates member for current class
+  // In MEMBER_MODE: Calls the same unified executeMemberInward function
   // ==============================================================================
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -590,83 +679,25 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             type: 'error',
             title: '✕ Class Not Found',
             subtitle: `ID: ${cleanCid} — Not found in imported records`,
+            duration: 1500,
           });
         }
       }
       // ----------------------------------------------------
       // CASE 2: MEMBER_MODE — Input is for MEMBER ID ONLY
-      // Validates against imported_inward_data WHERE class_id = selectedClassId AND member_id = enteredMemberId
-      // Inserts strictly into public.manual_inward_data
+      // Calls unified executeMemberInward (source of truth)
       // ----------------------------------------------------
       else if (mode === 'MEMBER_MODE' && (selectedClassIdRef.current || selectedClassId)) {
         const curClass = (selectedClassIdRef.current || selectedClassId)!;
-        console.log('[LIVE STATUS] Before inward');
-        console.log('[SCAN MODE] MEMBER_MODE');
-        console.log('[MEMBER MANUAL] Input member ID:', inputVal);
-        console.log('[MEMBER MANUAL] Current class ID:', curClass);
-
-        // Validate strictly against current class
-        const validation = await importedService.validateMemberForClass(curClass, inputVal);
-
-        if (validation.status === 'WRONG_CLASS') {
-          playScanWarningSound();
-          showToast({
-            type: 'warning',
-            title: '⚠ Wrong Class ID',
-            subtitle: `Belongs to Class ${validation.actualClassId || 'Other Class'}`,
-          });
-          return;
-        }
-
-        if (validation.status === 'NOT_FOUND') {
-          playScanWarningSound();
-          showToast({
-            type: 'error',
-            title: '✕ Member Not Found',
-            subtitle: inputVal,
-          });
-          return;
-        }
-
-        // Duplicate Check
-        if (importedService.isMemberAlreadyInwarded(curClass, inputVal)) {
-          playScanWarningSound();
-          showToast({
-            type: 'warning',
-            title: '⚠ Already Inwarded',
-            subtitle: inputVal,
-          });
-          return;
-        }
-
-        // Insert into public.manual_inward_data
-        const res = await importedService.recordManualInward(curClass, inputVal);
-
-        if (res.success && res.record) {
-          console.log('[LIVE STATUS] Inward operation successful');
-          playScanSuccessSound();
-          setManualInput('');
-          reconcileLiveStatus(curClass);
-          showToast({
-            type: 'success',
-            title: '✓ Member Inwarded Successfully',
-            subtitle: inputVal,
-          });
-        } else {
-          playScanWarningSound();
-          showToast({
-            type: 'error',
-            title: '✕ Inward Failed',
-            subtitle: res.error || 'Please try again',
-          });
-        }
+        await executeMemberInward(curClass, inputVal, 'MANUAL');
       }
     } catch (err: any) {
       console.warn('Manual submit error:', err);
       showToast({
         type: 'error',
         title: '✕ Inward Failed',
-        subtitle: err?.message || 'Please try again',
+        subtitle: err?.message || 'Manual entry error',
+        duration: 2000,
       });
     } finally {
       setIsSubmittingManual(false);
