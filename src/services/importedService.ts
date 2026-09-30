@@ -489,6 +489,11 @@ class ImportedService {
         )
         .on(
           'postgres_changes',
+          { event: '*', schema: 'public', table: 'saved_scan_data' },
+          (payload) => this.handleRealtimeEvent('saved_scan_data', payload)
+        )
+        .on(
+          'postgres_changes',
           { event: '*', schema: 'public', table: 'scan_sessions' },
           (payload) => this.handleRealtimeEvent('scan_sessions', payload)
         )
@@ -552,17 +557,17 @@ class ImportedService {
           stateChanged = true;
         }
       }
-    } else if (table === 'saved_scanned_data') {
+    } else if (table === 'saved_scanned_data' || table === 'saved_scan_data') {
       if (eventType === 'INSERT' && newRecord) {
         if (!this.savedScanned.some(s => s.id === newRecord.id)) {
           this.savedScanned.push({
             id: newRecord.id,
-            scan_session_id: newRecord.scan_session_id,
-            import_session_id: newRecord.import_session_id,
+            scan_session_id: newRecord.scan_session_id || newRecord.session_id,
+            import_session_id: newRecord.import_session_id || newRecord.import_batch_id,
             college_name: newRecord.college_name || this.activeUniversity,
             class_id: String(newRecord.class_id).trim(),
             sch_id: newRecord.sch_id,
-            member_id: String(newRecord.member_id).trim(),
+            member_id: String(newRecord.member_id || newRecord.mem_id).trim(),
             barcode: newRecord.barcode,
             scanned_by: newRecord.scanned_by,
             scanned_at: newRecord.scanned_at,
@@ -782,6 +787,7 @@ class ImportedService {
             try {
               // Delete orphaned records when imported reference dataset was completely deleted
               await supabase.from('saved_scanned_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+              try { await supabase.from('saved_scan_data').delete().neq('id', '00000000-0000-0000-0000-000000000000'); } catch {}
               await supabase.from('manual_inward_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               await supabase.from('scan_session_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               await supabase.from('scan_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
@@ -820,10 +826,40 @@ class ImportedService {
         this.saveToLocalStorage();
       }
 
-      // 4. Fetch saved_scanned_data
+      // 4. Fetch saved_scanned_data (and check saved_scan_data)
+      let combinedSaved: any[] = [];
       const { data: savedData, error: savedErr } = await supabase.from('saved_scanned_data').select('*').limit(50000);
       if (!savedErr && savedData !== null && Array.isArray(savedData)) {
-        this.savedScanned = savedData.map((s: any) => ({
+        combinedSaved.push(...savedData);
+      }
+      try {
+        const { data: altData, error: altErr } = await supabase.from('saved_scan_data').select('*').limit(50000);
+        if (!altErr && altData !== null && Array.isArray(altData)) {
+          const existingIds = new Set(combinedSaved.map(s => s.id));
+          for (const s of altData) {
+            if (!existingIds.has(s.id)) {
+              combinedSaved.push({
+                id: s.id,
+                scan_session_id: s.session_id,
+                import_session_id: s.import_batch_id,
+                college_name: s.college_name,
+                class_id: s.class_id,
+                sch_id: s.sch_id,
+                member_id: s.member_id || s.mem_id,
+                barcode: s.barcode,
+                scanned_by: s.scanned_by,
+                scanned_at: s.scanned_at,
+                saved_by: s.saved_by,
+                saved_at: s.saved_at,
+                status: s.status,
+              });
+            }
+          }
+        }
+      } catch {}
+
+      if (combinedSaved.length > 0) {
+        this.savedScanned = combinedSaved.map((s: any) => ({
           id: s.id,
           scan_session_id: s.scan_session_id,
           import_session_id: s.import_session_id,
@@ -2012,7 +2048,9 @@ class ImportedService {
 
   // ==============================================================================
   // SAVE WORKFLOW (Requirements 5, 6, 7, 13)
-  // Commits PENDING_SAVE records to Table 4: saved_scanned_data
+  // ==============================================================================
+  // SAVE WORKFLOW (Requirements 5, 6, 7, 13)
+  // Commits inwarded & pending records to Table 4: saved_scanned_data / saved_scan_data
   // Database-level uniqueness prevents duplicates
   // Strict Supabase confirmation before marking as SAVED
   // ==============================================================================
@@ -2024,61 +2062,25 @@ class ImportedService {
     bundle?: ClassBundle;
     error?: string;
   }> {
-    const cleanCid = classId.trim();
-    const pendingForClass = this.scanItems.filter(
-      i => i.class_id.toLowerCase() === cleanCid.toLowerCase() && i.status === 'PENDING_SAVE'
-    );
-
-    if (pendingForClass.length === 0) {
-      const now = new Date().toISOString();
-      const currentUser = getCurrentUser();
-      const session = await this.ensureScanSession(cleanCid);
-      const expectedTotal = this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase()).length;
-      const totalSavedForThisClass = this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()).length +
-        this.manualInwarded.filter(m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid.toLowerCase()).length;
-
-      if (session) {
-        session.saved_at = now;
-        session.saved_by = currentUser.name;
-        if (totalSavedForThisClass >= expectedTotal && expectedTotal > 0) {
-          session.status = 'COMPLETED';
-        } else {
-          session.status = 'SAVED';
-        }
-        if (isSupabaseConfigured) {
-          try {
-            await supabase.from('scan_sessions').upsert({
-              id: session.id,
-              college_name: session.college_name,
-              import_session_id: session.import_session_id,
-              class_id: session.class_id,
-              status: session.status,
-              saved_at: now,
-              saved_by: currentUser.name,
-              last_activity_at: now,
-            });
-          } catch {}
-        }
-      }
-
-      this.saveToLocalStorage();
-      this.notify();
-
-      return {
-        success: true,
-        savedCount: 0,
-        totalSavedForClass: totalSavedForThisClass,
-        message: `Class ${cleanCid} inward saved successfully (${totalSavedForThisClass} inwarded).`,
-        bundle: this.getClassBundle(cleanCid) || undefined,
-      };
-    }
-
-    // Requirement 13: Offline guard — do not claim save succeeded if offline
-    if (typeof navigator !== 'undefined' && !navigator.onLine && isSupabaseConfigured) {
+    const cleanCid = normalizeIdentifier(classId);
+    if (!cleanCid) {
       return {
         success: false,
         savedCount: 0,
-        totalSavedForClass: this.savedScanned.filter(s => s.class_id.toLowerCase() === cleanCid.toLowerCase()).length,
+        totalSavedForClass: 0,
+        message: 'Invalid Class ID',
+        error: 'Class ID is required',
+      };
+    }
+
+    console.log(`[SAVE CLASS BUNDLE] Starting save operation for Class ID: "${cleanCid}"`);
+
+    // Requirement 13: Offline guard — do not claim save succeeded if offline
+    if (typeof navigator !== 'undefined' && navigator.onLine === false && isSupabaseConfigured) {
+      return {
+        success: false,
+        savedCount: 0,
+        totalSavedForClass: this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()).length,
         message: 'Network offline: Cannot commit records to Supabase. Items remain staged in PENDING_SAVE.',
         error: 'Network connection lost.',
       };
@@ -2086,26 +2088,109 @@ class ImportedService {
 
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
-    const existingSession = this.scanSessions.find(
-      s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()
-    );
+
+    // 1. Ensure or retrieve the active scan session for this class
+    const session = await this.ensureScanSession(cleanCid);
+    let validSessionId: string | null = null;
+
+    if (session && session.id) {
+      // Validate that session.id is a UUID (not a random string)
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id);
+      if (isUuid) {
+        validSessionId = session.id;
+      }
+    }
+
+    // Ensure scan_sessions record exists in Supabase so foreign key constraints succeed
+    if (isSupabaseConfigured && validSessionId) {
+      try {
+        await supabase.from('scan_sessions').upsert({
+          id: validSessionId,
+          college_name: session?.college_name || this.activeUniversity || 'General University',
+          import_session_id: session?.import_session_id || this.activeSessionId || null,
+          class_id: cleanCid,
+          started_by: session?.started_by || currentUser.name,
+          started_at: session?.started_at || now,
+          status: 'ACTIVE',
+          last_activity_at: now,
+        }, { onConflict: 'id' });
+      } catch (sessUpsertErr) {
+        console.warn('[SAVE CLASS BUNDLE] Note on session upsert:', sessUpsertErr);
+      }
+    }
+
+    // University / College name resolution
     const uni: string =
       this.activeUniversity ||
-      existingSession?.college_name ||
+      session?.college_name ||
       this.importInwarded.find(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase())?.university_name ||
-      'VIT';
-    const session = existingSession;
-    const sessId = session?.id || generateUUID();
+      'General University';
 
-    // Existing saved keys for uniqueness check: college_name + class_id + member_id
-    const existingSavedKeys = new Set(
-      this.savedScanned.map(s => `${s.college_name.toLowerCase()}::${s.class_id.toLowerCase()}::${s.member_id.toLowerCase()}`)
+    // 2. Identify all inwarded items for this class across all sources:
+    // Source A: scanItems (pending scans)
+    const pendingScanItems = this.scanItems.filter(
+      i => normalizeIdentifier(i.class_id).toLowerCase() === cleanCid.toLowerCase() && i.status === 'PENDING_SAVE'
     );
 
-    const newSavedRecords: SavedScannedRecord[] = [];
+    // Source B: in-memory manualInwarded
+    const inMemManual = this.manualInwarded.filter(
+      m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid.toLowerCase()
+    );
 
-    for (const item of pendingForClass) {
-      // The member ID must come from the matching row in imported_inward_data
+    // Source C: Supabase manual_inward_data
+    let dbManualItems: any[] = [];
+    if (isSupabaseConfigured) {
+      try {
+        const { data: dbData, error: dbErr } = await supabase
+          .from('manual_inward_data')
+          .select('*')
+          .eq('class_id', cleanCid);
+        if (!dbErr && dbData && Array.isArray(dbData)) {
+          dbManualItems = dbData;
+        }
+      } catch (fetchErr) {
+        console.warn('[SAVE CLASS BUNDLE] Note fetching db manual inward:', fetchErr);
+      }
+    }
+
+    // 3. Get existing saved member IDs to prevent duplicates
+    const existingSavedKeys = new Set(
+      this.savedScanned
+        .filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase())
+        .map(s => `${uni.toLowerCase()}::${cleanCid.toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
+    );
+
+    // Also check Supabase saved_scanned_data
+    if (isSupabaseConfigured) {
+      try {
+        const { data: dbSaved } = await supabase
+          .from('saved_scanned_data')
+          .select('member_id, college_name')
+          .eq('class_id', cleanCid);
+        if (dbSaved && Array.isArray(dbSaved)) {
+          for (const s of dbSaved) {
+            const cName = (s.college_name || uni).toLowerCase();
+            const mId = normalizeIdentifier(s.member_id).toLowerCase();
+            existingSavedKeys.add(`${cName}::${cleanCid.toLowerCase()}::${mId}`);
+          }
+        }
+      } catch (dbSavedErr) {
+        console.warn('[SAVE CLASS BUNDLE] Note checking existing saved:', dbSavedErr);
+      }
+    }
+
+    // 4. Build unified list of candidate records to save
+    const candidatesByMemberId = new Map<string, {
+      memberId: string;
+      barcode?: string | null;
+      scannedBy: string;
+      scannedAt: string;
+      schoolId?: string | null;
+      sourceItemId?: string;
+    }>();
+
+    // Add from scanItems
+    for (const item of pendingScanItems) {
       const matchingImport = this.importInwarded.find(r =>
         normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
         (
@@ -2113,110 +2198,251 @@ class ImportedService {
           normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(item.member_id).toLowerCase()
         )
       );
-      const targetMemberId = matchingImport ? normalizeIdentifier(matchingImport.member_id) : normalizeIdentifier(item.member_id);
-      const targetBarcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.barcode ? normalizeIdentifier(item.barcode) : null);
+      const targetMid = matchingImport ? normalizeIdentifier(matchingImport.member_id) : normalizeIdentifier(item.member_id);
+      const targetBcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.barcode ? normalizeIdentifier(item.barcode) : targetMid);
 
-      const key = `${uni.toLowerCase()}::${cleanCid.toLowerCase()}::${targetMemberId.toLowerCase()}`;
-      if (!existingSavedKeys.has(key)) {
-        existingSavedKeys.add(key);
-        newSavedRecords.push({
-          id: generateUUID(),
-          scan_session_id: sessId,
-          import_session_id: session?.import_session_id || this.activeSessionId || 'default_sess',
-          college_name: uni,
-          class_id: cleanCid,
-          member_id: targetMemberId,
-          barcode: targetBarcode,
-          scanned_by: item.detected_by || currentUser.name || 'Operator',
-          scanned_at: item.detected_at || now,
-          saved_by: currentUser.name || 'Operator',
-          saved_at: now,
-          status: 'SAVED',
+      if (!candidatesByMemberId.has(targetMid.toLowerCase())) {
+        candidatesByMemberId.set(targetMid.toLowerCase(), {
+          memberId: targetMid,
+          barcode: targetBcode,
+          scannedBy: item.detected_by || currentUser.name || 'Operator',
+          scannedAt: item.detected_at || now,
+          sourceItemId: item.id,
         });
       }
     }
 
-    // Persist finalized saved records to Supabase table saved_scanned_data
-    if (isSupabaseConfigured && newSavedRecords.length > 0) {
-      try {
-        for (let i = 0; i < newSavedRecords.length; i += BATCH_SIZE) {
-          const chunk = newSavedRecords.slice(i, i + BATCH_SIZE);
-          const { error: insErr } = await supabase.from('saved_scanned_data').insert(chunk);
-          if (insErr) {
-            console.warn('[ImportedService] Supabase saved_scanned_data insert note:', insErr.message);
-          }
-        }
+    // Add from in-memory manualInwarded
+    for (const item of inMemManual) {
+      const mid = normalizeIdentifier(item.member_id || item.roll_number || item.booklet_barcode || '');
+      if (!mid) continue;
+      const matchingImport = this.importInwarded.find(r =>
+        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
+        (
+          normalizeIdentifier(r.member_id).toLowerCase() === mid.toLowerCase() ||
+          (r.barcode && item.booklet_barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalizeIdentifier(item.booklet_barcode).toLowerCase())
+        )
+      );
+      const targetMid = matchingImport ? normalizeIdentifier(matchingImport.member_id) : mid;
+      const targetBcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.booklet_barcode ? normalizeIdentifier(item.booklet_barcode) : targetMid);
 
-        // Update scan_sessions in Supabase
-        if (session) {
-          session.saved_at = now;
-          session.saved_by = currentUser.name;
-          const expectedTotal = this.importInwarded.filter(r => r.class_id.toLowerCase() === cleanCid.toLowerCase()).length;
-          const futureSavedCount = this.savedScanned.filter(s => s.class_id.toLowerCase() === cleanCid.toLowerCase()).length + newSavedRecords.length;
-          if (futureSavedCount >= expectedTotal && expectedTotal > 0) {
-            session.status = 'COMPLETED';
-          } else {
-            session.status = 'SAVED';
-          }
-
-          try {
-            await supabase.from('scan_sessions').upsert({
-              id: session.id,
-              college_name: session.college_name,
-              import_session_id: session.import_session_id,
-              class_id: session.class_id,
-              status: session.status,
-              saved_at: now,
-              saved_by: currentUser.name,
-              last_activity_at: now,
-            });
-          } catch {}
-        }
-
-        // Update status of items in scan_session_items to SAVED in Supabase if table exists
-        try {
-          const itemIds = pendingForClass.map(i => i.id);
-          if (itemIds.length > 0) {
-            await supabase
-              .from('scan_session_items')
-              .update({ status: 'SAVED' })
-              .in('id', itemIds);
-          }
-        } catch {}
-      } catch (err: any) {
-        console.warn('[ImportedService] Supabase save notice:', err.message || err);
+      if (!candidatesByMemberId.has(targetMid.toLowerCase())) {
+        candidatesByMemberId.set(targetMid.toLowerCase(), {
+          memberId: targetMid,
+          barcode: targetBcode,
+          scannedBy: item.inwarded_by || currentUser.name || 'Operator',
+          scannedAt: item.scanned_at || item.created_at || now,
+          schoolId: item.school_id,
+        });
       }
     }
 
-    // Only after Supabase confirmation: transition items to SAVED in memory & local storage
-    for (const item of pendingForClass) {
+    // Add from Supabase manual_inward_data
+    for (const item of dbManualItems) {
+      const mid = normalizeIdentifier(item.roll_number || item.booklet_barcode || '');
+      if (!mid) continue;
+      const matchingImport = this.importInwarded.find(r =>
+        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
+        (
+          normalizeIdentifier(r.member_id).toLowerCase() === mid.toLowerCase() ||
+          (r.barcode && item.booklet_barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalizeIdentifier(item.booklet_barcode).toLowerCase())
+        )
+      );
+      const targetMid = matchingImport ? normalizeIdentifier(matchingImport.member_id) : mid;
+      const targetBcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.booklet_barcode ? normalizeIdentifier(item.booklet_barcode) : targetMid);
+
+      if (!candidatesByMemberId.has(targetMid.toLowerCase())) {
+        candidatesByMemberId.set(targetMid.toLowerCase(), {
+          memberId: targetMid,
+          barcode: targetBcode,
+          scannedBy: item.inwarded_by || currentUser.name || 'Operator',
+          scannedAt: item.scanned_at || item.created_at || now,
+          schoolId: item.school_id,
+        });
+      }
+    }
+
+    // Filter out candidates that have already been saved
+    const newSavedRecords: SavedScannedRecord[] = [];
+    const scannedDbRows: any[] = [];
+    const scanDataDbRows: any[] = [];
+
+    for (const candidate of candidatesByMemberId.values()) {
+      const key = `${uni.toLowerCase()}::${cleanCid.toLowerCase()}::${candidate.memberId.toLowerCase()}`;
+      if (existingSavedKeys.has(key)) {
+        continue;
+      }
+      existingSavedKeys.add(key);
+
+      const recordId = generateUUID();
+
+      // In-memory model
+      newSavedRecords.push({
+        id: recordId,
+        scan_session_id: validSessionId || undefined,
+        import_session_id: session?.import_session_id || this.activeSessionId || undefined,
+        college_name: uni,
+        class_id: cleanCid,
+        sch_id: candidate.schoolId || undefined,
+        member_id: candidate.memberId,
+        barcode: candidate.barcode || candidate.memberId,
+        scanned_by: candidate.scannedBy,
+        scanned_at: candidate.scannedAt,
+        saved_by: currentUser.name || 'Operator',
+        saved_at: now,
+        status: 'SAVED',
+      });
+
+      // DB row for public.saved_scanned_data
+      scannedDbRows.push({
+        id: recordId,
+        scan_session_id: validSessionId,
+        import_session_id: session?.import_session_id || this.activeSessionId || null,
+        college_name: uni,
+        class_id: cleanCid,
+        member_id: candidate.memberId,
+        barcode: candidate.barcode || candidate.memberId,
+        scanned_by: candidate.scannedBy,
+        scanned_at: candidate.scannedAt,
+        saved_by: currentUser.name || 'Operator',
+        saved_at: now,
+        status: 'SAVED',
+      });
+
+      // DB row for public.saved_scan_data
+      scanDataDbRows.push({
+        id: recordId,
+        session_id: validSessionId || cleanCid,
+        import_batch_id: session?.import_session_id || this.activeSessionId || null,
+        college_name: uni,
+        class_id: cleanCid,
+        sch_id: candidate.schoolId || null,
+        mem_id: candidate.memberId,
+        member_id: candidate.memberId,
+        barcode: candidate.barcode || candidate.memberId,
+        scanned_by: candidate.scannedBy,
+        scanned_at: candidate.scannedAt,
+        saved_by: currentUser.name || 'Operator',
+        saved_at: now,
+        status: 'SAVED',
+      });
+    }
+
+    console.log(`[SAVE CLASS BUNDLE] New records to commit: ${newSavedRecords.length} (Candidates found: ${candidatesByMemberId.size})`);
+
+    // 5. Persist to Supabase
+    if (isSupabaseConfigured && scannedDbRows.length > 0) {
+      let anyInsertSucceeded = false;
+      let lastErrorMessage = '';
+
+      // Primary target: public.saved_scan_data (per prompt)
+      try {
+        for (let i = 0; i < scanDataDbRows.length; i += BATCH_SIZE) {
+          const chunk = scanDataDbRows.slice(i, i + BATCH_SIZE);
+          const { error: insErr1 } = await supabase.from('saved_scan_data').insert(chunk);
+          if (!insErr1) {
+            anyInsertSucceeded = true;
+            console.log('[SAVE CLASS BUNDLE] ✓ Inserted into saved_scan_data');
+          } else {
+            console.warn('[SAVE CLASS BUNDLE] saved_scan_data note:', insErr1.message);
+          }
+        }
+      } catch (err1: any) {
+        console.warn('[SAVE CLASS BUNDLE] saved_scan_data note:', err1?.message || err1);
+      }
+
+      // Secondary target: public.saved_scanned_data
+      try {
+        for (let i = 0; i < scannedDbRows.length; i += BATCH_SIZE) {
+          const chunk = scannedDbRows.slice(i, i + BATCH_SIZE);
+          const { error: insErr2 } = await supabase.from('saved_scanned_data').insert(chunk);
+          if (!insErr2) {
+            anyInsertSucceeded = true;
+            console.log('[SAVE CLASS BUNDLE] ✓ Inserted into saved_scanned_data');
+          } else {
+            console.error('[SAVE CLASS BUNDLE] saved_scanned_data insert error:', insErr2);
+            lastErrorMessage = insErr2.message;
+          }
+        }
+      } catch (err2: any) {
+        console.error('[SAVE CLASS BUNDLE] saved_scanned_data exception:', err2);
+        lastErrorMessage = err2?.message || String(err2);
+      }
+
+      if (!anyInsertSucceeded && scannedDbRows.length > 0) {
+        console.error('[SAVE CLASS BUNDLE] Fatal: Neither table accepted records! Error:', lastErrorMessage);
+        return {
+          success: false,
+          savedCount: 0,
+          totalSavedForClass: this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()).length,
+          message: `Failed to commit saved records: ${lastErrorMessage}`,
+          error: lastErrorMessage || 'Database insert failed',
+        };
+      }
+    }
+
+    // 6. Update in-memory state
+    if (newSavedRecords.length > 0) {
+      this.savedScanned.push(...newSavedRecords);
+    }
+
+    for (const item of pendingScanItems) {
       item.status = 'SAVED';
     }
-    this.savedScanned.push(...newSavedRecords);
+
+    // Update scan_session_items in Supabase if exists
+    if (isSupabaseConfigured && pendingScanItems.length > 0) {
+      try {
+        const itemIds = pendingScanItems.map(i => i.id);
+        await supabase.from('scan_session_items').update({ status: 'SAVED' }).in('id', itemIds);
+      } catch {}
+    }
+
+    // 7. Update scan_sessions status
+    const expectedTotal = this.importInwarded.filter(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase()
+    ).length;
+    const totalSavedForThisClass = this.savedScanned.filter(
+      s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()
+    ).length;
+
+    const newStatus = (totalSavedForThisClass >= expectedTotal && expectedTotal > 0) ? 'COMPLETED' : 'SAVED';
 
     if (session) {
       session.saved_at = now;
       session.saved_by = currentUser.name;
-      const expectedTotal = this.importInwarded.filter(r => r.class_id.toLowerCase() === cleanCid.toLowerCase()).length;
-      const totalSavedForThisClass = this.savedScanned.filter(s => s.class_id.toLowerCase() === cleanCid.toLowerCase()).length;
-      if (totalSavedForThisClass >= expectedTotal && expectedTotal > 0) {
-        session.status = 'COMPLETED';
-      } else {
-        session.status = 'SAVED';
+      session.status = newStatus;
+      session.last_activity_at = now;
+
+      if (isSupabaseConfigured && validSessionId) {
+        try {
+          await supabase.from('scan_sessions').upsert({
+            id: validSessionId,
+            college_name: session.college_name || uni,
+            import_session_id: session.import_session_id || this.activeSessionId || null,
+            class_id: cleanCid,
+            status: newStatus,
+            saved_at: now,
+            saved_by: currentUser.name,
+            last_activity_at: now,
+          }, { onConflict: 'id' });
+        } catch (sessUpErr) {
+          console.warn('[SAVE CLASS BUNDLE] Note on session final status upsert:', sessUpErr);
+        }
       }
     }
 
     this.saveToLocalStorage();
+    this.notify();
 
-    const updatedBundle = this.getClassBundle(cleanCid);
-    const totalSavedForClass = this.savedScanned.filter(s => s.class_id.toLowerCase() === cleanCid.toLowerCase()).length;
+    console.log(`[SAVE CLASS BUNDLE] Success! Saved count: ${newSavedRecords.length}, Total for class: ${totalSavedForThisClass}/${expectedTotal}`);
 
     return {
       success: true,
       savedCount: newSavedRecords.length,
-      totalSavedForClass,
-      message: `${newSavedRecords.length} booklets saved successfully to database.`,
-      bundle: updatedBundle || undefined,
+      totalSavedForClass: totalSavedForThisClass,
+      message: `Class ${cleanCid} inward saved successfully (${newSavedRecords.length} new records committed, total: ${totalSavedForThisClass}).`,
+      bundle: this.getClassBundle(cleanCid) || undefined,
     };
   }
 
@@ -2443,6 +2669,7 @@ class ImportedService {
       try {
         const classList = Array.from(importedClasses);
         await supabase.from('saved_scanned_data').delete().in('class_id', classList);
+        try { await supabase.from('saved_scan_data').delete().in('class_id', classList); } catch {}
         await supabase.from('manual_inward_data').delete().in('class_id', classList);
         await supabase.from('scan_session_items').delete().in('class_id', classList);
         await supabase.from('scan_sessions').delete().in('class_id', classList);

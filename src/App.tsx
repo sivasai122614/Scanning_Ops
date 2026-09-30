@@ -50,6 +50,7 @@ const PATH_TO_VIEW_MAP: Record<string, ActiveView> = {
   '/sessions': 'sessions',
   '/admin/scan': 'scan',
   '/scan': 'scan',
+  '/inward/scan': 'scan',
   '/admin/reports': 'reports',
   '/reports': 'reports',
   '/admin/settings': 'more',
@@ -104,9 +105,11 @@ const InwardScannerApp: React.FC = () => {
     const enforceInwardUrl = () => {
       const currentPath = window.location.pathname;
       if (currentPath !== '/inward/scan') {
-        setDeniedToast(`Access Denied: Inward role cannot access "${currentPath}". Redirected to /inward/scan.`);
+        if (currentPath !== '/login' && currentPath !== '/') {
+          setDeniedToast(`Access Denied: Inward role cannot access "${currentPath}". Redirected to /inward/scan.`);
+          setTimeout(() => setDeniedToast(null), 4000);
+        }
         window.history.replaceState(null, '', '/inward/scan');
-        setTimeout(() => setDeniedToast(null), 4000);
       }
     };
 
