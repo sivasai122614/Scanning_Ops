@@ -375,43 +375,18 @@ class ImportedService {
    */
   public reconcileInwardStateWithImportedData() {
     if (this.importInwarded.length === 0) {
-      this.savedScanned = [];
-      this.manualInwarded = [];
-      this.scanItems = [];
-      this.scanSessions = [];
-      this.importSessions = [];
-      this.classOrder = [];
-      this.activeSessionId = null;
-      this.saveToLocalStorage();
       return;
     }
 
+    // Historical saved scans and manual inward records represent permanent operational history
+    // and MUST NEVER be deleted or pruned during reconciliation or sync.
+    // Only uncommitted pending (draft) items are reconciled against valid classes.
     const validClassMembers = new Set(
       this.importInwarded.map(r => `${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
     );
-    const validClasses = new Set(
-      this.importInwarded.map(r => normalizeIdentifier(r.class_id).toLowerCase())
-    );
 
-    // Prune saved scans that are not in current imported_inward_data
-    this.savedScanned = this.savedScanned.filter(s =>
-      validClassMembers.has(`${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
-    );
-
-    // Prune manual inwards that are not in current imported_inward_data
-    this.manualInwarded = this.manualInwarded.filter(m => {
-      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
-      return validClassMembers.has(`${normalizeIdentifier(m.class_id).toLowerCase()}::${mid.toLowerCase()}`);
-    });
-
-    // Prune pending items that are not in current imported_inward_data
     this.scanItems = this.scanItems.filter(i =>
-      validClassMembers.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
-    );
-
-    // Prune scan sessions for classes that are not in current imported_inward_data
-    this.scanSessions = this.scanSessions.filter(s =>
-      validClasses.has(normalizeIdentifier(s.class_id).toLowerCase())
+      i.status === 'SAVED' || validClassMembers.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
     );
 
     this.saveToLocalStorage();
@@ -474,23 +449,23 @@ class ImportedService {
         .channel('examscan_architecture_realtime')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'import_inwarded_data' },
-          (payload) => this.handleRealtimeEvent('import_inwarded_data', payload)
+          { event: '*', schema: 'public', table: 'imported_inward' },
+          (payload) => this.handleRealtimeEvent('imported_inward', payload)
         )
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'imported_inward_data' },
-          (payload) => this.handleRealtimeEvent('imported_inward_data', payload)
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'saved_scanned_data' },
-          (payload) => this.handleRealtimeEvent('saved_scanned_data', payload)
+          { event: '*', schema: 'public', table: 'manual_inwarded_data' },
+          (payload) => this.handleRealtimeEvent('manual_inwarded_data', payload)
         )
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'saved_scan_data' },
           (payload) => this.handleRealtimeEvent('saved_scan_data', payload)
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'saved_scanned_data' },
+          (payload) => this.handleRealtimeEvent('saved_scanned_data', payload)
         )
         .on(
           'postgres_changes',
@@ -502,14 +477,9 @@ class ImportedService {
           { event: '*', schema: 'public', table: 'scan_session_items' },
           (payload) => this.handleRealtimeEvent('scan_session_items', payload)
         )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'manual_inward_data' },
-          (payload) => this.handleRealtimeEvent('manual_inward_data', payload)
-        )
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
-            console.log('[ImportedService] Supabase Realtime connected');
+            console.log('[ImportedService] Supabase Realtime connected to physical tables');
           }
         });
     } catch (err) {
@@ -521,18 +491,21 @@ class ImportedService {
     const { eventType, new: newRecord, old: oldRecord } = payload;
     let stateChanged = false;
 
-    if (table === 'import_inwarded_data' || table === 'imported_inward_data') {
+    if (table === 'imported_inward' || table === 'import_inwarded_data' || table === 'imported_inward_data') {
       if (eventType === 'INSERT' && newRecord) {
-        if (!this.importInwarded.some(r => r.id === newRecord.id)) {
+        const cleanCid = normalizeIdentifier(newRecord.class_id);
+        const cleanMid = normalizeIdentifier(newRecord.member_id || newRecord.mem_id || '');
+        const recordId = newRecord.id || `${cleanCid}_${cleanMid}`;
+        if (!this.importInwarded.some(r => r.id === recordId || (normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() && normalizeIdentifier(r.member_id).toLowerCase() === cleanMid.toLowerCase()))) {
           this.importInwarded.push({
-            id: newRecord.id || `${newRecord.class_id}_${newRecord.member_id}`,
-            import_session_id: newRecord.import_session_id || 'default_sess',
+            id: recordId,
+            import_session_id: newRecord.import_session_id || newRecord.import_batch_id || 'default_sess',
             college_name: newRecord.college_name || newRecord.university_name || this.activeUniversity,
             university_name: newRecord.university_name || newRecord.college_name || this.activeUniversity,
-            class_id: String(newRecord.class_id).trim(),
+            class_id: cleanCid,
             sch_id: newRecord.sch_id,
-            member_id: String(newRecord.member_id).trim(),
-            barcode: newRecord.barcode,
+            member_id: cleanMid,
+            barcode: newRecord.barcode ? normalizeIdentifier(newRecord.barcode) : undefined,
             created_by: newRecord.created_by,
             created_at: newRecord.created_at || new Date().toISOString(),
           });
@@ -550,9 +523,9 @@ class ImportedService {
         if (idx >= 0) {
           this.importInwarded[idx] = {
             ...this.importInwarded[idx],
-            class_id: String(newRecord.class_id || this.importInwarded[idx].class_id).trim(),
-            member_id: String(newRecord.member_id || this.importInwarded[idx].member_id).trim(),
-            barcode: newRecord.barcode || this.importInwarded[idx].barcode,
+            class_id: normalizeIdentifier(newRecord.class_id || this.importInwarded[idx].class_id),
+            member_id: normalizeIdentifier(newRecord.member_id || newRecord.mem_id || this.importInwarded[idx].member_id),
+            barcode: newRecord.barcode ? normalizeIdentifier(newRecord.barcode) : this.importInwarded[idx].barcode,
           };
           stateChanged = true;
         }
@@ -649,10 +622,10 @@ class ImportedService {
           stateChanged = true;
         }
       }
-    } else if (table === 'manual_inward_data') {
+    } else if (table === 'manual_inwarded_data' || table === 'manual_inward_data') {
       if ((eventType === 'INSERT' || eventType === 'UPDATE') && newRecord) {
         const cleanCid = normalizeIdentifier(newRecord.class_id);
-        const cleanMid = normalizeIdentifier(newRecord.roll_number || newRecord.member_id || newRecord.booklet_barcode || '');
+        const cleanMid = normalizeIdentifier(newRecord.roll_number || newRecord.member_id || newRecord.mem_id || newRecord.booklet_barcode || '');
         const mapped: ManualInwardedRecord = {
           id: newRecord.id,
           session_code: newRecord.session_code,
@@ -731,9 +704,10 @@ class ImportedService {
         // Optional session table
       }
 
-      // 2. Fetch imported data from primary production table imported_inward_data
+      // 2. Fetch imported data from primary production table imported_inward_data or physical table imported_inward
       let impRows: any[] | null = null;
       let querySuccess = false;
+      let queryError: any = null;
 
       const { data: impData, error: impErr } = await supabase
         .from('imported_inward_data')
@@ -744,58 +718,59 @@ class ImportedService {
         impRows = impData;
         querySuccess = true;
       } else {
-        // Fallback check in case import_inwarded_data exists
+        queryError = impErr;
+        // Fallback check in case physical table imported_inward exists
         try {
-          const { data: impFallback, error: fbErr } = await supabase
-            .from('import_inwarded_data')
+          const { data: physData, error: physErr } = await supabase
+            .from('imported_inward')
             .select('*')
             .limit(50000);
-          if (!fbErr && impFallback !== null && Array.isArray(impFallback)) {
-            impRows = impFallback;
+          if (!physErr && physData !== null && Array.isArray(physData)) {
+            impRows = physData;
             querySuccess = true;
+            queryError = null;
           }
         } catch {}
+
+        if (!querySuccess) {
+          // Fallback check in case import_inwarded_data view exists
+          try {
+            const { data: impFallback, error: fbErr } = await supabase
+              .from('import_inwarded_data')
+              .select('*')
+              .limit(50000);
+            if (!fbErr && impFallback !== null && Array.isArray(impFallback)) {
+              impRows = impFallback;
+              querySuccess = true;
+              queryError = null;
+            }
+          } catch {}
+        }
       }
 
-      // Authoritative update:
-      // If query was successful (even with 0 rows!), replace local state completely!
-      if (querySuccess && impRows !== null) {
-        this.importInwarded = impRows.map((r: any) => ({
-          id: r.id || `${r.class_id}_${r.member_id}`,
-          import_session_id: r.import_session_id || 'default_session',
-          college_name: r.university_name || r.college_name || this.activeUniversity || '',
-          university_name: r.university_name || r.college_name || this.activeUniversity || '',
-          class_id: normalizeIdentifier(r.class_id),
-          sch_id: r.sch_id,
-          member_id: normalizeIdentifier(r.member_id),
-          barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
-          created_by: r.created_by,
-          created_at: r.created_at || new Date().toISOString(),
-        }));
-
-        // If backend contains 0 imported records, clear all derived structures
-        if (this.importInwarded.length === 0) {
+      // FIX #1: If query failed due to network, RLS or error, preserve existing local state
+      if (!querySuccess || queryError) {
+        console.warn('[ImportedService] Supabase sync error/denial — preserving existing local state:', queryError?.message || queryError);
+      } else if (querySuccess && impRows !== null) {
+        if (impRows.length === 0) {
+          console.log('[ImportedService] Supabase returned 0 imported records. Representing imported data as empty, preserving scan history.');
+          this.importInwarded = [];
           this.importSessions = [];
-          this.classOrder = [];
-          this.activeSessionId = null;
-          this.savedScanned = [];
-          this.manualInwarded = [];
-          this.scanItems = [];
-          this.scanSessions = [];
-
-          if (isSupabaseConfigured) {
-            try {
-              // Delete orphaned records when imported reference dataset was completely deleted
-              await supabase.from('saved_scanned_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-              try { await supabase.from('saved_scan_data').delete().neq('id', '00000000-0000-0000-0000-000000000000'); } catch {}
-              await supabase.from('manual_inward_data').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-              await supabase.from('scan_session_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-              await supabase.from('scan_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            } catch (err) {
-              console.warn('[ImportedService] Supabase orphan table cleanup note:', err);
-            }
-          }
+          // CRITICAL FIX #1: NEVER delete saved_scanned_data, saved_scan_data, manual_inward_data, scan_session_items, or scan_sessions!
         } else {
+          this.importInwarded = impRows.map((r: any) => ({
+            id: r.id || `${r.class_id}_${r.member_id || r.mem_id}`,
+            import_session_id: r.import_session_id || r.import_batch_id || 'default_session',
+            college_name: r.university_name || r.college_name || this.activeUniversity || '',
+            university_name: r.university_name || r.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(r.class_id),
+            sch_id: r.sch_id,
+            member_id: normalizeIdentifier(r.member_id || r.mem_id),
+            barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            created_by: r.created_by,
+            created_at: r.created_at || new Date().toISOString(),
+          }));
+
           // Align active university with imported records
           const firstUni = this.importInwarded[0].university_name || this.importInwarded[0].college_name;
           if (firstUni && !this.activeUniversity) {
@@ -894,7 +869,7 @@ class ImportedService {
             subject_name: m.subject_name,
             booklet_barcode: m.booklet_barcode ? normalizeIdentifier(m.booklet_barcode) : undefined,
             roll_number: m.roll_number ? normalizeIdentifier(m.roll_number) : undefined,
-            member_id: normalizeIdentifier(m.roll_number || m.booklet_barcode || ''),
+            member_id: normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || ''),
             college_name: m.college_name || this.activeUniversity,
             status: m.status || 'inwarded',
             inwarded_by: m.inwarded_by || 'Manual Inward',
@@ -2239,7 +2214,7 @@ class ImportedService {
 
     // Add from Supabase manual_inward_data
     for (const item of dbManualItems) {
-      const mid = normalizeIdentifier(item.roll_number || item.booklet_barcode || '');
+      const mid = normalizeIdentifier(item.member_id || item.roll_number || item.booklet_barcode || '');
       if (!mid) continue;
       const matchingImport = this.importInwarded.find(r =>
         normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
@@ -2651,32 +2626,23 @@ class ImportedService {
     if (isFirstImport) {
       this.importInwarded = newRecords;
     } else {
-      this.importInwarded = [...this.importInwarded, ...newRecords];
+      // FIX #2: Merge new imported records with existing records without duplicate key collisions
+      const existingKeySet = new Set(
+        this.importInwarded.map(r => `${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
+      );
+      const uniqueNewRecords = newRecords.filter(
+        r => !existingKeySet.has(`${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
+      );
+      this.importInwarded = [...this.importInwarded, ...uniqueNewRecords];
     }
 
     // Initialize class order
     const importedClasses = Array.from(new Set(newRecords.map(r => r.class_id)));
     this.classOrder = [...this.classOrder.filter(c => !importedClasses.includes(c)), ...importedClasses];
 
-    // Authoritative clean: Purge any old inward records for the newly imported classes so new members start un-inwarded
-    const importedClassLower = new Set(importedClasses.map(c => normalizeIdentifier(c).toLowerCase()));
-    this.savedScanned = this.savedScanned.filter(s => !importedClassLower.has(normalizeIdentifier(s.class_id).toLowerCase()));
-    this.manualInwarded = this.manualInwarded.filter(m => !importedClassLower.has(normalizeIdentifier(m.class_id).toLowerCase()));
-    this.scanItems = this.scanItems.filter(i => !importedClassLower.has(normalizeIdentifier(i.class_id).toLowerCase()));
-    this.scanSessions = this.scanSessions.filter(s => !importedClassLower.has(normalizeIdentifier(s.class_id).toLowerCase()));
-
-    if (isSupabaseConfigured) {
-      try {
-        const classList = Array.from(importedClasses);
-        await supabase.from('saved_scanned_data').delete().in('class_id', classList);
-        try { await supabase.from('saved_scan_data').delete().in('class_id', classList); } catch {}
-        await supabase.from('manual_inward_data').delete().in('class_id', classList);
-        await supabase.from('scan_session_items').delete().in('class_id', classList);
-        await supabase.from('scan_sessions').delete().in('class_id', classList);
-      } catch (e) {
-        console.warn('[ImportedService] Note cleaning old inward data on import:', e);
-      }
-    }
+    // FIX #2: EXISTING CLASS RE-IMPORT MUST NEVER DELETE SAVED SCANS
+    // Existing saved and inwarded members MUST remain intact in memory and in Supabase.
+    // NEVER wipe saved_scanned_data, saved_scan_data, manual_inward_data, scan_sessions, or scan_session_items.
 
     this.reconcileInwardStateWithImportedData();
     this.saveToLocalStorage();
@@ -3302,8 +3268,11 @@ class ImportedService {
           session_code: newRecord.session_code,
           bundle_code: newRecord.bundle_code,
           class_id: newRecord.class_id,
+          member_id: newRecord.member_id,
+          college_name: newRecord.college_name,
           booklet_barcode: newRecord.booklet_barcode,
           roll_number: newRecord.roll_number,
+          source: 'MANUAL',
           status: 'inwarded',
           inwarded_by: newRecord.inwarded_by,
           notes: newRecord.notes,
@@ -3403,7 +3372,18 @@ class ImportedService {
       ) || null;
     }
 
-    // 3. Compound match (class_id + member_id)
+    // 3. Extracted member ID match from barcode prefix stripping
+    if (!importedRow) {
+      const extractedMid = this.extractMemberIdFromBarcode(normalized, cleanActiveCid);
+      if (extractedMid && extractedMid.toLowerCase() !== normalized.toLowerCase()) {
+        importedRow = this.importInwarded.find(r =>
+          normalizeIdentifier(r.member_id).toLowerCase() === extractedMid.toLowerCase() &&
+          (!cleanActiveCid || normalizeIdentifier(r.class_id).toLowerCase() === cleanActiveCid.toLowerCase())
+        ) || null;
+      }
+    }
+
+    // 4. Compound match (class_id + member_id)
     if (!importedRow) {
       importedRow = this.importInwarded.find(r => {
         const c = normalizeIdentifier(r.class_id).toLowerCase();

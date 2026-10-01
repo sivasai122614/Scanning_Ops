@@ -108,9 +108,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const isFiltering = searchQuery.trim() !== '' || selectedRoleFilter !== 'ALL' || selectedStatusFilter !== 'ALL';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full">
       {/* Top Banner & Operational Counts */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 w-full">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-[#172033] flex items-center gap-2.5">
             <Users className="h-6 w-6 text-[#1565D8]" />
@@ -146,7 +146,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       </div>
 
       {/* KPI Counters */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 w-full">
         <div className="rounded-lg border border-[#E2E8F0] bg-white p-3.5 shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-[#64748B]">Total Registered</span>
@@ -181,8 +181,8 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       </div>
 
       {/* Search and Filters Bar */}
-      <div className="rounded-lg border border-[#E2E8F0] bg-white p-4 shadow-xs">
-        <div className="flex flex-col md:flex-row items-center gap-3">
+      <div className="rounded-lg border border-[#E2E8F0] bg-white p-4 shadow-xs w-full">
+        <div className="flex flex-col md:flex-row items-center gap-3 w-full">
           {/* Search Box */}
           <div className="relative flex-1 w-full">
             <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[#64748B]">
@@ -198,7 +198,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           </div>
 
           {/* Role Filter */}
-          <div className="flex items-center gap-2 w-full md:w-auto">
+          <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
             <Filter className="h-3.5 w-3.5 text-[#64748B] shrink-0 hidden md:block" />
             <select
               value={selectedRoleFilter}
@@ -229,8 +229,8 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       </div>
 
       {/* Staff Registry Table */}
-      <div className="rounded-lg border border-[#E2E8F0] bg-white overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
+      <div className="rounded-lg border border-[#E2E8F0] bg-white overflow-hidden shadow-xs w-full">
+        <div className="overflow-x-auto w-full">
           <table className="w-full text-left text-xs text-[#172033]">
             <thead className="border-b border-[#E2E8F0] bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
               <tr>
@@ -341,7 +341,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                       </td>
 
                       {/* Department */}
-                      <td className="px-4 py-3.5 text-slate-600 max-w-xs truncate">{u.department}</td>
+                      <td className="px-4 py-3.5 text-slate-600">{u.department}</td>
 
                       {/* Status */}
                       <td className="px-4 py-3.5">

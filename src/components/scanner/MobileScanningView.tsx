@@ -567,7 +567,82 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     const activeCid = selectedClassIdRef.current || selectedClassId;
     if (!activeCid) return;
 
-    await executeMemberInward(activeCid, code, 'CAMERA');
+    console.log('[BARCODE FLOW] ========================================');
+    console.log('[BARCODE FLOW] Source:            CAMERA');
+    console.log('[BARCODE FLOW] Raw barcode:       ', code);
+    console.log('[BARCODE FLOW] Class ID:          ', activeCid);
+
+    try {
+      const res = await importedService.processMobileMemberBarcodeScan(activeCid, code);
+
+      if (res.isWrongClass) {
+        playScanWarningSound();
+        console.warn(`[BARCODE FLOW] Class mismatch: Belongs to Class ${res.detectedClassId}`);
+        showToast({
+          type: 'warning',
+          title: '⚠ Wrong Class ID',
+          subtitle: `Belongs to Class ${res.detectedClassId || 'Other Class'}`,
+          duration: 1500,
+        });
+        return false;
+      }
+
+      if (res.isUnknownMember || res.isNotImported) {
+        playScanWarningSound();
+        console.warn(`[BARCODE FLOW] Member not found in imported dataset for ${code}`);
+        showToast({
+          type: 'error',
+          title: '✕ Member Not Found',
+          subtitle: code,
+          duration: 1500,
+        });
+        return false;
+      }
+
+      if (res.isDuplicate) {
+        playScanWarningSound();
+        showToast({
+          type: 'warning',
+          title: '⚠ Already Inwarded',
+          subtitle: res.member_id || code,
+          duration: 1200,
+        });
+        return false;
+      }
+
+      if (res.success) {
+        console.log('[BARCODE FLOW] Staged to pending scans (scan_session_items)');
+        playScanSuccessSound();
+        reconcileLiveStatus(activeCid);
+
+        showToast({
+          type: 'success',
+          title: '✓ Member Inwarded',
+          subtitle: res.member_id || code,
+          duration: 1100,
+        });
+        return true;
+      } else {
+        playScanWarningSound();
+        showToast({
+          type: 'error',
+          title: '✕ Inward Failed',
+          subtitle: res.message || code,
+          duration: 1500,
+        });
+        return false;
+      }
+    } catch (err: any) {
+      console.error('[BARCODE FLOW] Exception:', err);
+      playScanWarningSound();
+      showToast({
+        type: 'error',
+        title: '✕ Inward Failed',
+        subtitle: err?.message || 'Processing error',
+        duration: 1500,
+      });
+      return false;
+    }
   };
 
   // Router for Camera Scan depending on current Scanner Mode

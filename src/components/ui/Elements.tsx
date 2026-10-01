@@ -16,7 +16,7 @@ export const PageContainer: React.FC<{ children: React.ReactNode; className?: st
   className = '',
 }) => {
   return (
-    <div className={`w-full max-w-5xl mx-auto px-4 py-4 sm:px-6 sm:py-6 space-y-4 pb-24 md:pb-8 ${className}`}>
+    <div className={`w-full max-w-5xl md:max-w-none mx-auto md:mx-0 px-4 py-4 sm:px-6 sm:py-6 md:px-6 lg:px-8 space-y-4 pb-24 md:pb-8 ${className}`}>
       {children}
     </div>
   );
