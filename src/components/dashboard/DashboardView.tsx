@@ -335,6 +335,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
                         <span>Pending to Inward</span>
                         <span className="font-bold">{classPending}</span>
                       </div>
+                      <div className="flex items-center justify-between text-[#64748B]">
+                        <span>Operator</span>
+                        <span className="font-semibold text-[#172033] text-[11px] truncate max-w-[150px]" title={b.operatorText || '—'}>
+                          {b.operatorText || '—'}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="pt-2 border-t border-[#E2E8F0]">
@@ -365,6 +371,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
                   <th className="py-2.5 px-3">Pending</th>
                   <th className="py-2.5 px-3">Progress</th>
                   <th className="py-2.5 px-3">Status</th>
+                  <th className="py-2.5 px-3">Operator</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E2E8F0]">
@@ -415,6 +422,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
                           >
                             {b.status}
                           </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-[#172033] font-medium text-xs whitespace-nowrap">
+                          {b.operatorText || '—'}
                         </td>
                       </tr>
                     );

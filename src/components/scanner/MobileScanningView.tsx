@@ -430,37 +430,36 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   };
 
   // ==============================================================================
-  // UNIFIED MEMBER INWARD PROCESSING (Source of Truth)
-  // Used by BOTH Camera Barcode Scanning and Manual Member ID Entry.
-  // Ensures identical validation, duplicate protection, Supabase insert, and toasts.
+  // MANUAL MEMBER INWARD PROCESSING
+  // Used ONLY when operator manually types Member ID and clicks INWARD.
+  // Inserts strictly into public.manual_inward_data.
+  // Barcode scanning NEVER calls this function!
   // ==============================================================================
-  const executeMemberInward = async (
+  const executeManualMemberInward = async (
     targetClassId: string,
-    rawInputOrBarcode: string,
-    source: 'CAMERA' | 'MANUAL'
+    rawInput: string
   ): Promise<boolean> => {
     const cleanCid = normalizeIdentifier(targetClassId);
-    const cleanRaw = sanitizeBarcode(rawInputOrBarcode);
+    const cleanRaw = sanitizeBarcode(rawInput);
     if (!cleanCid || !cleanRaw) return false;
 
-    // PART 2: Normalize barcode to extract Member ID exactly as expected by manual inward
+    // Normalize barcode/input to extract Member ID exactly as expected by manual inward
     const extractedMid = importedService.extractMemberIdFromBarcode(cleanRaw, cleanCid);
 
-    console.log('[BARCODE FLOW] ========================================');
-    console.log('[BARCODE FLOW] Source:            ', source);
-    console.log('[BARCODE FLOW] Raw:               ', cleanRaw);
-    console.log('[BARCODE FLOW] Normalized barcode:', cleanRaw);
-    console.log('[BARCODE FLOW] Class ID:          ', cleanCid);
-    console.log('[BARCODE FLOW] Member ID:         ', extractedMid);
+    console.log('[MANUAL INWARD FLOW] ========================================');
+    console.log('[MANUAL INWARD FLOW] Source:            MANUAL');
+    console.log('[MANUAL INWARD FLOW] Raw input:         ', cleanRaw);
+    console.log('[MANUAL INWARD FLOW] Class ID:          ', cleanCid);
+    console.log('[MANUAL INWARD FLOW] Member ID:         ', extractedMid);
 
     try {
       // 1. Validate strictly against active class
       const validation = await importedService.validateMemberForClass(cleanCid, extractedMid);
-      console.log('[BARCODE FLOW] Validation result: ', validation.status);
+      console.log('[MANUAL INWARD FLOW] Validation result: ', validation.status);
 
       if (validation.status === 'WRONG_CLASS') {
         playScanWarningSound();
-        console.warn(`[BARCODE FLOW] Class mismatch: Belongs to Class ${validation.actualClassId}`);
+        console.warn(`[MANUAL INWARD FLOW] Class mismatch: Belongs to Class ${validation.actualClassId}`);
         showToast({
           type: 'warning',
           title: '⚠ Wrong Class ID',
@@ -472,7 +471,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       if (validation.status === 'NOT_FOUND') {
         playScanWarningSound();
-        console.warn(`[BARCODE FLOW] Member not found in imported dataset for ${extractedMid}`);
+        console.warn(`[MANUAL INWARD FLOW] Member not found in imported dataset for ${extractedMid}`);
         showToast({
           type: 'error',
           title: '✕ Member Not Found',
@@ -486,12 +485,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       const canonicalMemberId = validation.record
         ? normalizeIdentifier(validation.record.member_id)
         : extractedMid;
-      console.log('[BARCODE FLOW] Member ID:         ', canonicalMemberId);
-      console.log('[BARCODE FLOW] Validation:        PASS');
+      console.log('[MANUAL INWARD FLOW] Member ID:         ', canonicalMemberId);
+      console.log('[MANUAL INWARD FLOW] Validation:        PASS');
 
       // 2. Duplicate Check
       const alreadyInwarded = importedService.isMemberAlreadyInwarded(cleanCid, canonicalMemberId);
-      console.log('[BARCODE FLOW] Existing inward:   ', alreadyInwarded ? 'YES' : 'NO');
+      console.log('[MANUAL INWARD FLOW] Existing inward:   ', alreadyInwarded ? 'YES' : 'NO');
 
       if (alreadyInwarded) {
         playScanWarningSound();
@@ -506,21 +505,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       // 3. Insert strictly into public.manual_inward_data
       const res = await importedService.recordManualInward(cleanCid, canonicalMemberId, {
-        notes: source === 'CAMERA' ? 'Mobile Camera Inward' : 'Mobile Manual Inward',
+        notes: 'Mobile Manual Inward',
         bookletBarcode: cleanRaw,
       });
 
       if (res.success && res.record) {
-        console.log('[BARCODE FLOW] Insert:            PASS');
-        console.log('[BARCODE FLOW] Supabase operation: manual_inward_data insert success');
+        console.log('[MANUAL INWARD FLOW] Insert:            PASS');
+        console.log('[MANUAL INWARD FLOW] Supabase operation: manual_inward_data insert success');
         console.log('[LIVE STATUS] Inward operation successful');
         playScanSuccessSound();
-        if (source === 'MANUAL') {
-          setManualInput('');
-        }
+        setManualInput('');
         reconcileLiveStatus(cleanCid);
 
-        // Immediate fast non-blocking success toast (Part 14)
+        // Immediate fast non-blocking success toast
         showToast({
           type: 'success',
           title: '✓ Member Inwarded',
@@ -529,10 +526,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         });
         return true;
       } else {
-        console.error('[BARCODE FLOW] Insert:            FAIL');
-        console.error('[BARCODE FLOW] Supabase error:    ', res.error);
-        console.error('[BARCODE FLOW] Error code:        ', res.code || 'INSERT_FAILED');
-        console.error('[BARCODE FLOW] Error message:     ', res.error || 'Failed to insert inward record');
+        console.error('[MANUAL INWARD FLOW] Insert:            FAIL');
+        console.error('[MANUAL INWARD FLOW] Supabase error:    ', res.error);
+        console.error('[MANUAL INWARD FLOW] Error code:        ', res.code || 'INSERT_FAILED');
+        console.error('[MANUAL INWARD FLOW] Error message:     ', res.error || 'Failed to insert inward record');
         playScanWarningSound();
         showToast({
           type: 'error',
@@ -543,9 +540,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         return false;
       }
     } catch (err: any) {
-      console.error('[BARCODE FLOW] Exception:         ', err?.message || err);
-      console.error('[BARCODE FLOW] Error code:        ', err?.code || 'UNHANDLED_EXCEPTION');
-      console.error('[BARCODE FLOW] Error message:     ', err?.message || err);
+      console.error('[MANUAL INWARD FLOW] Exception:         ', err?.message || err);
+      console.error('[MANUAL INWARD FLOW] Error code:        ', err?.code || 'UNHANDLED_EXCEPTION');
+      console.error('[MANUAL INWARD FLOW] Error message:     ', err?.message || err);
       playScanWarningSound();
       showToast({
         type: 'error',
@@ -555,13 +552,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       });
       return false;
     } finally {
-      console.log('[BARCODE FLOW] ========================================');
+      console.log('[MANUAL INWARD FLOW] ========================================');
     }
   };
 
   // ==============================================================================
   // STAGE 2 CAMERA SCAN: Detect Member ID
-  // Feeds camera-detected barcode directly into the unified inward function.
+  // Barcode scanning stages scan as PENDING_SAVE in scan_sessions/scan items.
+  // Barcode scan NEVER inserts into manual_inward_data!
   // ==============================================================================
   const handleStage2MemberScan = async (code: string) => {
     const activeCid = selectedClassIdRef.current || selectedClassId;
@@ -760,11 +758,11 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       }
       // ----------------------------------------------------
       // CASE 2: MEMBER_MODE — Input is for MEMBER ID ONLY
-      // Calls unified executeMemberInward (source of truth)
+      // Calls executeManualMemberInward (inserts strictly to manual_inward_data)
       // ----------------------------------------------------
       else if (mode === 'MEMBER_MODE' && (selectedClassIdRef.current || selectedClassId)) {
         const curClass = (selectedClassIdRef.current || selectedClassId)!;
-        await executeMemberInward(curClass, inputVal, 'MANUAL');
+        await executeManualMemberInward(curClass, inputVal);
       }
     } catch (err: any) {
       console.warn('Manual submit error:', err);

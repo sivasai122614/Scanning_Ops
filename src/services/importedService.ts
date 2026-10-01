@@ -90,7 +90,7 @@ export interface ClassBundle {
   pendingCount: number;
   receivedCount: number; // savedCount + pendingCount
   missingCount: number;  // expectedCount - receivedCount
-  progressPercentage: number; // (savedCount / expectedCount) * 100
+  progressPercentage: number; // (receivedCount / expectedCount) * 100
   status: BundleStatus;
   isSaved: boolean;
   isCompleted: boolean;
@@ -98,6 +98,9 @@ export interface ClassBundle {
   lastActivityAt: string;
   updatedAt: string;
   createdAt: string;
+  startedBy?: string | null;
+  savedBy?: string | null;
+  operatorText?: string;
 }
 
 export interface ImportSession {
@@ -270,6 +273,22 @@ export function getCurrentUser(): { id: string; name: string; email: string } {
     name: 'Siva Sai',
     email: 'sivasaiprasadkaki122614@gmail.com',
   };
+}
+
+export function resolveOperatorName(val?: string | null): string {
+  if (!val || val === 'undefined' || val === 'null' || val.trim() === '') return '—';
+  const clean = val.trim();
+  if (clean.includes('@')) {
+    return clean.split('@')[0];
+  }
+  if (clean.length > 20 || clean.startsWith('usr-')) {
+    try {
+      const p = enterpriseStore.getProfileById(clean, clean);
+      if (p && p.full_name) return p.full_name;
+      if (p && p.email) return p.email.split('@')[0];
+    } catch {}
+  }
+  return clean;
 }
 
 // Note: normalizeIdentifier and sanitizeBarcode are imported from ../utils/normalize
@@ -1138,25 +1157,59 @@ class ImportedService {
       const pendingCount = pendingMap.get(classId) || 0;
       const receivedCount = savedCount + pendingCount;
       const missingCount = Math.max(0, expectedCount - receivedCount);
-      const progressPercentage = expectedCount > 0 ? Math.round((savedCount / expectedCount) * 100) : 0;
+      const progressPercentage = expectedCount > 0 ? Math.round((receivedCount / expectedCount) * 100) : 0;
+
+      // Check scan session for saved timestamp & operator
+      const classSessions = this.scanSessions.filter(s => s.class_id.toLowerCase() === classId.toLowerCase());
+      if (classSessions.length > 1) {
+        classSessions.sort((a, b) => new Date(b.last_activity_at || b.started_at || 0).getTime() - new Date(a.last_activity_at || a.started_at || 0).getTime());
+      }
+      const sess = classSessions[0];
+      const rawStartedBy = sess?.started_by || '';
+      const rawSavedBy = sess?.saved_by || this.savedScanned.find(s => s.class_id.toLowerCase() === classId.toLowerCase())?.saved_by || '';
+      const sessionStartedBy = resolveOperatorName(rawStartedBy);
+      const sessionSavedBy = resolveOperatorName(rawSavedBy);
+      const currentUserName = resolveOperatorName(getCurrentUser().name);
 
       let status: BundleStatus = 'NOT STARTED';
       let isCompleted = false;
       let isSaved = false;
+      let operatorText = '—';
 
-      if (savedCount >= expectedCount && expectedCount > 0) {
+      // Check whether SAVE has ever been pressed for this class
+      const hasBeenSaved = (
+        sess?.status === 'COMPLETED' ||
+        sess?.status === 'SAVED' ||
+        Boolean(sess?.saved_at) ||
+        this.savedScanned.some(s => normalizeIdentifier(s.class_id).toLowerCase() === classId.toLowerCase())
+      );
+
+      if (pendingCount > 0) {
+        // Scanning started but SAVE has NOT been pressed (or additional scans added since last save)
+        status = 'IN PROGRESS';
+        operatorText = sessionStartedBy !== '—' ? sessionStartedBy : currentUserName;
+      } else if (hasBeenSaved && savedCount >= expectedCount && expectedCount > 0) {
+        // User pressed SAVE and scanned = expected
         status = 'COMPLETED';
         isCompleted = true;
         isSaved = true;
-      } else if (savedCount > 0 && pendingCount === 0) {
+        const op = sessionSavedBy !== '—' ? sessionSavedBy : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
+        operatorText = `Completed by ${op}`;
+      } else if (hasBeenSaved && savedCount > 0) {
+        // User pressed SAVE and scanned < expected
         status = 'PARTIAL / SAVED';
         isSaved = true;
+        const op = sessionSavedBy !== '—' ? sessionSavedBy : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
+        operatorText = `Saved by ${op}`;
       } else if (receivedCount > 0) {
+        // Has scanned items, but SAVE not pressed yet
         status = 'IN PROGRESS';
+        operatorText = sessionStartedBy !== '—' ? sessionStartedBy : currentUserName;
+      } else {
+        // No scan started
+        status = 'NOT STARTED';
+        operatorText = '—';
       }
-
-      // Check scan session for saved timestamp
-      const sess = this.scanSessions.find(s => s.class_id.toLowerCase() === classId.toLowerCase());
 
       bundleMap.set(classId.toLowerCase(), {
         id: `bundle_${classId}`,
@@ -1177,6 +1230,9 @@ class ImportedService {
         lastActivityAt: sess?.last_activity_at || now,
         updatedAt: now,
         createdAt: now,
+        startedBy: rawStartedBy || null,
+        savedBy: rawSavedBy || null,
+        operatorText,
       });
     }
 
@@ -2069,18 +2125,26 @@ class ImportedService {
     // Ensure scan_sessions record exists in Supabase so foreign key constraints succeed
     if (isSupabaseConfigured && validSessionId) {
       try {
-        await supabase.from('scan_sessions').upsert({
-          id: validSessionId,
-          college_name: session?.college_name || this.activeUniversity || 'General University',
-          import_session_id: session?.import_session_id || this.activeSessionId || null,
-          class_id: cleanCid,
-          started_by: session?.started_by || currentUser.name,
-          started_at: session?.started_at || now,
-          status: 'ACTIVE',
-          last_activity_at: now,
-        }, { onConflict: 'id' });
+        const { data: existingSess } = await supabase
+          .from('scan_sessions')
+          .select('id')
+          .eq('id', validSessionId)
+          .limit(1);
+
+        if (!existingSess || existingSess.length === 0) {
+          await supabase.from('scan_sessions').insert({
+            id: validSessionId,
+            college_name: session?.college_name || this.activeUniversity || 'General University',
+            import_session_id: session?.import_session_id || this.activeSessionId || null,
+            class_id: cleanCid,
+            started_by: session?.started_by || currentUser.name,
+            started_at: session?.started_at || now,
+            status: 'ACTIVE',
+            last_activity_at: now,
+          });
+        }
       } catch (sessUpsertErr) {
-        console.warn('[SAVE CLASS BUNDLE] Note on session upsert:', sessUpsertErr);
+        console.warn('[SAVE CLASS BUNDLE] Note on session ensure:', sessUpsertErr);
       }
     }
 
@@ -2091,32 +2155,10 @@ class ImportedService {
       this.importInwarded.find(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase())?.university_name ||
       'General University';
 
-    // 2. Identify all inwarded items for this class across all sources:
-    // Source A: scanItems (pending scans)
+    // 2. Identify all pending scanned items for this class (barcode scans awaiting SAVE):
     const pendingScanItems = this.scanItems.filter(
       i => normalizeIdentifier(i.class_id).toLowerCase() === cleanCid.toLowerCase() && i.status === 'PENDING_SAVE'
     );
-
-    // Source B: in-memory manualInwarded
-    const inMemManual = this.manualInwarded.filter(
-      m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid.toLowerCase()
-    );
-
-    // Source C: Supabase manual_inward_data
-    let dbManualItems: any[] = [];
-    if (isSupabaseConfigured) {
-      try {
-        const { data: dbData, error: dbErr } = await supabase
-          .from('manual_inward_data')
-          .select('*')
-          .eq('class_id', cleanCid);
-        if (!dbErr && dbData && Array.isArray(dbData)) {
-          dbManualItems = dbData;
-        }
-      } catch (fetchErr) {
-        console.warn('[SAVE CLASS BUNDLE] Note fetching db manual inward:', fetchErr);
-      }
-    }
 
     // 3. Get existing saved member IDs to prevent duplicates
     const existingSavedKeys = new Set(
@@ -2144,7 +2186,7 @@ class ImportedService {
       }
     }
 
-    // 4. Build unified list of candidate records to save
+    // 4. Build candidate records to persist from pending barcode scans
     const candidatesByMemberId = new Map<string, {
       memberId: string;
       barcode?: string | null;
@@ -2154,7 +2196,7 @@ class ImportedService {
       sourceItemId?: string;
     }>();
 
-    // Add from scanItems
+    // Add from pending scanItems
     for (const item of pendingScanItems) {
       const matchingImport = this.importInwarded.find(r =>
         normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
@@ -2173,56 +2215,6 @@ class ImportedService {
           scannedBy: item.detected_by || currentUser.name || 'Operator',
           scannedAt: item.detected_at || now,
           sourceItemId: item.id,
-        });
-      }
-    }
-
-    // Add from in-memory manualInwarded
-    for (const item of inMemManual) {
-      const mid = normalizeIdentifier(item.member_id || item.roll_number || item.booklet_barcode || '');
-      if (!mid) continue;
-      const matchingImport = this.importInwarded.find(r =>
-        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
-        (
-          normalizeIdentifier(r.member_id).toLowerCase() === mid.toLowerCase() ||
-          (r.barcode && item.booklet_barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalizeIdentifier(item.booklet_barcode).toLowerCase())
-        )
-      );
-      const targetMid = matchingImport ? normalizeIdentifier(matchingImport.member_id) : mid;
-      const targetBcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.booklet_barcode ? normalizeIdentifier(item.booklet_barcode) : targetMid);
-
-      if (!candidatesByMemberId.has(targetMid.toLowerCase())) {
-        candidatesByMemberId.set(targetMid.toLowerCase(), {
-          memberId: targetMid,
-          barcode: targetBcode,
-          scannedBy: item.inwarded_by || currentUser.name || 'Operator',
-          scannedAt: item.scanned_at || item.created_at || now,
-          schoolId: item.school_id,
-        });
-      }
-    }
-
-    // Add from Supabase manual_inward_data
-    for (const item of dbManualItems) {
-      const mid = normalizeIdentifier(item.member_id || item.roll_number || item.booklet_barcode || '');
-      if (!mid) continue;
-      const matchingImport = this.importInwarded.find(r =>
-        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
-        (
-          normalizeIdentifier(r.member_id).toLowerCase() === mid.toLowerCase() ||
-          (r.barcode && item.booklet_barcode && normalizeIdentifier(r.barcode).toLowerCase() === normalizeIdentifier(item.booklet_barcode).toLowerCase())
-        )
-      );
-      const targetMid = matchingImport ? normalizeIdentifier(matchingImport.member_id) : mid;
-      const targetBcode = matchingImport?.barcode ? normalizeIdentifier(matchingImport.barcode) : (item.booklet_barcode ? normalizeIdentifier(item.booklet_barcode) : targetMid);
-
-      if (!candidatesByMemberId.has(targetMid.toLowerCase())) {
-        candidatesByMemberId.set(targetMid.toLowerCase(), {
-          memberId: targetMid,
-          barcode: targetBcode,
-          scannedBy: item.inwarded_by || currentUser.name || 'Operator',
-          scannedAt: item.scanned_at || item.created_at || now,
-          schoolId: item.school_id,
         });
       }
     }
@@ -2381,18 +2373,31 @@ class ImportedService {
 
       if (isSupabaseConfigured && validSessionId) {
         try {
-          await supabase.from('scan_sessions').upsert({
-            id: validSessionId,
-            college_name: session.college_name || uni,
-            import_session_id: session.import_session_id || this.activeSessionId || null,
-            class_id: cleanCid,
-            status: newStatus,
-            saved_at: now,
-            saved_by: currentUser.name,
-            last_activity_at: now,
-          }, { onConflict: 'id' });
+          const { data: updatedSess, error: updErr } = await supabase
+            .from('scan_sessions')
+            .update({
+              status: newStatus,
+              saved_at: now,
+              saved_by: currentUser.name,
+              last_activity_at: now,
+            })
+            .eq('id', validSessionId)
+            .select();
+
+          if (updErr || !updatedSess || updatedSess.length === 0) {
+            await supabase.from('scan_sessions').upsert({
+              id: validSessionId,
+              college_name: session.college_name || uni,
+              import_session_id: session.import_session_id || this.activeSessionId || null,
+              class_id: cleanCid,
+              status: newStatus,
+              saved_at: now,
+              saved_by: currentUser.name,
+              last_activity_at: now,
+            }, { onConflict: 'id' });
+          }
         } catch (sessUpErr) {
-          console.warn('[SAVE CLASS BUNDLE] Note on session final status upsert:', sessUpErr);
+          console.warn('[SAVE CLASS BUNDLE] Note on session final status update:', sessUpErr);
         }
       }
     }
@@ -3265,6 +3270,9 @@ class ImportedService {
           notes: newRecord.notes,
           scanned_at: newRecord.scanned_at,
           created_at: newRecord.created_at,
+          school_id: targetRecord?.sch_id || null,
+          room_number: null,
+          subject_name: null,
         });
 
         if (insErr) {
@@ -3594,64 +3602,27 @@ class ImportedService {
       };
     }
 
-    // Member is IMPORTED + NOT INWARDED -> Allow inward!
-    console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - saving');
-    console.log('[MEMBER SCAN] Final result:', 'Inwarded');
+    // Member is IMPORTED + NOT INWARDED -> Stage as PENDING_SAVE (do NOT insert into manual_inward_data)
+    console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - staging as pending');
+    console.log('[MEMBER SCAN] Final result:', 'Inwarded (Pending Save)');
 
     const session = await this.ensureScanSession(activeClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
 
-    const manualRec: ManualInwardedRecord = {
+    const pendingItem: ScanSessionItem = {
       id: generateUUID(),
-      session_code: session?.id || undefined,
-      bundle_code: `bundle_${cleanActiveCid}`,
+      scan_session_id: session?.id || this.activeSessionId || generateUUID(),
       class_id: cleanActiveCid,
-      booklet_barcode: resolvedBarcode,
-      roll_number: resolvedMemberId,
       member_id: resolvedMemberId,
-      college_name: this.activeUniversity || importedRow?.university_name || importedRow?.college_name || 'VIT',
-      status: 'inwarded',
-      inwarded_by: currentUser.name || 'Scanner Operator',
-      notes: 'Mobile Barcode Scan',
-      scanned_at: now,
+      barcode: resolvedBarcode || normalized,
+      detected_at: now,
+      detected_by: currentUser.name || 'Scanner Operator',
+      status: 'PENDING_SAVE',
       created_at: now,
     };
 
-    // Persist strictly to public.manual_inward_data in Supabase using validated schema contract
-    if (isSupabaseConfigured) {
-      try {
-        const { error: insErr } = await supabase.from('manual_inward_data').insert({
-          id: manualRec.id,
-          session_code: manualRec.session_code,
-          bundle_code: manualRec.bundle_code,
-          class_id: manualRec.class_id,
-          roll_number: manualRec.roll_number,
-          booklet_barcode: manualRec.booklet_barcode,
-          status: 'inwarded',
-          inwarded_by: manualRec.inwarded_by,
-          notes: manualRec.notes,
-          scanned_at: manualRec.scanned_at,
-          created_at: manualRec.created_at,
-        });
-
-        if (insErr) {
-          console.error('[MEMBER SCAN] Supabase manual_inward_data insert error:', insErr);
-          return {
-            success: false,
-            message: `Inward Failed: ${insErr.message || 'Database error'}`,
-          };
-        }
-      } catch (err: any) {
-        console.error('[MEMBER SCAN] Supabase manual_inward_data exception:', err);
-        return {
-          success: false,
-          message: 'Inward Failed: Connection lost',
-        };
-      }
-    }
-
-    this.manualInwarded.push(manualRec);
+    this.scanItems.push(pendingItem);
     this.moveClassToTop(cleanActiveCid);
     this.saveToLocalStorage();
     this.notify();
