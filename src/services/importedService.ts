@@ -449,18 +449,13 @@ class ImportedService {
         .channel('examscan_architecture_realtime')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'imported_inward' },
-          (payload) => this.handleRealtimeEvent('imported_inward', payload)
+          { event: '*', schema: 'public', table: 'imported_inward_data' },
+          (payload) => this.handleRealtimeEvent('imported_inward_data', payload)
         )
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'manual_inwarded_data' },
-          (payload) => this.handleRealtimeEvent('manual_inwarded_data', payload)
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'saved_scan_data' },
-          (payload) => this.handleRealtimeEvent('saved_scan_data', payload)
+          { event: '*', schema: 'public', table: 'manual_inward_data' },
+          (payload) => this.handleRealtimeEvent('manual_inward_data', payload)
         )
         .on(
           'postgres_changes',
@@ -471,11 +466,6 @@ class ImportedService {
           'postgres_changes',
           { event: '*', schema: 'public', table: 'scan_sessions' },
           (payload) => this.handleRealtimeEvent('scan_sessions', payload)
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'scan_session_items' },
-          (payload) => this.handleRealtimeEvent('scan_session_items', payload)
         )
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
@@ -3268,11 +3258,8 @@ class ImportedService {
           session_code: newRecord.session_code,
           bundle_code: newRecord.bundle_code,
           class_id: newRecord.class_id,
-          member_id: newRecord.member_id,
-          college_name: newRecord.college_name,
-          booklet_barcode: newRecord.booklet_barcode,
           roll_number: newRecord.roll_number,
-          source: 'MANUAL',
+          booklet_barcode: newRecord.booklet_barcode,
           status: 'inwarded',
           inwarded_by: newRecord.inwarded_by,
           notes: newRecord.notes,
@@ -3584,7 +3571,7 @@ class ImportedService {
             .from('manual_inward_data')
             .select('*')
             .eq('class_id', cleanActiveCid)
-            .or(`member_id.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
+            .or(`roll_number.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
             .limit(1);
           if (manData && manData.length > 0) manualInwardResult = manData[0];
         } catch {}
@@ -3611,47 +3598,52 @@ class ImportedService {
     console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - saving');
     console.log('[MEMBER SCAN] Final result:', 'Inwarded');
 
-    // Stage as PENDING_SAVE in active session
     const session = await this.ensureScanSession(activeClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
 
-    const pendingItem: ScanSessionItem = {
+    const manualRec: ManualInwardedRecord = {
       id: generateUUID(),
-      scan_session_id: session.id,
+      session_code: session?.id || undefined,
+      bundle_code: `bundle_${cleanActiveCid}`,
       class_id: cleanActiveCid,
+      booklet_barcode: resolvedBarcode,
+      roll_number: resolvedMemberId,
       member_id: resolvedMemberId,
-      barcode: resolvedBarcode,
-      detected_at: now,
-      detected_by: currentUser.name,
-      status: 'PENDING_SAVE',
+      college_name: this.activeUniversity || importedRow?.university_name || importedRow?.college_name || 'VIT',
+      status: 'inwarded',
+      inwarded_by: currentUser.name || 'Scanner Operator',
+      notes: 'Mobile Barcode Scan',
+      scanned_at: now,
       created_at: now,
     };
 
-    // Persist to Supabase scan_session_items if configured
+    // Persist strictly to public.manual_inward_data in Supabase using validated schema contract
     if (isSupabaseConfigured) {
       try {
-        const { error: insErr } = await supabase.from('scan_session_items').insert([{
-          id: pendingItem.id,
-          scan_session_id: pendingItem.scan_session_id,
-          class_id: pendingItem.class_id,
-          member_id: pendingItem.member_id,
-          barcode: pendingItem.barcode,
-          detected_at: pendingItem.detected_at,
-          detected_by: pendingItem.detected_by,
-          status: 'PENDING_SAVE',
-          created_at: pendingItem.created_at,
-        }]);
+        const { error: insErr } = await supabase.from('manual_inward_data').insert({
+          id: manualRec.id,
+          session_code: manualRec.session_code,
+          bundle_code: manualRec.bundle_code,
+          class_id: manualRec.class_id,
+          roll_number: manualRec.roll_number,
+          booklet_barcode: manualRec.booklet_barcode,
+          status: 'inwarded',
+          inwarded_by: manualRec.inwarded_by,
+          notes: manualRec.notes,
+          scanned_at: manualRec.scanned_at,
+          created_at: manualRec.created_at,
+        });
 
         if (insErr) {
-          console.warn('[MEMBER SCAN] Supabase scan_session_items insert error:', insErr.message);
+          console.error('[MEMBER SCAN] Supabase manual_inward_data insert error:', insErr);
           return {
             success: false,
-            message: 'Inward Failed: Supabase database error',
+            message: `Inward Failed: ${insErr.message || 'Database error'}`,
           };
         }
       } catch (err: any) {
-        console.warn('[MEMBER SCAN] Supabase scan_session_items insert note:', err);
+        console.error('[MEMBER SCAN] Supabase manual_inward_data exception:', err);
         return {
           success: false,
           message: 'Inward Failed: Connection lost',
@@ -3659,7 +3651,8 @@ class ImportedService {
       }
     }
 
-    this.scanItems.push(pendingItem);
+    this.manualInwarded.push(manualRec);
+    this.moveClassToTop(cleanActiveCid);
     this.saveToLocalStorage();
     this.notify();
 
