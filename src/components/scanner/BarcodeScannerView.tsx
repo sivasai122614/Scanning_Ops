@@ -846,9 +846,6 @@ export const BarcodeScannerView: React.FC<{
                   <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
                   {/* Subtle Red Aiming Laser Line */}
                   <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
-                  <div className="absolute -bottom-6 inset-x-0 text-center text-[10px] font-mono text-emerald-300 font-bold uppercase tracking-wider drop-shadow-md">
-                    Align Code 39 Barcode
-                  </div>
                 </div>
               </div>
             )}

@@ -36,6 +36,7 @@ interface ParsedRow {
   rowNumber: number;
   classId: string;
   memberId: string;
+  barcode?: string;
   unqid: string;
   status: 'valid' | 'duplicate' | 'invalid';
   reason?: string;
@@ -184,19 +185,29 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         );
 
         let memberColIdx = headerRow.findIndex(
-          (h: string) =>
-            h.includes('unqid') ||
-            h.includes('unq') ||
-            h.includes('member') ||
-            h.includes('student') ||
-            h.includes('roll') ||
-            (h.includes('id') && !h.includes('class')) ||
-            h.includes('barcode')
+          (h: string, idx: number) =>
+            idx !== classColIdx &&
+            (h.includes('unqid') ||
+             h.includes('unq') ||
+             h.includes('member') ||
+             h.includes('student') ||
+             h.includes('roll') ||
+             (h.includes('id') && !h.includes('class') && !h.includes('barcode')))
+        );
+
+        let barcodeColIdx = headerRow.findIndex(
+          (h: string, idx: number) =>
+            idx !== classColIdx &&
+            idx !== memberColIdx &&
+            (h.includes('barcode') || h.includes('bar_code') || h.includes('bar code'))
         );
 
         if (classColIdx === -1 && memberColIdx === -1 && headerRow.length >= 2) {
           classColIdx = 0;
           memberColIdx = 1;
+          if (headerRow.length >= 3) {
+            barcodeColIdx = 2;
+          }
         } else if (classColIdx === -1) {
           classColIdx = 0;
         } else if (memberColIdx === -1) {
@@ -211,9 +222,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           const rowData = rawJson[i];
           if (!rowData || rowData.length === 0) continue;
 
-          // Pure string extraction to preserve leading zeros e.g. 0031
+          // Pure string extraction to preserve leading zeros e.g. 0020
           const rawClass = String(rowData[classColIdx] ?? '').trim();
           const rawMember = String(rowData[memberColIdx] ?? '').trim();
+          const rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
+          const finalBarcode = rawBarcode || rawMember;
 
           if (!rawClass && !rawMember) continue;
 
@@ -222,6 +235,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               rowNumber: i + 1,
               classId: rawClass || 'MISSING',
               memberId: rawMember || 'MISSING',
+              barcode: finalBarcode || undefined,
               unqid: rawMember || 'MISSING',
               status: 'invalid',
               reason: !rawClass ? 'Class ID is blank' : 'Member ID / unqid is blank',
@@ -236,6 +250,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               rowNumber: i + 1,
               classId: rawClass,
               memberId: rawMember,
+              barcode: finalBarcode,
               unqid: rawMember,
               status: 'duplicate',
               reason: 'Duplicate entry in same file',
@@ -248,6 +263,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             rowNumber: i + 1,
             classId: rawClass,
             memberId: rawMember,
+            barcode: finalBarcode,
             unqid: rawMember,
             status: 'valid',
           });
@@ -307,7 +323,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       return;
     }
 
-    const items = validRows.map(r => ({ class_id: r.classId, member_id: r.memberId }));
+    const items = validRows.map(r => ({
+      class_id: r.classId,
+      member_id: r.memberId,
+      barcode: r.barcode || r.memberId,
+    }));
     const dupCheck = importedService.checkDuplicates(items);
 
     if (dupCheck.hasDuplicates) {
@@ -323,7 +343,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     executeImport(items);
   };
 
-  const executeImport = async (itemsToInsert: { class_id: string; member_id: string }[]) => {
+  const executeImport = async (itemsToInsert: { class_id: string; member_id: string; barcode?: string }[]) => {
     setDuplicateModalData(null);
     setIsProcessing(true);
 
@@ -360,16 +380,10 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
   const handleDownloadSample = () => {
     const sampleData = [
-      { 'Class ID': '0031', 'Member ID': '22MIS001' },
-      { 'Class ID': '0031', 'Member ID': '22MIS002' },
-      { 'Class ID': '0031', 'Member ID': '22MIS003' },
-      { 'Class ID': '0031', 'Member ID': '22MIS004' },
-      { 'Class ID': '0031', 'Member ID': '22MIS005' },
-      { 'Class ID': '0032', 'Member ID': '22MIS006' },
-      { 'Class ID': '0032', 'Member ID': '22MIS007' },
-      { 'Class ID': '0032', 'Member ID': '22MIS008' },
-      { 'Class ID': '0033', 'Member ID': '22MIS009' },
-      { 'Class ID': '0033', 'Member ID': '22MIS010' },
+      { 'Class ID': '0020', 'Member ID': '002024EMBA1308', 'Barcode': '002024EMBA1308' },
+      { 'Class ID': '0020', 'Member ID': '002024EMBA1309', 'Barcode': '002024EMBA1309' },
+      { 'Class ID': '0021', 'Member ID': '002124EMBA1601', 'Barcode': '002124EMBA1601' },
+      { 'Class ID': '0021', 'Member ID': '002124EMBA1602', 'Barcode': '002124EMBA1602' },
     ];
 
     const ws = XLSX.utils.json_to_sheet(sampleData);

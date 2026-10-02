@@ -31,31 +31,23 @@ export function sanitizeBarcode(code: string): string {
 }
 
 /**
- * Checks if two class identifiers match, accounting for case, whitespace,
- * and numeric representations (e.g. '0020' === '20').
+ * Checks if two class identifiers match strictly as exact strings,
+ * preserving leading zeros (e.g. '0020' !== '20').
  */
 export function isSameClassId(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || b === null || b === undefined) return false;
   const sa = normalizeIdentifier(a).toLowerCase();
   const sb = normalizeIdentifier(b).toLowerCase();
-  if (sa === sb) return true;
-  if (/^\d+$/.test(sa) && /^\d+$/.test(sb)) {
-    return parseInt(sa, 10) === parseInt(sb, 10);
-  }
-  return false;
+  return sa === sb;
 }
 
 /**
- * Checks if two member identifiers match, accounting for case, whitespace,
- * and numeric representations.
+ * Checks if two member identifiers match strictly as exact strings,
+ * preserving leading zeros.
  */
 export function isSameMemberId(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || b === null || b === undefined) return false;
   const sa = normalizeIdentifier(a).toLowerCase();
   const sb = normalizeIdentifier(b).toLowerCase();
-  if (sa === sb) return true;
-  if (/^\d+$/.test(sa) && /^\d+$/.test(sb)) {
-    return parseInt(sa, 10) === parseInt(sb, 10);
-  }
-  return false;
+  return sa === sb;
 }

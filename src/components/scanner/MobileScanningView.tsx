@@ -385,46 +385,31 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // ==============================================================================
   // STAGE 1 CAMERA SCAN: Detect Class ID
-  // Barcode contains Class ID in the first 4 digits (e.g. 00201234567890 -> 0020)
-  // Leading zeros must be preserved as a string
+  // Scanner identifies Class ID based on ADMIN IMPORTED DATA.
+  // Searches public.imported_inward_data using actual imported barcode relationship.
+  // Does NOT assume first 4 characters = Class ID. Leading zeros preserved strictly.
   // ==============================================================================
   const handleStage1ClassScan = async (rawCode: string) => {
+    const rawBarcode = String(rawCode || '').trim();
+    if (!rawBarcode) return;
+
     console.log('[SCAN MODE] CLASS_MODE');
-    console.log('[CLASS SCAN] Raw barcode:', rawCode);
+    console.log('[STAGE 1] Raw barcode detected:', rawBarcode);
 
-    const rawStr = String(rawCode || '').trim();
-    const first4 = rawStr.length >= 4 ? rawStr.substring(0, 4) : '';
-    const isValid4Digits = /^\d{4}$/.test(first4);
+    const res = await importedService.resolveClassFromBarcode(rawBarcode);
 
-    console.log('[CLASS SCAN] Extracted first 4 digits:', first4);
-
-    if (!isValid4Digits) {
-      console.log('[CLASS SCAN] Class barcode validation failed: first 4 digits must be numeric.');
-      playScanWarningSound();
-      showToast({
-        type: 'error',
-        title: '✕ Invalid Barcode',
-        subtitle: 'Please scan a valid booklet barcode',
-      });
-      return;
-    }
-
-    const normalizedClassId = normalizeIdentifier(first4);
-    console.log('[CLASS SCAN] Normalized class ID:', normalizedClassId);
-    console.log('[CLASS SCAN] Class lookup started:', normalizedClassId);
-
-    const val = await importedService.validateClassId(normalizedClassId);
-    console.log('[CLASS SCAN] Class lookup result:', val.exists ? 'Found' : 'Not found');
-
-    if (val.exists) {
+    if (res.exists && res.classId) {
+      console.log('[STAGE 1] Matching imported class found:', res.classId);
       playScanSuccessSound();
-      openClassBundle(val.classId);
+      openClassBundle(res.classId);
     } else {
+      console.warn('[STAGE 1] No matching imported record found for barcode:', rawBarcode);
       playScanWarningSound();
       showToast({
         type: 'error',
-        title: '✕ Class ID Not Found',
-        subtitle: normalizedClassId,
+        title: 'CLASS NOT IMPORTED',
+        subtitle: 'SCAN AGAIN',
+        duration: 2000,
       });
     }
   };
@@ -443,18 +428,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     const cleanRaw = sanitizeBarcode(rawInput);
     if (!cleanCid || !cleanRaw) return false;
 
-    // Normalize barcode/input to extract Member ID exactly as expected by manual inward
-    const extractedMid = importedService.extractMemberIdFromBarcode(cleanRaw, cleanCid);
+    // Do NOT derive Member ID from barcode or strip character positions!
+    // The entered input is the exact Member ID.
+    const enteredMid = cleanRaw;
 
     console.log('[MANUAL INWARD FLOW] ========================================');
     console.log('[MANUAL INWARD FLOW] Source:            MANUAL');
     console.log('[MANUAL INWARD FLOW] Raw input:         ', cleanRaw);
     console.log('[MANUAL INWARD FLOW] Class ID:          ', cleanCid);
-    console.log('[MANUAL INWARD FLOW] Member ID:         ', extractedMid);
+    console.log('[MANUAL INWARD FLOW] Member ID:         ', enteredMid);
 
     try {
-      // 1. Validate strictly against active class
-      const validation = await importedService.validateMemberForClass(cleanCid, extractedMid);
+      // 1. Validate strictly against active class and entered member ID
+      const validation = await importedService.validateMemberForClass(cleanCid, enteredMid);
       console.log('[MANUAL INWARD FLOW] Validation result: ', validation.status);
 
       if (validation.status === 'WRONG_CLASS') {
@@ -462,29 +448,29 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         console.warn(`[MANUAL INWARD FLOW] Class mismatch: Belongs to Class ${validation.actualClassId}`);
         showToast({
           type: 'warning',
-          title: '⚠ Wrong Class ID',
-          subtitle: `Belongs to Class ${validation.actualClassId || 'Other Class'}`,
-          duration: 1500,
+          title: 'MEMBER / CLASS MISMATCH',
+          subtitle: 'This member belongs to another imported class. SCAN AGAIN',
+          duration: 2500,
         });
         return false;
       }
 
       if (validation.status === 'NOT_FOUND') {
         playScanWarningSound();
-        console.warn(`[MANUAL INWARD FLOW] Member not found in imported dataset for ${extractedMid}`);
+        console.warn(`[MANUAL INWARD FLOW] Member not found in imported dataset for ${enteredMid}`);
         showToast({
           type: 'error',
-          title: '✕ Member Not Found',
-          subtitle: extractedMid,
-          duration: 1500,
+          title: 'MEMBER NOT IMPORTED',
+          subtitle: 'SCAN AGAIN',
+          duration: 2000,
         });
         return false;
       }
 
-      // Canonical member ID from imported record
+      // Exact member ID from imported record
       const canonicalMemberId = validation.record
         ? normalizeIdentifier(validation.record.member_id)
-        : extractedMid;
+        : enteredMid;
       console.log('[MANUAL INWARD FLOW] Member ID:         ', canonicalMemberId);
       console.log('[MANUAL INWARD FLOW] Validation:        PASS');
 
@@ -578,21 +564,21 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         console.warn(`[BARCODE FLOW] Class mismatch: Belongs to Class ${res.detectedClassId}`);
         showToast({
           type: 'warning',
-          title: '⚠ Wrong Class ID',
-          subtitle: `Belongs to Class ${res.detectedClassId || 'Other Class'}`,
-          duration: 1500,
+          title: 'MEMBER / CLASS MISMATCH',
+          subtitle: 'This member belongs to another imported class. SCAN AGAIN',
+          duration: 2500,
         });
         return false;
       }
 
       if (res.isUnknownMember || res.isNotImported) {
         playScanWarningSound();
-        console.warn(`[BARCODE FLOW] Member not found in imported dataset for ${code}`);
+        console.warn(`[BARCODE FLOW] Member not imported for ${code}`);
         showToast({
           type: 'error',
-          title: '✕ Member Not Found',
-          subtitle: code,
-          duration: 1500,
+          title: 'MEMBER NOT IMPORTED',
+          subtitle: 'SCAN AGAIN',
+          duration: 2000,
         });
         return false;
       }
@@ -729,19 +715,11 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       // CASE 1: CLASS_MODE — Input is for CLASS ID ONLY
       // ----------------------------------------------------
       if (mode === 'CLASS_MODE') {
-        let targetCid = inputVal;
-        if (targetCid.length >= 4 && /^\d{4}/.test(targetCid)) {
-          targetCid = targetCid.substring(0, 4);
-        }
-        const cleanCid = normalizeIdentifier(targetCid);
-        console.log('[SCAN MODE] CLASS_MODE');
-        console.log('[CLASS SCAN] Raw barcode:', inputVal);
-        console.log('[CLASS SCAN] Extracted first 4 digits:', targetCid);
-        console.log('[CLASS SCAN] Normalized class ID:', cleanCid);
-        console.log('[CLASS SCAN] Class lookup started:', cleanCid);
+        const cleanCid = normalizeIdentifier(inputVal);
+        console.log('[MANUAL CLASS] Entered class ID:', cleanCid);
 
         const val = await importedService.validateClassId(cleanCid);
-        console.log('[CLASS SCAN] Class lookup result:', val.exists ? 'Found' : 'Not found');
+        console.log('[MANUAL CLASS] Class lookup result:', val.exists ? 'Found' : 'Not found');
 
         if (val.exists) {
           playScanSuccessSound();
@@ -750,9 +728,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           playScanWarningSound();
           showToast({
             type: 'error',
-            title: '✕ Class Not Found',
-            subtitle: `ID: ${cleanCid} — Not found in imported records`,
-            duration: 1500,
+            title: 'CLASS NOT IMPORTED',
+            subtitle: 'SCAN AGAIN',
+            duration: 2000,
           });
         }
       }
@@ -1085,9 +1063,6 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
                 {/* Subtle Red Aiming Laser Line */}
                 <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
-                <div className="absolute -bottom-6 inset-x-0 text-center text-[10px] font-mono text-emerald-300 font-bold uppercase tracking-wider drop-shadow-md">
-                  Align Code 39 Barcode
-                </div>
               </div>
             </div>
           )}
