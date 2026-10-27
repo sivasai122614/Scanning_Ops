@@ -44,7 +44,7 @@ import {
   sanitizeBarcode,
   ScanResult,
 } from '../../services/importedService';
-import { playScanSuccessSound, playScanWarningSound, triggerHapticFeedback } from '../../utils/scannerSound';
+import { playScanSuccessSound, playScanWarningSound, triggerHapticFeedback, primeHapticAndAudio } from '../../utils/scannerSound';
 import { normalizeIdentifier } from '../../utils/normalize';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -242,6 +242,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
     setCameraLoading(true);
     setCameraError(null);
+    primeHapticAndAudio();
 
     try {
       stopCamera();
@@ -562,7 +563,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     console.log('[BARCODE FLOW] Class ID:          ', activeCid);
 
     try {
-      const res = await importedService.processMobileMemberBarcodeScan(activeCid, code);
+      const operatorName = user?.username || user?.full_name || user?.email?.split('@')[0] || currentOperator || 'Siva Sai';
+      const res = await importedService.processMobileMemberBarcodeScan(activeCid, code, operatorName);
 
       if (res.isWrongClass) {
         playScanWarningSound();
@@ -838,7 +840,16 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     if (!currentOperator) return true;
     const sBy = (r.scanned_by || '').toLowerCase();
     const vBy = (r.saved_by || '').toLowerCase();
-    return sBy.includes(currentOperator) || vBy.includes(currentOperator);
+    const cOp = currentOperator.toLowerCase();
+    return (
+      !sBy ||
+      sBy === 'operator' ||
+      sBy === 'scanner operator' ||
+      sBy.includes(cOp) ||
+      cOp.includes(sBy) ||
+      vBy.includes(cOp) ||
+      cOp.includes(vBy)
+    );
   };
 
   // Operator-isolated records for active bundle (Requirement 5)
@@ -846,7 +857,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     r => (r.scan_status === 'saved' || r.scan_status === 'pending_save') && isOperatorScan(r)
   );
 
-  const displayInwardedCount = isRestrictedInward ? operatorInwardedRecords.length : bundleInwarded;
+  const displayInwardedCount = isRestrictedInward
+    ? (operatorInwardedRecords.length > 0 ? operatorInwardedRecords.length : bundleInwarded)
+    : bundleInwarded;
   const displayNotInwardedCount = Math.max(0, bundleExpected - displayInwardedCount);
   const displayProgress = bundleExpected > 0 ? Math.round((displayInwardedCount / bundleExpected) * 100) : 0;
 

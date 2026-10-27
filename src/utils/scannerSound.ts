@@ -1,9 +1,10 @@
 // ==============================================================================
-// Web Audio API Sound Generator for Barcode Scanner Operations
+// Web Audio API Sound Generator & Haptic Feedback for Barcode Scanner Operations
 // Zero external asset dependencies - instant, offline-resilient, crisp POS beep
 // ==============================================================================
 
 let audioCtx: AudioContext | null = null;
+let lastVibrateTime = 0;
 
 function getAudioContext(): AudioContext | null {
   try {
@@ -23,24 +24,59 @@ function getAudioContext(): AudioContext | null {
 }
 
 /**
- * Triggers hardware haptic vibration if supported by the device browser
+ * Prime audio context & vibration on first user interaction (touch/click/key)
+ * Modern mobile browsers (especially Android Chrome) require a user gesture
+ * before permitting audio playback and navigator.vibrate().
  */
-export function triggerHapticFeedback(pattern: number | number[] = 100): void {
+export function primeHapticAndAudio(): void {
   try {
+    getAudioContext();
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator && typeof navigator.vibrate === 'function') {
-      navigator.vibrate(pattern);
+      navigator.vibrate(10);
     }
+  } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  const primeHandler = () => {
+    primeHapticAndAudio();
+    window.removeEventListener('touchstart', primeHandler);
+    window.removeEventListener('touchend', primeHandler);
+    window.removeEventListener('click', primeHandler);
+  };
+  window.addEventListener('touchstart', primeHandler, { passive: true, once: true });
+  window.addEventListener('touchend', primeHandler, { passive: true, once: true });
+  window.addEventListener('click', primeHandler, { passive: true, once: true });
+}
+
+/**
+ * Triggers hardware haptic vibration if supported by the device browser.
+ * Debounces rapid conflicting vibration calls to prevent browser cancellation.
+ */
+export function triggerHapticFeedback(pattern: number | number[] = 100, force = false): void {
+  try {
+    if (typeof navigator === 'undefined') return;
+    if (!('vibrate' in navigator) || typeof navigator.vibrate !== 'function') return;
+
+    const now = Date.now();
+    // Allow if forced, or if at least 70ms passed since last vibration call
+    if (!force && now - lastVibrateTime < 70) {
+      return;
+    }
+    lastVibrateTime = now;
+
+    navigator.vibrate(pattern);
   } catch (e) {
-    // Vibration not supported or restricted by browser
+    // Vibration not permitted or supported
   }
 }
 
 /**
  * Play a short, crisp, subtle POS barcode scanner confirmation beep (~80ms, 1850Hz)
- * Plays only once per successful scan.
+ * and trigger double haptic vibration pulse ([100, 50, 100]).
  */
 export function playScanSuccessSound(): void {
-  triggerHapticFeedback([90, 40, 90]);
+  triggerHapticFeedback([100, 50, 100], true);
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -70,9 +106,10 @@ export function playScanSuccessSound(): void {
 
 /**
  * Play a low-frequency double warning sound for duplicate or unrecognized barcode
+ * and trigger heavy haptic vibration pulse ([180, 80, 180]).
  */
 export function playScanWarningSound(): void {
-  triggerHapticFeedback(250);
+  triggerHapticFeedback([180, 80, 180], true);
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -97,4 +134,3 @@ export function playScanWarningSound(): void {
     // Audio context muted or restricted
   }
 }
-

@@ -230,25 +230,51 @@ export interface ScanResult {
 // Helper to get authenticated user details for audit trail
 export function getCurrentUser(): { id: string; name: string; email: string } {
   try {
-    const raw = localStorage.getItem('exam_ops_active_session_v1');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.userId) {
-        const profile = enterpriseStore.getProfileById(parsed.userId, parsed.userId);
-        if (profile) {
-          return {
-            id: profile.id,
-            name: profile.full_name || profile.email,
-            email: profile.email,
-          };
+    if (typeof localStorage !== 'undefined') {
+      // 1. Check Supabase auth token keys (e.g. sb-*-auth-token)
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            const user = parsed.user || parsed;
+            if (user && (user.email || user.id)) {
+              const username =
+                user.user_metadata?.username ||
+                user.user_metadata?.full_name ||
+                (user.email ? user.email.split('@')[0] : 'Siva Sai');
+              return {
+                id: user.id || 'usr-operator',
+                name: username,
+                email: user.email || 'operator@examscan.internal',
+              };
+            }
+          }
         }
       }
-      if (parsed.email) {
-        return {
-          id: parsed.userId || 'usr-operator',
-          name: parsed.email.split('@')[0],
-          email: parsed.email,
-        };
+
+      // 2. Check enterprise session fallback
+      const raw = localStorage.getItem('exam_ops_active_session_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.userId) {
+          const profile = enterpriseStore.getProfileById(parsed.userId, parsed.userId);
+          if (profile) {
+            return {
+              id: profile.id,
+              name: profile.full_name || profile.email,
+              email: profile.email,
+            };
+          }
+        }
+        if (parsed.email) {
+          return {
+            id: parsed.userId || 'usr-operator',
+            name: parsed.email.split('@')[0],
+            email: parsed.email,
+          };
+        }
       }
     }
   } catch {}
@@ -3343,6 +3369,14 @@ class ImportedService {
             error: insErr.message || 'Database insert failed',
           };
         }
+
+        try {
+          await supabase
+            .from('imported_inward_data')
+            .update({ scan_status: 'saved', scanned_at: now })
+            .eq('class_id', cleanCid)
+            .eq('member_id', canonicalMid);
+        } catch {}
       } catch (err: any) {
         console.error('[ImportedService] manual_inward_data Supabase exception:', err);
         return {
@@ -3387,7 +3421,8 @@ class ImportedService {
    */
   public async processMobileMemberBarcodeScan(
     activeClassId: string,
-    rawBarcode: string
+    rawBarcode: string,
+    operatorOverride?: string
   ): Promise<ScanResult> {
     const normalized = normalizeIdentifier(rawBarcode);
     const cleanActiveCid = normalizeIdentifier(activeClassId);
@@ -3613,27 +3648,79 @@ class ImportedService {
       };
     }
 
-    // Member is IMPORTED + NOT INWARDED -> Stage as PENDING_SAVE (do NOT insert into manual_inward_data)
-    console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - staging as pending');
-    console.log('[MEMBER SCAN] Final result:', 'Inwarded (Pending Save)');
+    // Member is IMPORTED + NOT INWARDED -> Immediately inward and persist in REAL TIME
+    console.log('[MEMBER SCAN] Inward status:', 'Not inwarded - inwarding in realtime');
+    console.log('[MEMBER SCAN] Final result:', 'Member Inwarded');
 
     const session = await this.ensureScanSession(activeClassId);
     const now = new Date().toISOString();
     const currentUser = getCurrentUser();
+    const operatorName = operatorOverride || currentUser.name || 'Siva Sai';
+    const uni = this.activeUniversity || importedRow.university_name || importedRow.college_name || 'VIT-AP';
+    const recordId = generateUUID();
 
+    const newSavedRecord: SavedScannedRecord = {
+      id: recordId,
+      scan_session_id: session?.id || this.activeSessionId || undefined,
+      import_session_id: importedRow.import_session_id || this.activeSessionId || undefined,
+      college_name: uni,
+      class_id: cleanActiveCid,
+      sch_id: importedRow.sch_id || undefined,
+      member_id: resolvedMemberId,
+      barcode: resolvedBarcode || normalized,
+      scanned_by: operatorName,
+      scanned_at: now,
+      saved_by: operatorName,
+      saved_at: now,
+      status: 'SAVED',
+    };
+
+    // 1. Add to savedScanned in-memory state
+    this.savedScanned.push(newSavedRecord);
+
+    // 2. Also keep scanItems updated as SAVED
     const pendingItem: ScanSessionItem = {
-      id: generateUUID(),
+      id: recordId,
       scan_session_id: session?.id || this.activeSessionId || generateUUID(),
       class_id: cleanActiveCid,
       member_id: resolvedMemberId,
       barcode: resolvedBarcode || normalized,
       detected_at: now,
-      detected_by: currentUser.name || 'Scanner Operator',
-      status: 'PENDING_SAVE',
+      detected_by: operatorName,
+      status: 'SAVED',
       created_at: now,
     };
-
     this.scanItems.push(pendingItem);
+
+    // 3. Immediately persist to Supabase in REAL TIME
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.from('saved_scanned_data').insert({
+          id: recordId,
+          scan_session_id: session?.id || null,
+          import_session_id: importedRow.import_session_id || this.activeSessionId || null,
+          college_name: uni,
+          class_id: cleanActiveCid,
+          sch_id: importedRow.sch_id || null,
+          member_id: resolvedMemberId,
+          barcode: resolvedBarcode || normalized,
+          scanned_by: operatorName,
+          scanned_at: now,
+          saved_by: operatorName,
+          saved_at: now,
+          status: 'SAVED',
+        });
+
+        await supabase
+          .from('imported_inward_data')
+          .update({ scan_status: 'saved', scanned_at: now })
+          .eq('class_id', cleanActiveCid)
+          .eq('member_id', resolvedMemberId);
+      } catch (dbErr) {
+        console.warn('[MEMBER SCAN] Supabase realtime persistence note:', dbErr);
+      }
+    }
+
     this.moveClassToTop(cleanActiveCid);
     this.saveToLocalStorage();
     this.notify();
