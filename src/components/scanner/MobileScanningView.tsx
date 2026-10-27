@@ -44,8 +44,9 @@ import {
   sanitizeBarcode,
   ScanResult,
 } from '../../services/importedService';
-import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
+import { playScanSuccessSound, playScanWarningSound, triggerHapticFeedback } from '../../utils/scannerSound';
 import { normalizeIdentifier } from '../../utils/normalize';
+import { useAuth } from '../../context/AuthContext';
 import {
   requestCameraStream,
   startContinuousDualScanning,
@@ -67,6 +68,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   onNavigateToImport,
   isRestrictedInward = false,
 }) => {
+  const { user } = useAuth();
+  const currentOperator = (user?.username || user?.full_name || user?.email?.split('@')[0] || '').toLowerCase();
+
   const [selectedClassId, setSelectedClassId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('examscan_mobile_selected_class_id');
@@ -652,6 +656,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     lastScannedCodeRef.current = code;
     lastScannedTimeRef.current = now;
 
+    // Requirement 1: Hardware haptic vibration immediately on barcode detection
+    triggerHapticFeedback(120);
+
     // PART 6 & 15: IMMEDIATELY show "✓ Barcode Detected" at top
     if (scannerModeRef.current === 'MEMBER_MODE') {
       showToast({
@@ -813,14 +820,30 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // Active bundle stats (MEMBER_MODE)
   const bundleExpected = activeBundle?.expectedCount || 0;
   const bundleInwarded = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
-  const bundleNotInwarded = Math.max(0, bundleExpected - bundleInwarded);
-  const bundleProgress = bundleExpected > 0 ? Math.round((bundleInwarded / bundleExpected) * 100) : 0;
+
+  // Helper to check if a record belongs to the current inward operator
+  const isOperatorScan = (r: BundleRecordView) => {
+    if (!isRestrictedInward) return true;
+    if (!currentOperator) return true;
+    const sBy = (r.scanned_by || '').toLowerCase();
+    const vBy = (r.saved_by || '').toLowerCase();
+    return sBy.includes(currentOperator) || vBy.includes(currentOperator);
+  };
+
+  // Operator-isolated records for active bundle (Requirement 5)
+  const operatorInwardedRecords = bundleRecords.filter(
+    r => (r.scan_status === 'saved' || r.scan_status === 'pending_save') && isOperatorScan(r)
+  );
+
+  const displayInwardedCount = isRestrictedInward ? operatorInwardedRecords.length : bundleInwarded;
+  const displayNotInwardedCount = Math.max(0, bundleExpected - displayInwardedCount);
+  const displayProgress = bundleExpected > 0 ? Math.round((displayInwardedCount / bundleExpected) * 100) : 0;
 
   const classStats = {
     importedCount: bundleExpected,
-    inwardedCount: bundleInwarded,
-    notInwardedCount: bundleNotInwarded,
-    progress: bundleProgress,
+    inwardedCount: displayInwardedCount,
+    notInwardedCount: displayNotInwardedCount,
+    progress: displayProgress,
   };
 
   // Filtered member records for active bundle
@@ -832,15 +855,22 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       if (!matchMid && !matchBar) return false;
     }
     if (memberTab === 'inwarded') {
-      return r.scan_status === 'saved' || r.scan_status === 'pending_save';
+      const isInwarded = r.scan_status === 'saved' || r.scan_status === 'pending_save';
+      return isInwarded && isOperatorScan(r);
     }
     if (memberTab === 'not_inwarded') {
       return r.scan_status === 'not_started';
     }
+    // 'all' tab: in inward role, show only operator's scans + unstarted items
+    if (isRestrictedInward && (r.scan_status === 'saved' || r.scan_status === 'pending_save')) {
+      return isOperatorScan(r);
+    }
     return true; // 'all'
   });
 
-  const inwardedListCount = bundleRecords.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save').length;
+  const inwardedListCount = isRestrictedInward
+    ? operatorInwardedRecords.length
+    : bundleRecords.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save').length;
   const notInwardedListCount = bundleRecords.filter(r => r.scan_status === 'not_started').length;
 
   // ==============================================================================
@@ -968,24 +998,34 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       {/* Statistics Row: Updates immediately */}
       {scannerMode === 'CLASS_MODE' ? (
-        <div className="grid grid-cols-4 gap-2">
-          <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-            <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
-            <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
+        !isRestrictedInward ? (
+          <div className="grid grid-cols-4 gap-2">
+            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+              <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
+              <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
+            </div>
+            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+              <div className="text-[9px] font-bold text-[#64748B] uppercase">EXPECTED</div>
+              <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
+            </div>
+            <div className="bg-[#F0FDF4] p-2.5 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
+              <div className="text-[9px] font-bold text-[#16A34A] uppercase">INWARDED</div>
+              <div className="text-base font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
+            </div>
+            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+              <div className="text-[9px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
+              <div className="text-base font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
+            </div>
           </div>
-          <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-            <div className="text-[9px] font-bold text-[#64748B] uppercase">EXPECTED</div>
-            <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
+        ) : (
+          <div className="bg-[#EFF6FF] border border-[#BFDBFE] p-3 rounded-xl flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <ScanIcon className="h-4 w-4 text-[#1565D8]" />
+              <span className="font-bold text-[#1E40AF]">Ready for Inward Scanning</span>
+            </div>
+            <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class Barcode</span>
           </div>
-          <div className="bg-[#F0FDF4] p-2.5 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
-            <div className="text-[9px] font-bold text-[#16A34A] uppercase">INWARDED</div>
-            <div className="text-base font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
-          </div>
-          <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-            <div className="text-[9px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
-            <div className="text-base font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
-          </div>
-        </div>
+        )
       ) : (
         /* MEMBER_MODE Class Bundle Statistics */
         <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
@@ -1202,72 +1242,86 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       {/* 4. CONTENT AREA: CLASS LIST (CLASS_MODE) VS MEMBER LIST (MEMBER_MODE) */}
       {scannerMode === 'CLASS_MODE' ? (
         /* STAGE 1: CLASS ID BUNDLES */
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-          <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
-            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
-              <Layers className="h-4 w-4 text-[#1565D8]" />
-              <span>CLASS ID BUNDLES</span>
-              <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
-                {bundles.length}
-              </span>
-            </h2>
-
-            {/* Quick Class Filter */}
-            <input
-              type="text"
-              value={classFilter}
-              onChange={e => setClassFilter(e.target.value)}
-              placeholder="Filter Class ID..."
-              className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
-            />
+        isRestrictedInward ? (
+          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-5 text-center">
+            <div className="flex h-11 w-11 items-center justify-center bg-blue-50 text-[#1565D8] rounded-xl mx-auto mb-2.5 border border-blue-200">
+              <ScanIcon className="h-5 w-5" />
+            </div>
+            <h3 className="text-xs font-black text-[#172033] uppercase tracking-wide">
+              Scan Booklet or Enter Class ID
+            </h3>
+            <p className="text-[11px] text-[#64748B] mt-1 max-w-xs mx-auto leading-relaxed">
+              Scan the barcode on the examination booklet or enter a Class ID above to open its bundle for inwarding.
+            </p>
           </div>
+        ) : (
+          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
+            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
+              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+                <Layers className="h-4 w-4 text-[#1565D8]" />
+                <span>CLASS ID BUNDLES</span>
+                <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
+                  {bundles.length}
+                </span>
+              </h2>
 
-          <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
-            {bundles
-              .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
-              .map(b => {
-                let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-                if (b.status === 'COMPLETED') {
-                  badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-                } else if (b.status === 'IN PROGRESS') {
-                  badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-                }
+              {/* Quick Class Filter */}
+              <input
+                type="text"
+                value={classFilter}
+                onChange={e => setClassFilter(e.target.value)}
+                placeholder="Filter Class ID..."
+                className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
+              />
+            </div>
 
-                return (
-                  <div
-                    key={b.classId}
-                    onClick={() => openClassBundle(b.classId)}
-                    className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
-                  >
-                    <div>
+            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
+              {bundles
+                .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
+                .map(b => {
+                  let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                  if (b.status === 'COMPLETED') {
+                    badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                  } else if (b.status === 'IN PROGRESS') {
+                    badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                  }
+
+                  return (
+                    <div
+                      key={b.classId}
+                      onClick={() => openClassBundle(b.classId)}
+                      className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-black text-sm text-[#172033]">
+                            CLASS ID {b.classId}
+                          </span>
+                          <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
+                            {b.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
+                          <span>Exp: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
+                          <span>•</span>
+                          <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
+                          <span>•</span>
+                          <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
+                        </div>
+                      </div>
+
                       <div className="flex items-center gap-2">
-                        <span className="font-mono font-black text-sm text-[#172033]">
-                          CLASS ID {b.classId}
+                        <span className="font-mono font-bold text-xs text-[#16A34A]">
+                          {b.progressPercentage}%
                         </span>
-                        <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
-                          {b.status}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
-                        <span>Exp: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
-                        <span>•</span>
-                        <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
-                        <span>•</span>
-                        <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
+                        <ArrowRight className="h-4 w-4 text-[#1565D8]" />
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-xs text-[#16A34A]">
-                        {b.progressPercentage}%
-                      </span>
-                      <ArrowRight className="h-4 w-4 text-[#1565D8]" />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+            </div>
           </div>
-        </div>
+        )
       ) : (
         /* STAGE 2: MEMBER TABS (INWARDED / NOT INWARDED) FOR ACTIVE CLASS */
         <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">

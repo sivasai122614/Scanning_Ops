@@ -23,10 +23,24 @@ function getAudioContext(): AudioContext | null {
 }
 
 /**
+ * Triggers hardware haptic vibration if supported by the device browser
+ */
+export function triggerHapticFeedback(pattern: number | number[] = 100): void {
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(pattern);
+    }
+  } catch (e) {
+    // Vibration not supported or restricted by browser
+  }
+}
+
+/**
  * Play a short, crisp, subtle POS barcode scanner confirmation beep (~80ms, 1850Hz)
  * Plays only once per successful scan.
  */
 export function playScanSuccessSound(): void {
+  triggerHapticFeedback([90, 40, 90]);
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -58,6 +72,7 @@ export function playScanSuccessSound(): void {
  * Play a low-frequency double warning sound for duplicate or unrecognized barcode
  */
 export function playScanWarningSound(): void {
+  triggerHapticFeedback(250);
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -82,3 +97,4 @@ export function playScanWarningSound(): void {
     // Audio context muted or restricted
   }
 }
+
