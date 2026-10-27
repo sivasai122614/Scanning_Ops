@@ -144,6 +144,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const isProcessingRef = useRef<boolean>(false);
   const lastScannedCodeRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
+  const recentlyInwardedRef = useRef<{ code: string; time: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Active bundle for currently selected class
@@ -588,17 +589,27 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       }
 
       if (res.isDuplicate) {
+        // If the user literally just inwarded this member within the last 3.5 seconds, ignore repeated camera frames while pulling booklet away
+        if (
+          recentlyInwardedRef.current &&
+          recentlyInwardedRef.current.code === code.toLowerCase() &&
+          Date.now() - recentlyInwardedRef.current.time < 3500
+        ) {
+          return false;
+        }
+
         playScanWarningSound();
         showToast({
           type: 'warning',
           title: '⚠ Already Inwarded',
           subtitle: res.member_id || code,
-          duration: 1200,
+          duration: 2000,
         });
         return false;
       }
 
       if (res.success) {
+        recentlyInwardedRef.current = { code: code.toLowerCase(), time: Date.now() };
         console.log('[BARCODE FLOW] Staged to pending scans (scan_session_items)');
         playScanSuccessSound();
         reconcileLiveStatus(activeCid);
@@ -607,7 +618,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           type: 'success',
           title: '✓ Member Inwarded',
           subtitle: res.member_id || code,
-          duration: 1100,
+          duration: 2000,
         });
         return true;
       } else {
@@ -616,7 +627,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           type: 'error',
           title: '✕ Inward Failed',
           subtitle: res.message || code,
-          duration: 1500,
+          duration: 2000,
         });
         return false;
       }
@@ -930,261 +941,265 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // ACTIVE MOBILE SCAN SCREEN (STAGE 1 OR STAGE 2)
   // ==============================================================================
   return (
-    <div className="space-y-3.5 font-sans max-w-md mx-auto pb-28 px-3 pt-2 relative">
+    <div className="font-sans max-w-md mx-auto pb-28 relative">
       {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
-      <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={1800} />
+      <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={2000} />
 
-      {/* 1. Header & Active Mode Indicator */}
-      <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs font-semibold text-[#172033]">
-            <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
-            <span>{todayStr}</span>
+      {/* FIXED TOP SECTION: Header, Active Class Banner & Camera Viewfinder */}
+      <div className="sticky top-0 z-30 bg-[#F8FAFC] pt-2 px-3 pb-2 space-y-2 border-b border-[#CBD5E1]/60 shadow-xs">
+        {/* 1. Header & Active Mode Indicator */}
+        <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-semibold text-[#172033]">
+              <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
+              <span>{todayStr}</span>
+            </div>
+
+            {/* Mode Pill Indicator */}
+            <div
+              className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                scannerMode === 'CLASS_MODE'
+                  ? 'bg-blue-50 text-[#1565D8] border-blue-200'
+                  : 'bg-emerald-50 text-[#16A34A] border-emerald-200'
+              }`}
+            >
+              {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS ID' : 'STAGE 2: MEMBER ID'}
+            </div>
           </div>
 
-          {/* Mode Pill Indicator */}
-          <div
-            className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
-              scannerMode === 'CLASS_MODE'
-                ? 'bg-blue-50 text-[#1565D8] border-blue-200'
-                : 'bg-emerald-50 text-[#16A34A] border-emerald-200'
-            }`}
-          >
-            {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS ID' : 'STAGE 2: MEMBER ID'}
-          </div>
+          {universityName && (
+            <div className="mt-1 pt-1 border-t border-slate-100 flex items-center gap-1.5 text-xs text-[#64748B]">
+              <Building className="h-3.5 w-3.5 text-[#64748B]" />
+              <span className="font-bold text-[#172033]">{universityName}</span>
+            </div>
+          )}
         </div>
 
-        {universityName && (
-          <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center gap-1.5 text-xs text-[#64748B]">
-            <Building className="h-3.5 w-3.5 text-[#64748B]" />
-            <span className="font-bold text-[#172033]">{universityName}</span>
+        {/* MEMBER_MODE BANNER: Active Class ID */}
+        {scannerMode === 'MEMBER_MODE' && selectedClassId && (
+          <div className="bg-[#1565D8] text-white p-2.5 rounded-xl shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[9px] uppercase font-bold text-blue-200 tracking-wider">
+                CURRENT CLASS ID BUNDLE
+              </div>
+              <div className="text-sm font-black font-mono tracking-wide">
+                CLASS ID {selectedClassId}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSaveClassInward}
+                disabled={isSaving}
+                className="px-3 py-1 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-[11px] font-black uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                title="Save Class Inward and continue"
+              >
+                <Save className="h-3 w-3" />
+                <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={backToClassSelection}
+                className="px-2 py-1 bg-white/15 hover:bg-white/25 text-white text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors border border-white/20 flex items-center gap-1 cursor-pointer"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                <span>Change</span>
+              </button>
+            </div>
           </div>
         )}
+
+        {/* CAMERA VIEWFINDER (Fixed at top right below header/banner) */}
+        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
+          {/* Mode Header over Camera */}
+          <div className="px-3 py-1.5 bg-[#0F172A] text-white flex items-center justify-between text-xs">
+            <div className="flex items-center gap-1.5 font-bold">
+              <ScanIcon className="h-3.5 w-3.5 text-[#60A5FA]" />
+              <span>
+                {scannerMode === 'CLASS_MODE' ? 'Scan Class ID' : `Scan Member ID (Class ID ${selectedClassId})`}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono">
+              {cameraActive ? 'CAMERA ACTIVE' : 'STANDBY'}
+            </span>
+          </div>
+
+          {/* Viewport */}
+          <div className="relative bg-black w-full aspect-16/9 min-h-[165px] max-h-[24vh] flex items-center justify-center overflow-hidden">
+            <video
+              ref={videoRef}
+              playsInline
+              muted
+              autoPlay
+              className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
+            />
+
+            {/* Targeted Barcode Aiming Guide Overlay */}
+            {cameraActive && (
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div className="relative w-[82%] h-[46%] rounded-lg border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
+                  <div className="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-emerald-400" />
+                  <div className="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 border-emerald-400" />
+                  <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-emerald-400" />
+                  <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-emerald-400" />
+                  <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+                </div>
+              </div>
+            )}
+
+            {cameraLoading && (
+              <div className="text-center text-white px-4">
+                <div className="h-6 w-6 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-1.5" />
+                <div className="text-[10px] font-bold uppercase tracking-wider">Starting Camera...</div>
+              </div>
+            )}
+
+            {!cameraActive && !cameraLoading && (
+              <div className="text-center text-white/80 p-3">
+                <CameraOff className="h-6 w-6 mx-auto mb-1 text-white/50" />
+                <div className="text-xs font-bold text-white mb-0.5">Camera Paused</div>
+                <div className="text-[10px] text-white/70 max-w-xs mx-auto mb-2">
+                  {cameraError || 'Tap below to scan or enter barcode manually.'}
+                </div>
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="px-3.5 py-1 bg-[#1565D8] text-white text-[11px] font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors cursor-pointer"
+                >
+                  Start Camera
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Camera Controls toolbar */}
+          <div className="px-2.5 py-1.5 bg-white border-t border-[#E2E8F0] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              {hasTorch && (
+                <button
+                  type="button"
+                  onClick={handleToggleTorch}
+                  className={`p-1.5 text-xs font-bold rounded-lg border transition-colors flex items-center gap-1 ${
+                    torchOn
+                      ? 'bg-[#F59E0B] text-black border-[#D97706]'
+                      : 'bg-slate-50 text-[#172033] border-[#CBD5E1]'
+                  }`}
+                  title="Flashlight"
+                >
+                  {torchOn ? <Flashlight className="h-3 w-3" /> : <FlashlightOff className="h-3 w-3" />}
+                </button>
+              )}
+
+              {availableDevices.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleCycleCamera}
+                  className="p-1.5 text-xs font-bold rounded-lg border border-[#CBD5E1] bg-slate-50 text-[#172033]"
+                  title="Switch Lens"
+                >
+                  <SwitchCamera className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            <div>
+              {cameraActive ? (
+                <button
+                  type="button"
+                  onClick={stopCamera}
+                  className="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-[#CBD5E1] text-[#64748B]"
+                >
+                  Pause
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="px-3 py-1 text-[11px] font-bold rounded-lg bg-[#1565D8] text-white"
+                >
+                  Start Camera
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* MEMBER_MODE BANNER: Active Class ID */}
-      {scannerMode === 'MEMBER_MODE' && selectedClassId && (
-        <div className="bg-[#1565D8] text-white p-3 rounded-xl shadow-xs flex items-center justify-between">
-          <div>
-            <div className="text-[10px] uppercase font-bold text-blue-200 tracking-wider">
-              CURRENT CLASS ID BUNDLE
+      {/* SCROLLABLE CONTENT AREA (Below the fixed Camera) */}
+      <div className="px-3 pt-2 space-y-3">
+        {/* CLASS ID STATISTICS (Moved below camera per user request) */}
+        {scannerMode === 'CLASS_MODE' ? (
+          !isRestrictedInward ? (
+            <div className="grid grid-cols-4 gap-2">
+              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
+                <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
+              </div>
+              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[9px] font-bold text-[#64748B] uppercase">EXPECTED</div>
+                <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
+              </div>
+              <div className="bg-[#F0FDF4] p-2.5 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
+                <div className="text-[9px] font-bold text-[#16A34A] uppercase">INWARDED</div>
+                <div className="text-base font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
+              </div>
+              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[9px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
+                <div className="text-base font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
+              </div>
             </div>
-            <div className="text-base font-black font-mono tracking-wide">
-              CLASS ID {selectedClassId}
+          ) : (
+            <div className="bg-[#EFF6FF] border border-[#BFDBFE] p-3 rounded-xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <ScanIcon className="h-4 w-4 text-[#1565D8]" />
+                <span className="font-bold text-[#1E40AF]">Ready for Inward Scanning</span>
+              </div>
+              <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class Barcode</span>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleSaveClassInward}
-              disabled={isSaving}
-              className="px-3.5 py-1.5 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              title="Save Class Inward and continue"
-            >
-              <Save className="h-3.5 w-3.5" />
-              <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={backToClassSelection}
-              className="px-2.5 py-1.5 bg-white/15 hover:bg-white/25 text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors border border-white/20 flex items-center gap-1 cursor-pointer"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Change</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Statistics Row: Updates immediately */}
-      {scannerMode === 'CLASS_MODE' ? (
-        !isRestrictedInward ? (
-          <div className="grid grid-cols-4 gap-2">
-            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-              <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
-              <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
-            </div>
-            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-              <div className="text-[9px] font-bold text-[#64748B] uppercase">EXPECTED</div>
-              <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
-            </div>
-            <div className="bg-[#F0FDF4] p-2.5 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
-              <div className="text-[9px] font-bold text-[#16A34A] uppercase">INWARDED</div>
-              <div className="text-base font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
-            </div>
-            <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-              <div className="text-[9px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
-              <div className="text-base font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
-            </div>
-          </div>
+          )
         ) : (
-          <div className="bg-[#EFF6FF] border border-[#BFDBFE] p-3 rounded-xl flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2">
-              <ScanIcon className="h-4 w-4 text-[#1565D8]" />
-              <span className="font-bold text-[#1E40AF]">Ready for Inward Scanning</span>
+          /* MEMBER_MODE Class Bundle Statistics (Positioned directly under camera) */
+          <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
+            <div className="flex items-center justify-between text-xs font-bold text-[#172033]">
+              <span>Class ID {selectedClassId} Statistics</span>
+              <span className="font-mono text-xs text-[#16A34A] font-black">
+                {classStats.inwardedCount} / {classStats.importedCount} ({classStats.progress}%)
+              </span>
             </div>
-            <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class Barcode</span>
-          </div>
-        )
-      ) : (
-        /* MEMBER_MODE Class Bundle Statistics */
-        <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
-          <div className="flex items-center justify-between text-xs font-bold text-[#172033]">
-            <span>Class ID {selectedClassId} Statistics</span>
-            <span className="font-mono text-xs text-[#16A34A] font-black">
-              {classStats.inwardedCount} / {classStats.importedCount} ({classStats.progress}%)
-            </span>
-          </div>
 
-          <div className="grid grid-cols-3 gap-2 pt-1 text-center">
-            <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-              <div className="text-[9px] font-bold text-[#64748B] uppercase">Imported</div>
-              <div className="text-sm font-black text-[#172033] font-mono">{classStats.importedCount}</div>
-            </div>
-            <div className="bg-[#F0FDF4] p-2 border border-[#BBF7D0] rounded-lg">
-              <div className="text-[9px] font-bold text-[#16A34A] uppercase">Inwarded</div>
-              <div className="text-sm font-black text-[#16A34A] font-mono">{classStats.inwardedCount}</div>
-            </div>
-            <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-              <div className="text-[9px] font-bold text-[#DC2626] uppercase">Not Inwarded</div>
-              <div className="text-sm font-black text-[#DC2626] font-mono">{classStats.notInwardedCount}</div>
-            </div>
-          </div>
-
-          {/* Progress Bar */}
-          <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 mt-1">
-            <div
-              className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
-              style={{ width: `${Math.min(100, classStats.progress)}%` }}
-            />
-          </div>
-
-          {/* Action Row - Progress Summary without duplicate SAVE button */}
-          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-[#64748B]">
-            <span>Inward Progress: <strong className="text-[#16A34A] font-bold">{classStats.inwardedCount}</strong> / {classStats.importedCount}</span>
-            <span className="font-mono text-xs font-bold text-[#16A34A]">{classStats.progress}%</span>
-          </div>
-        </div>
-      )}
-
-      {/* 2. CAMERA VIEWFINDER */}
-      <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
-        {/* Mode Header over Camera */}
-        <div className="px-3 py-2 bg-[#0F172A] text-white flex items-center justify-between text-xs">
-          <div className="flex items-center gap-1.5 font-bold">
-            <ScanIcon className="h-4 w-4 text-[#60A5FA]" />
-            <span>
-              {scannerMode === 'CLASS_MODE' ? 'Scan Class ID' : `Scan Member ID (Class ID ${selectedClassId})`}
-            </span>
-          </div>
-          <span className="text-[10px] text-slate-400 font-mono">
-            {cameraActive ? 'CAMERA ACTIVE' : 'STANDBY'}
-          </span>
-        </div>
-
-        {/* Viewport */}
-        <div className="relative bg-black w-full aspect-4/3 min-h-[260px] max-h-[40vh] flex items-center justify-center overflow-hidden">
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            autoPlay
-            className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
-          />
-
-          {/* PART 7: Targeted Barcode Aiming Guide Overlay */}
-          {cameraActive && (
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              <div className="relative w-[80%] h-[40%] rounded-xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
-                {/* Corner Reticle Accents */}
-                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
-                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
-                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
-                {/* Subtle Red Aiming Laser Line */}
-                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+            <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
+                <div className="text-[9px] font-bold text-[#64748B] uppercase">Imported</div>
+                <div className="text-sm font-black text-[#172033] font-mono">{classStats.importedCount}</div>
+              </div>
+              <div className="bg-[#F0FDF4] p-2 border border-[#BBF7D0] rounded-lg">
+                <div className="text-[9px] font-bold text-[#16A34A] uppercase">Inwarded</div>
+                <div className="text-sm font-black text-[#16A34A] font-mono">{classStats.inwardedCount}</div>
+              </div>
+              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
+                <div className="text-[9px] font-bold text-[#DC2626] uppercase">Not Inwarded</div>
+                <div className="text-sm font-black text-[#DC2626] font-mono">{classStats.notInwardedCount}</div>
               </div>
             </div>
-          )}
 
-          {cameraLoading && (
-            <div className="text-center text-white px-4">
-              <div className="h-7 w-7 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-2" />
-              <div className="text-xs font-bold uppercase tracking-wider">Starting Camera...</div>
+            {/* Progress Bar */}
+            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 mt-1">
+              <div
+                className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(100, classStats.progress)}%` }}
+              />
             </div>
-          )}
 
-          {!cameraActive && !cameraLoading && (
-            <div className="text-center text-white/80 p-5">
-              <CameraOff className="h-8 w-8 mx-auto mb-2 text-white/50" />
-              <div className="text-xs font-bold text-white mb-1">Camera Paused</div>
-              <div className="text-[11px] text-white/70 max-w-xs mx-auto mb-3">
-                {cameraError || 'Tap below to scan or enter barcode manually.'}
-              </div>
-              <button
-                type="button"
-                onClick={startCamera}
-                className="px-4 py-1.5 bg-[#1565D8] text-white text-xs font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors cursor-pointer"
-              >
-                Start Camera
-              </button>
+            {/* Action Row - Progress Summary */}
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-[#64748B]">
+              <span>Inward Progress: <strong className="text-[#16A34A] font-bold">{classStats.inwardedCount}</strong> / {classStats.importedCount}</span>
+              <span className="font-mono text-xs font-bold text-[#16A34A]">{classStats.progress}%</span>
             </div>
-          )}
-        </div>
-
-        {/* Camera Controls toolbar */}
-        <div className="p-2.5 bg-white border-t border-[#E2E8F0] flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            {hasTorch && (
-              <button
-                type="button"
-                onClick={handleToggleTorch}
-                className={`p-2 text-xs font-bold rounded-lg border transition-colors flex items-center gap-1 ${
-                  torchOn
-                    ? 'bg-[#F59E0B] text-black border-[#D97706]'
-                    : 'bg-slate-50 text-[#172033] border-[#CBD5E1]'
-                }`}
-                title="Flashlight"
-              >
-                {torchOn ? <Flashlight className="h-3.5 w-3.5" /> : <FlashlightOff className="h-3.5 w-3.5" />}
-              </button>
-            )}
-
-            {availableDevices.length > 1 && (
-              <button
-                type="button"
-                onClick={handleCycleCamera}
-                className="p-2 text-xs font-bold rounded-lg border border-[#CBD5E1] bg-slate-50 text-[#172033]"
-                title="Switch Lens"
-              >
-                <SwitchCamera className="h-3.5 w-3.5" />
-              </button>
-            )}
           </div>
+        )}
 
-          <div>
-            {cameraActive ? (
-              <button
-                type="button"
-                onClick={stopCamera}
-                className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#CBD5E1] text-[#64748B]"
-              >
-                Pause
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={startCamera}
-                className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#1565D8] text-white"
-              >
-                Start Camera
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* 3. DYNAMIC CONTEXT-AWARE MANUAL INPUT BAR */}
-        <div className="p-3 bg-[#F8FAFC] border-t border-[#E2E8F0]">
+        {/* DYNAMIC CONTEXT-AWARE MANUAL INPUT BAR */}
+        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-3">
           <div className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider mb-1.5 flex items-center justify-between">
             <span>
               {scannerMode === 'CLASS_MODE' ? 'Manual Class ID Entry' : `Manual Inward into Class ID ${selectedClassId}`}
@@ -1230,7 +1245,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="px-2.5 py-2 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold rounded-lg hover:bg-slate-100 shrink-0"
+              className="px-2.5 py-2 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold rounded-lg hover:bg-slate-100 shrink-0 cursor-pointer"
               title="Upload photo"
             >
               <Upload className="h-3.5 w-3.5" />

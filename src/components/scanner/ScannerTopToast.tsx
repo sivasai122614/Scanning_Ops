@@ -18,9 +18,11 @@ interface ScannerTopToastProps {
 export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
   toast,
   onDismiss,
-  duration = 1200,
+  duration = 2000,
 }) => {
   const [visible, setVisible] = useState(false);
+  const onDismissRef = React.useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   useEffect(() => {
     if (!toast) {
@@ -29,14 +31,16 @@ export const ScannerTopToast: React.FC<ScannerTopToastProps> = ({
     }
 
     setVisible(true);
-    const activeDuration = toast.duration ?? duration ?? 1200;
+    const activeDuration = toast.duration ?? duration ?? 2000;
     const timer = setTimeout(() => {
       setVisible(false);
-      if (onDismiss) onDismiss();
+      if (onDismissRef.current) {
+        onDismissRef.current();
+      }
     }, activeDuration);
 
     return () => clearTimeout(timer);
-  }, [toast, duration, onDismiss]);
+  }, [toast?.id, toast?.title, toast?.subtitle, toast?.duration, duration]);
 
   if (!toast || !visible) return null;
 

@@ -1254,18 +1254,22 @@ class ImportedService {
       r => normalizeIdentifier(r.class_id).toLowerCase() === clean
     );
 
-    // Saved scans for this class from saved_scanned_data
+    const activeUni = (this.activeUniversity || '').toLowerCase();
+
+    // Saved scans for this class from saved_scanned_data scoped to active university
     const saved = this.savedScanned.filter(
-      s => normalizeIdentifier(s.class_id).toLowerCase() === clean
+      s => normalizeIdentifier(s.class_id).toLowerCase() === clean &&
+           (!activeUni || !s.college_name || s.college_name.toLowerCase() === activeUni)
     );
     const savedMap = new Map<string, SavedScannedRecord>();
     for (const s of saved) {
       savedMap.set(normalizeIdentifier(s.member_id).toLowerCase(), s);
     }
 
-    // Manual inwards for this class from manual_inward_data
+    // Manual inwards for this class from manual_inward_data scoped to active university
     const manual = this.manualInwarded.filter(
-      m => normalizeIdentifier(m.class_id).toLowerCase() === clean
+      m => normalizeIdentifier(m.class_id).toLowerCase() === clean &&
+           (!activeUni || !m.college_name || m.college_name.toLowerCase() === activeUni)
     );
     const manualMap = new Map<string, ManualInwardedRecord>();
     for (const m of manual) {
@@ -3205,16 +3209,20 @@ class ImportedService {
     );
     if (!isImported) return false;
 
-    // 2. Check saved_scanned_data
+    const activeUni = (this.activeUniversity || '').toLowerCase();
+
+    // 2. Check saved_scanned_data for active university
     const isSaved = this.savedScanned.some(
       s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid &&
+           (!activeUni || !s.college_name || s.college_name.toLowerCase() === activeUni) &&
            matchesId(normalizeIdentifier(s.member_id), s.barcode ? normalizeIdentifier(s.barcode) : undefined)
     );
     if (isSaved) return true;
 
-    // 3. Check manual_inward_data
+    // 3. Check manual_inward_data for active university
     const isManual = this.manualInwarded.some(
       m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid &&
+           (!activeUni || !m.college_name || m.college_name.toLowerCase() === activeUni) &&
            matchesId(
              normalizeIdentifier(m.member_id || m.roll_number || ''),
              m.booklet_barcode ? normalizeIdentifier(m.booklet_barcode) : undefined
@@ -3535,54 +3543,55 @@ class ImportedService {
 
     // STEP 6: Check whether this member has already been inwarded
     // Authoritative in-memory lookup first (sub-millisecond)
-    let savedScannedResult: any = this.savedScanned.find(s =>
-      normalizeIdentifier(s.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
-      (
-        normalizeIdentifier(s.member_id).toLowerCase() === resolvedMemberId.toLowerCase() ||
-        (s.barcode && normalizeIdentifier(s.barcode).toLowerCase() === normalized.toLowerCase())
-      )
-    ) || null;
+    const activeUni = (this.activeUniversity || '').toLowerCase();
 
-    let manualInwardResult: any = this.manualInwarded.find(m =>
-      normalizeIdentifier(m.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
-      (
-        normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '').toLowerCase() === resolvedMemberId.toLowerCase() ||
-        (m.booklet_barcode && normalizeIdentifier(m.booklet_barcode).toLowerCase() === normalized.toLowerCase())
-      )
-    ) || null;
+    let savedScannedResult: any = this.savedScanned.find(s => {
+      if (normalizeIdentifier(s.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) return false;
+      if (activeUni && s.college_name && s.college_name.toLowerCase() !== activeUni) return false;
+      return normalizeIdentifier(s.member_id).toLowerCase() === resolvedMemberId.toLowerCase();
+    }) || null;
 
-    // Check pending session items (staged before save)
-    const pendingResult = this.scanItems.find(i =>
-      normalizeIdentifier(i.class_id).toLowerCase() === cleanActiveCid.toLowerCase() &&
-      (
-        normalizeIdentifier(i.member_id).toLowerCase() === resolvedMemberId.toLowerCase() ||
-        (i.barcode && normalizeIdentifier(i.barcode).toLowerCase() === normalized.toLowerCase())
-      ) &&
-      i.status === 'PENDING_SAVE'
-    ) || null;
+    let manualInwardResult: any = this.manualInwarded.find(m => {
+      if (normalizeIdentifier(m.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) return false;
+      if (activeUni && m.college_name && m.college_name.toLowerCase() !== activeUni) return false;
+      return normalizeIdentifier(m.member_id || m.roll_number || '').toLowerCase() === resolvedMemberId.toLowerCase();
+    }) || null;
+
+    // Check pending session items (staged before save in current session)
+    const pendingResult = this.scanItems.find(i => {
+      if (normalizeIdentifier(i.class_id).toLowerCase() !== cleanActiveCid.toLowerCase()) return false;
+      if (i.status !== 'PENDING_SAVE') return false;
+      return normalizeIdentifier(i.member_id).toLowerCase() === resolvedMemberId.toLowerCase();
+    }) || null;
 
     // Only fallback to Supabase query if service has never been initialized
     if (!this.isInitialized && isSupabaseConfigured) {
       if (!savedScannedResult) {
         try {
-          const { data: svData } = await supabase
+          let q = supabase
             .from('saved_scanned_data')
             .select('*')
             .eq('class_id', cleanActiveCid)
-            .eq('member_id', resolvedMemberId)
-            .limit(1);
+            .eq('member_id', resolvedMemberId);
+          if (this.activeUniversity) {
+            q = q.eq('college_name', this.activeUniversity);
+          }
+          const { data: svData } = await q.limit(1);
           if (svData && svData.length > 0) savedScannedResult = svData[0];
         } catch {}
       }
 
       if (!manualInwardResult) {
         try {
-          const { data: manData } = await supabase
+          let qm = supabase
             .from('manual_inward_data')
             .select('*')
             .eq('class_id', cleanActiveCid)
-            .or(`roll_number.eq.${resolvedMemberId},booklet_barcode.eq.${normalized}`)
-            .limit(1);
+            .or(`roll_number.eq.${resolvedMemberId},member_id.eq.${resolvedMemberId}`);
+          if (this.activeUniversity) {
+            qm = qm.eq('college_name', this.activeUniversity);
+          }
+          const { data: manData } = await qm.limit(1);
           if (manData && manData.length > 0) manualInwardResult = manData[0];
         } catch {}
       }
