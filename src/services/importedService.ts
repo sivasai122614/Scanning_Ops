@@ -74,6 +74,8 @@ export interface ClassBundle {
   pendingCount: number;
   receivedCount: number; // savedCount + pendingCount
   missingCount: number;  // expectedCount - receivedCount
+  inwardedCount?: number; // alias for receivedCount
+  notInwardedCount?: number; // alias for missingCount
   progressPercentage: number; // (receivedCount / expectedCount) * 100
   status: BundleStatus;
   isSaved: boolean;
@@ -585,6 +587,8 @@ class ImportedService {
           this.savedScanned = this.savedScanned.filter(s => s.id !== oldRecord.id);
           stateChanged = true;
         }
+        // Always trigger authoritative sync to catch table clears, bulk deletes, or untracked deletes
+        this.scheduleAuthoritativeSync(100);
       }
     } else if (table === 'scan_sessions') {
       if ((eventType === 'INSERT' || eventType === 'UPDATE') && newRecord) {
@@ -675,6 +679,8 @@ class ImportedService {
           this.manualInwarded = this.manualInwarded.filter(m => m.id !== oldRecord.id);
           stateChanged = true;
         }
+        // Always trigger authoritative sync to catch table clears, bulk deletes, or untracked deletes
+        this.scheduleAuthoritativeSync(100);
       }
     }
 
@@ -1232,6 +1238,8 @@ class ImportedService {
         pendingCount,
         receivedCount,
         missingCount,
+        inwardedCount: receivedCount,
+        notInwardedCount: missingCount,
         progressPercentage,
         status,
         isSaved,
@@ -1266,6 +1274,30 @@ class ImportedService {
     const clean = normalizeIdentifier(classId).toLowerCase();
     const bundles = this.getClassBundles();
     return bundles.find(b => normalizeIdentifier(b.classId).toLowerCase() === clean) || null;
+  }
+
+  /**
+   * Return all manual inward records (from manual_inward_data), with optional date range filter [startDate, endDate]
+   */
+  public getManualInwardRecords(startDate?: string, endDate?: string): ManualInwardedRecord[] {
+    let list = [...this.manualInwarded];
+    if (startDate) {
+      const sTime = new Date(`${startDate}T00:00:00.000`).getTime();
+      list = list.filter(r => {
+        const t = new Date(r.scanned_at || r.created_at).getTime();
+        return !isNaN(t) && t >= sTime;
+      });
+    }
+    if (endDate) {
+      const eTime = new Date(`${endDate}T23:59:59.999`).getTime();
+      list = list.filter(r => {
+        const t = new Date(r.scanned_at || r.created_at).getTime();
+        return !isNaN(t) && t <= eTime;
+      });
+    }
+    // Sort newest first
+    list.sort((a, b) => new Date(b.scanned_at || b.created_at).getTime() - new Date(a.scanned_at || a.created_at).getTime());
+    return list;
   }
 
   // ==============================================================================
@@ -2220,28 +2252,10 @@ class ImportedService {
       // DB row for public.saved_scanned_data
       scannedDbRows.push({
         id: recordId,
-        scan_session_id: validSessionId,
+        scan_session_id: validSessionId || null,
         import_session_id: session?.import_session_id || this.activeSessionId || null,
         college_name: uni,
         class_id: cleanCid,
-        member_id: candidate.memberId,
-        barcode: candidate.barcode || candidate.memberId,
-        scanned_by: candidate.scannedBy,
-        scanned_at: candidate.scannedAt,
-        saved_by: currentUser.name || 'Operator',
-        saved_at: now,
-        status: 'SAVED',
-      });
-
-      // DB row for public.saved_scan_data
-      scanDataDbRows.push({
-        id: recordId,
-        session_id: validSessionId || cleanCid,
-        import_batch_id: session?.import_session_id || this.activeSessionId || null,
-        college_name: uni,
-        class_id: cleanCid,
-        sch_id: candidate.schoolId || null,
-        mem_id: candidate.memberId,
         member_id: candidate.memberId,
         barcode: candidate.barcode || candidate.memberId,
         scanned_by: candidate.scannedBy,
@@ -2254,38 +2268,28 @@ class ImportedService {
 
     console.log(`[SAVE CLASS BUNDLE] New records to commit: ${newSavedRecords.length} (Candidates found: ${candidatesByMemberId.size})`);
 
-    // 5. Persist to Supabase
+    // 5. Persist to Supabase public.saved_scanned_data
     if (isSupabaseConfigured && scannedDbRows.length > 0) {
-      let anyInsertSucceeded = false;
+      let insertSucceeded = false;
       let lastErrorMessage = '';
 
-      // Primary target: public.saved_scan_data (per prompt)
-      try {
-        for (let i = 0; i < scanDataDbRows.length; i += BATCH_SIZE) {
-          const chunk = scanDataDbRows.slice(i, i + BATCH_SIZE);
-          const { error: insErr1 } = await supabase.from('saved_scan_data').insert(chunk);
-          if (!insErr1) {
-            anyInsertSucceeded = true;
-            console.log('[SAVE CLASS BUNDLE] ✓ Inserted into saved_scan_data');
-          } else {
-            console.warn('[SAVE CLASS BUNDLE] saved_scan_data note:', insErr1.message);
-          }
-        }
-      } catch (err1: any) {
-        console.warn('[SAVE CLASS BUNDLE] saved_scan_data note:', err1?.message || err1);
-      }
-
-      // Secondary target: public.saved_scanned_data
       try {
         for (let i = 0; i < scannedDbRows.length; i += BATCH_SIZE) {
           const chunk = scannedDbRows.slice(i, i + BATCH_SIZE);
-          const { error: insErr2 } = await supabase.from('saved_scanned_data').insert(chunk);
-          if (!insErr2) {
-            anyInsertSucceeded = true;
-            console.log('[SAVE CLASS BUNDLE] ✓ Inserted into saved_scanned_data');
+          let { error: insErr } = await supabase.from('saved_scanned_data').insert(chunk);
+          if (insErr && insErr.code === '23503') {
+            // FK violation on scan_session_id, retry with null
+            const nullChunk = chunk.map((r: any) => ({ ...r, scan_session_id: null }));
+            const retryRes = await supabase.from('saved_scanned_data').insert(nullChunk);
+            insErr = retryRes.error;
+          }
+
+          if (!insErr) {
+            insertSucceeded = true;
+            console.log('[SAVE CLASS BUNDLE] ✓ Inserted chunk into saved_scanned_data');
           } else {
-            console.error('[SAVE CLASS BUNDLE] saved_scanned_data insert error:', insErr2);
-            lastErrorMessage = insErr2.message;
+            console.error('[SAVE CLASS BUNDLE] saved_scanned_data insert error:', insErr);
+            lastErrorMessage = insErr.message;
           }
         }
       } catch (err2: any) {
@@ -2293,8 +2297,8 @@ class ImportedService {
         lastErrorMessage = err2?.message || String(err2);
       }
 
-      if (!anyInsertSucceeded && scannedDbRows.length > 0) {
-        console.error('[SAVE CLASS BUNDLE] Fatal: Neither table accepted records! Error:', lastErrorMessage);
+      if (!insertSucceeded && scannedDbRows.length > 0) {
+        console.error('[SAVE CLASS BUNDLE] Fatal: Could not commit records to saved_scanned_data:', lastErrorMessage);
         return {
           success: false,
           savedCount: 0,
@@ -2302,6 +2306,25 @@ class ImportedService {
           message: `Failed to commit saved records: ${lastErrorMessage}`,
           error: lastErrorMessage || 'Database insert failed',
         };
+      }
+    }
+
+    // Update imported_inward_data scan_status to 'completed' for all inwarded members in this class
+    if (isSupabaseConfigured) {
+      try {
+        const inwardedMemberIds = [
+          ...this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase()).map(s => s.member_id),
+          ...newSavedRecords.map(r => r.member_id)
+        ];
+        if (inwardedMemberIds.length > 0) {
+          await supabase
+            .from('imported_inward_data')
+            .update({ scan_status: 'completed', scanned_at: now })
+            .eq('class_id', cleanCid)
+            .in('member_id', inwardedMemberIds);
+        }
+      } catch (updImpErr) {
+        console.warn('[SAVE CLASS BUNDLE] Note updating imported_inward_data scan_status:', updImpErr);
       }
     }
 
@@ -3373,7 +3396,7 @@ class ImportedService {
         try {
           await supabase
             .from('imported_inward_data')
-            .update({ scan_status: 'saved', scanned_at: now })
+            .update({ scan_status: 'completed', scanned_at: now })
             .eq('class_id', cleanCid)
             .eq('member_id', canonicalMid);
         } catch {}
@@ -3695,13 +3718,17 @@ class ImportedService {
     // 3. Immediately persist to Supabase in REAL TIME
     if (isSupabaseConfigured) {
       try {
-        await supabase.from('saved_scanned_data').insert({
+        let validSessionId: string | null = null;
+        if (session && session.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id)) {
+          validSessionId = session.id;
+        }
+
+        const insertPayload: any = {
           id: recordId,
-          scan_session_id: session?.id || null,
+          scan_session_id: validSessionId,
           import_session_id: importedRow.import_session_id || this.activeSessionId || null,
           college_name: uni,
           class_id: cleanActiveCid,
-          sch_id: importedRow.sch_id || null,
           member_id: resolvedMemberId,
           barcode: resolvedBarcode || normalized,
           scanned_by: operatorName,
@@ -3709,13 +3736,33 @@ class ImportedService {
           saved_by: operatorName,
           saved_at: now,
           status: 'SAVED',
-        });
+        };
 
-        await supabase
+        let { error: insErr } = await supabase.from('saved_scanned_data').insert(insertPayload);
+
+        // If scan_session_id caused a foreign key violation (23503), retry safely with null
+        if (insErr && insErr.code === '23503') {
+          insertPayload.scan_session_id = null;
+          const retryRes = await supabase.from('saved_scanned_data').insert(insertPayload);
+          insErr = retryRes.error;
+        }
+
+        if (insErr) {
+          console.error('[REALTIME INWARD] saved_scanned_data insert error:', insErr);
+        } else {
+          console.log('[REALTIME INWARD] ✓ Successfully persisted to saved_scanned_data in Supabase:', resolvedMemberId);
+        }
+
+        // Update imported_inward_data scan_status to 'completed' (check constraint allows 'not_started' | 'completed')
+        const { error: updErr } = await supabase
           .from('imported_inward_data')
-          .update({ scan_status: 'saved', scanned_at: now })
+          .update({ scan_status: 'completed', scanned_at: now })
           .eq('class_id', cleanActiveCid)
           .eq('member_id', resolvedMemberId);
+
+        if (updErr) {
+          console.warn('[REALTIME INWARD] imported_inward_data scan_status update note:', updErr);
+        }
       } catch (dbErr) {
         console.warn('[MEMBER SCAN] Supabase realtime persistence note:', dbErr);
       }

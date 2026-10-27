@@ -1,33 +1,37 @@
 // ==============================================================================
-// ExamScan Dashboard View — Informational Monitoring & Overview Screen (Section 1)
-// Purely a MONITORING screen:
-// - Shows Date, University, Total Classes, Expected, Received, Missing
-// - Shows Today's Progress (% and counts)
-// - Shows Scanning Status breakdown (Not Started, In Progress, Completed)
-// - Shows Class-wise monitoring status
-// - Strictly NO scan buttons, NO camera, NO operational scanning controls
+// ExamScan Dashboard View — Informational Monitoring & Overview Screen
+// Production Features:
+// - Realtime Dashboard Analysis (auto-subscribing & auto-syncing with Supabase)
+// - Date Range Sorting (X to Y, e.g. 1-10-26 to 5-10-26, Today, All Time)
+// - Dedicated "Today's Manual Progress" Card (syncs with public.manual_inward_data)
+// - Separate Manual Inward Table Modal with Scanned By, Class ID, Member ID, Date & Time
+// - Zero duplicate buttons (clean header without redundant Import buttons)
 // ==============================================================================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Calendar as CalendarIcon,
   Building,
   CheckCircle2,
   Clock,
-  AlertTriangle,
   Layers,
   Activity,
-  FileSpreadsheet,
   LayoutGrid,
   List,
   Search,
   X,
+  Filter,
+  FileSpreadsheet,
+  RotateCcw,
+  Sparkles,
 } from 'lucide-react';
 import {
   importedService,
   ClassBundle,
   SessionSummary,
+  ManualInwardedRecord,
 } from '../../services/importedService';
+import { ManualInwardModal } from './ManualInwardModal';
 
 interface DashboardViewProps {
   onNavigateToSessions?: () => void;
@@ -37,23 +41,44 @@ interface DashboardViewProps {
   onNavigateToImport?: () => void;
 }
 
-export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport }) => {
+export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  // Date Range Filter States (Requirement 7 & 10: X to Y date sorting for bulk data)
+  const [filterStartDate, setFilterStartDate] = useState<string>('');
+  const [filterEndDate, setFilterEndDate] = useState<string>('');
+  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+
+  // Manual Inward Modal State (Requirement 5 & 6)
+  const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
+  const [manualRecords, setManualRecords] = useState<ManualInwardedRecord[]>([]);
+
+  // Load and subscribe to live data
   const loadData = useCallback(() => {
     const bList = importedService.getClassBundles();
     const sum = importedService.getSessionSummary();
+    const manList = importedService.getManualInwardRecords();
     setBundles(bList);
     setSessionSummary(sum);
+    setManualRecords(manList);
   }, []);
 
   useEffect(() => {
     loadData();
     const unsub = importedService.subscribe(loadData);
-    return () => unsub();
+
+    // Requirement 4: Real-time background sync poller (every 2.5 seconds) to guarantee live analysis
+    const interval = setInterval(() => {
+      importedService.syncFromSupabase();
+    }, 2500);
+
+    return () => {
+      unsub();
+      clearInterval(interval);
+    };
   }, [loadData]);
 
   // Today's formatted date
@@ -63,13 +88,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
     month: 'short',
     year: 'numeric',
   });
+  const universityName = sessionSummary?.universityName || importedService.getActiveUniversity() || '';
 
+  // Base counts
   const totalClasses = sessionSummary?.totalClasses || bundles.length;
   const totalExpected = sessionSummary?.totalExpected || 0;
-  const totalReceived = sessionSummary?.totalReceived || 0;
+  const baseTotalReceived = sessionSummary?.totalReceived || 0;
+
+  // Filtered Manual Inward records based on selected date range (Requirement 5 & 7)
+  const filteredManualRecords = useMemo(() => {
+    let list = [...manualRecords];
+    if (filterStartDate) {
+      const sMs = new Date(`${filterStartDate}T00:00:00`).getTime();
+      list = list.filter(r => {
+        const t = new Date(r.scanned_at || r.created_at).getTime();
+        return !isNaN(t) && t >= sMs;
+      });
+    }
+    if (filterEndDate) {
+      const eMs = new Date(`${filterEndDate}T23:59:59.999`).getTime();
+      list = list.filter(r => {
+        const t = new Date(r.scanned_at || r.created_at).getTime();
+        return !isNaN(t) && t <= eMs;
+      });
+    }
+    return list;
+  }, [manualRecords, filterStartDate, filterEndDate]);
+
+  // Today's manual records (for today's manual progress card)
+  const todayDateStr = new Date().toISOString().split('T')[0];
+  const todayManualCount = useMemo(() => {
+    const sMs = new Date(`${todayDateStr}T00:00:00`).getTime();
+    const eMs = new Date(`${todayDateStr}T23:59:59.999`).getTime();
+    return manualRecords.filter(r => {
+      const t = new Date(r.scanned_at || r.created_at).getTime();
+      return !isNaN(t) && t >= sMs && t <= eMs;
+    }).length;
+  }, [manualRecords, todayDateStr]);
+
+  const activeManualCount = filterStartDate || filterEndDate ? filteredManualRecords.length : manualRecords.length;
+
+  const totalReceived = baseTotalReceived;
   const totalPending = Math.max(0, totalExpected - totalReceived);
   const completionRate = totalExpected > 0 ? Math.round((totalReceived / totalExpected) * 100) : 0;
-  const universityName = sessionSummary?.universityName || '';
+
+  // Manual Progress Percentage compared to Total Received
+  const manualPercentage = totalReceived > 0 ? Math.round((activeManualCount / totalReceived) * 100) : 0;
 
   // Status breakdown counts
   const completedCount = bundles.filter(b => b.status === 'COMPLETED').length;
@@ -79,15 +143,146 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
 
   const hasScanningStarted = totalReceived > 0;
 
+  // Quick Preset Helper for Date Range
+  const setDatePreset = (preset: 'all' | 'today' | 'yesterday' | 'oct_example') => {
+    if (preset === 'all') {
+      setFilterStartDate('');
+      setFilterEndDate('');
+    } else if (preset === 'today') {
+      setFilterStartDate(todayDateStr);
+      setFilterEndDate(todayDateStr);
+    } else if (preset === 'yesterday') {
+      const yDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      setFilterStartDate(yDate);
+      setFilterEndDate(yDate);
+    } else if (preset === 'oct_example') {
+      setFilterStartDate('2026-10-01');
+      setFilterEndDate('2026-10-05');
+    }
+    setShowDatePicker(false);
+  };
+
+  const isDateFiltered = Boolean(filterStartDate || filterEndDate);
+
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-12">
-      {/* 1. Header Toolbar (Informational Only - No Operational Scan Buttons) */}
+    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-16">
+      {/* 1. Header Toolbar (Requirement 8 & 9: Cleaned of Duplicate Import buttons) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 h-9 px-3 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg text-xs font-semibold text-[#172033]">
-            <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
-            <span>{todayStr}</span>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Interactive Date Range Filter Button (Requirement 10: X to Y Date Sorting) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowDatePicker(prev => !prev)}
+              className={`flex items-center gap-2 h-9 px-3 border rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                isDateFiltered
+                  ? 'bg-[#EFF6FF] border-[#93C5FD] text-[#1565D8]'
+                  : 'bg-[#F8FAFC] border-[#E2E8F0] text-[#172033] hover:bg-slate-100'
+              }`}
+              title="Filter by Date Range"
+            >
+              <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
+              <span>
+                {isDateFiltered
+                  ? `${filterStartDate || 'Start'} → ${filterEndDate || 'End'}`
+                  : todayStr}
+              </span>
+              <Filter className="h-3 w-3 text-[#64748B] ml-0.5" />
+            </button>
+
+            {/* Date Range Dropdown / Popover */}
+            {showDatePicker && (
+              <div className="absolute left-0 top-11 z-30 w-72 sm:w-80 bg-white border border-[#CBD5E1] rounded-xl shadow-xl p-3 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0] text-xs font-bold text-[#172033]">
+                  <span>Filter Date Range (X to Y)</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowDatePicker(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Quick Presets */}
+                <div className="grid grid-cols-2 gap-1.5 pt-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setDatePreset('today')}
+                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDatePreset('oct_example')}
+                    className="px-2 py-1 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] rounded font-bold transition-colors"
+                  >
+                    1-10-26 to 5-10-26
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDatePreset('yesterday')}
+                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDatePreset('all')}
+                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
+                  >
+                    All Time
+                  </button>
+                </div>
+
+                {/* Custom Inputs */}
+                <div className="pt-2.5 space-y-2 text-xs">
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] uppercase">From Date (X):</label>
+                    <input
+                      type="date"
+                      value={filterStartDate}
+                      onChange={e => setFilterStartDate(e.target.value)}
+                      className="w-full mt-0.5 px-2 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded text-xs font-semibold text-[#172033]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-[#64748B] uppercase">To Date (Y):</label>
+                    <input
+                      type="date"
+                      value={filterEndDate}
+                      onChange={e => setFilterEndDate(e.target.value)}
+                      className="w-full mt-0.5 px-2 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded text-xs font-semibold text-[#172033]"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 flex items-center justify-between border-t border-[#E2E8F0] mt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterStartDate('');
+                      setFilterEndDate('');
+                      setShowDatePicker(false);
+                    }}
+                    className="text-[11px] font-semibold text-[#64748B] hover:text-[#DC2626] flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>Clear Filter</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDatePicker(false)}
+                    className="px-3 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-md transition-colors cursor-pointer"
+                  >
+                    Apply Filter
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+
           {universityName ? (
             <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
               <Building className="h-4 w-4 text-[#64748B]" />
@@ -96,20 +291,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
           ) : null}
         </div>
 
-        {/* Top Actions */}
+        {/* Realtime Live Analysis Badge & Monitoring Indicator */}
         <div className="flex items-center gap-2">
-          {onNavigateToImport && (
-            <button
-              type="button"
-              onClick={onNavigateToImport}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors shadow-xs cursor-pointer"
-              title="Import Excel Data"
-            >
-              <FileSpreadsheet className="h-4 w-4" />
-              <span>Import Data</span>
-            </button>
-          )}
-          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] border border-[#CBD5E1] rounded-lg text-[#475569] text-xs font-bold uppercase tracking-wider">
+          {/* Requirement 4: Real-time Live Indicator */}
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] font-bold uppercase tracking-wider">
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Realtime Live</span>
+          </span>
+
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#F1F5F9] border border-[#CBD5E1] rounded-lg text-[#475569] text-xs font-bold uppercase tracking-wider">
             <Activity className="h-3.5 w-3.5 text-[#1565D8]" />
             <span>Monitoring Overview</span>
           </span>
@@ -167,7 +357,54 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
         </div>
       </div>
 
-      {/* 4. Scanning Status Overview Grid (Section 1) */}
+      {/* 4. TODAY'S MANUAL PROGRESS CARD (Requirement 5, 6 & 7) */}
+      <div className="bg-white p-4 border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl shadow-xs transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">
+                Today's Manual Progress
+              </span>
+              <span className="px-2 py-0.5 bg-[#EFF6FF] border border-[#BFDBFE] text-[#1565D8] text-[10px] font-black uppercase tracking-wider rounded-md">
+                manual_inward_data
+              </span>
+            </div>
+            <div className="text-xs text-[#64748B] mt-1 font-medium">
+              Synchronized directly with backend <code className="text-[#1565D8] font-bold">manual_inward_data</code> table
+            </div>
+          </div>
+
+          {/* Action button to open separate table */}
+          <button
+            type="button"
+            onClick={() => setIsManualModalOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-all shadow-xs cursor-pointer self-start sm:self-auto"
+            title="Open Dedicated Manual Inward Table"
+          >
+            <FileSpreadsheet className="h-4 w-4" />
+            <span>Open Manual Table ({manualRecords.length})</span>
+          </button>
+        </div>
+
+        {/* Progress Bar for Manual Entries vs Total Inwards */}
+        <div className="mt-3 h-2 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
+          <div
+            className="h-full bg-[#1565D8] transition-all duration-300 rounded-full"
+            style={{ width: `${Math.min(100, manualPercentage)}%` }}
+          />
+        </div>
+
+        <div className="mt-2 text-xs font-tabular text-[#64748B] flex flex-wrap items-center justify-between gap-2">
+          <span>
+            Today: <strong className="text-[#172033] font-black">{todayManualCount}</strong> manual entries recorded today
+          </span>
+          <span className="text-[11px] font-semibold text-[#1565D8]">
+            {activeManualCount} total manual entries ({manualPercentage}% of all verified inward scripts)
+          </span>
+        </div>
+      </div>
+
+      {/* 5. Scanning Status Overview Grid */}
       <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
         <div className="text-xs font-bold uppercase tracking-wider text-[#172033] mb-3 flex items-center gap-1.5">
           <Layers className="h-4 w-4 text-[#1565D8]" />
@@ -209,89 +446,72 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
             <div className="p-3 bg-[#DCFCE7] border border-[#BBF7D0] rounded-lg">
               <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D]">Completed</div>
               <div className="text-xl font-bold font-tabular text-[#16A34A] mt-0.5">{completedCount}</div>
-              <div className="text-[10px] text-[#166534] mt-0.5">100% Verified &amp; Saved</div>
+              <div className="text-[10px] text-[#166534] mt-0.5">All booklets verified</div>
             </div>
           </div>
         )}
       </div>
 
-      {/* 5. Class-Wise Monitoring Table / Grid (Read-Only Overview) */}
+      {/* 6. Class-Wise Realtime Monitoring List */}
       <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        <div className="p-3.5 bg-[#F1F5F9] border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
-              CLASS-WISE MONITORING OVERVIEW
-            </h2>
-            <div className="text-[11px] text-[#64748B]">
-              Real-time status of all imported class bundles in the current inwarding session
+        <div className="p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-bold uppercase tracking-wider text-[#172033]">
+              Class-Wise Live Monitoring
             </div>
+            <span className="px-2 py-0.5 bg-[#F1F5F9] text-[#475569] text-[10px] font-black rounded-md font-tabular">
+              {bundles.length} Classes
+            </span>
           </div>
 
-          {bundles.length > 0 && (
-            <div className="flex items-center gap-2">
-              {/* Search Class ID */}
-              <div className="relative">
-                <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#64748B]" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Filter Class..."
-                  className="pl-8 pr-2.5 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white focus:outline-none focus:border-[#1565D8] w-32 sm:w-40 text-[#172033]"
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#172033]"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-
-              {/* Grid / List Mode Toggle */}
-              <div className="flex items-center border border-[#CBD5E1] rounded-lg p-0.5 bg-slate-200/60 shrink-0">
+          <div className="flex items-center gap-2">
+            {/* Search Box */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#94A3B8]" />
+              <input
+                type="text"
+                placeholder="Search Class ID..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="pl-8 pr-3 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg text-xs font-medium text-[#172033] focus:bg-white focus:border-[#1565D8] focus:outline-hidden"
+              />
+              {searchQuery && (
                 <button
                   type="button"
-                  onClick={() => setViewMode('grid')}
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md transition-colors cursor-pointer ${
-                    viewMode === 'grid'
-                      ? 'bg-white text-[#1565D8] shadow-xs'
-                      : 'text-[#64748B] hover:text-[#172033]'
-                  }`}
-                  title="Grid View"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 >
-                  <LayoutGrid className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Grid</span>
+                  <X className="h-3 w-3" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('list')}
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md transition-colors cursor-pointer ${
-                    viewMode === 'list'
-                      ? 'bg-white text-[#1565D8] shadow-xs'
-                      : 'text-[#64748B] hover:text-[#172033]'
-                  }`}
-                  title="List View"
-                >
-                  <List className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">List</span>
-                </button>
-              </div>
+              )}
             </div>
-          )}
+
+            {/* Grid / List View Toggle */}
+            <div className="flex items-center bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setViewMode('grid')}
+                className={`p-1 rounded-md transition-colors ${viewMode === 'grid' ? 'bg-white shadow-xs text-[#1565D8]' : 'text-slate-400 hover:text-slate-600'}`}
+                title="Grid View"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`p-1 rounded-md transition-colors ${viewMode === 'list' ? 'bg-white shadow-xs text-[#1565D8]' : 'text-slate-400 hover:text-slate-600'}`}
+                title="List View"
+              >
+                <List className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
         </div>
 
+        {/* Content View: Grid vs List */}
         {bundles.length === 0 ? (
-          <div className="p-8 text-center">
-            <div className="flex h-10 w-10 items-center justify-center bg-[#EAF2FF] text-[#1565D8] rounded-xl mx-auto mb-2">
-              <FileSpreadsheet className="h-5 w-5" />
-            </div>
-            <h3 className="text-xs font-bold text-[#172033]">NO IMPORTED DATA</h3>
-            <p className="text-[11px] text-[#64748B] max-w-sm mx-auto mt-1">
-              Import an Excel file containing Class ID and Member ID to begin.
-            </p>
+          <div className="p-8 text-center text-[#64748B] text-xs">
+            No classes imported yet. Import examination data to view class monitoring.
           </div>
         ) : viewMode === 'grid' ? (
           /* GRID VIEW */
@@ -434,6 +654,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToImport
           </div>
         )}
       </div>
+
+      {/* 7. Dedicated Manual Inward Table Modal (Requirement 6 & 7) */}
+      <ManualInwardModal
+        isOpen={isManualModalOpen}
+        onClose={() => setIsManualModalOpen(false)}
+        defaultStartDate={filterStartDate}
+        defaultEndDate={filterEndDate}
+      />
     </div>
   );
 };

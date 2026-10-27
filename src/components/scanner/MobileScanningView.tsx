@@ -107,6 +107,17 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const [isSubmittingManual, setIsSubmittingManual] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
+  // Save confirmation modal state (Requirement 2)
+  const [showSaveConfirmModal, setShowSaveConfirmModal] = useState<boolean>(false);
+  const [saveConfirmChecked, setSaveConfirmChecked] = useState<boolean>(false);
+  const [saveConfirmData, setSaveConfirmData] = useState<{
+    classId: string;
+    inwardedCount: number;
+    notInwardedCount: number;
+    totalCount: number;
+  } | null>(null);
+  const isAutoSavingRef = useRef<boolean>(false);
+
   // Top Toast Notification state (Non-blocking, auto-dismissing, Part 10-12)
   const [topToast, setTopToast] = useState<ScannerToastData | null>(null);
 
@@ -348,9 +359,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   // ==============================================================================
   // SAVE CLASS INWARD ACTION (STAGE 2)
   // Persists pending scans & finalizes inward operation for the selected Class ID
-  // Allows user to click SAVE after class inward operation & continue to next stage
+  // When Not Inward == 0 -> Auto-saves immediately
+  // When Not Inward > 0 and user clicks SAVE -> Prompts confirmation modal with checkbox
   // ==============================================================================
-  const handleSaveClassInward = async () => {
+  const handleSaveClassInward = async (isAutoSave = false) => {
     const curClass = selectedClassIdRef.current || selectedClassId;
     if (!curClass || isSaving) return;
 
@@ -362,12 +374,15 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         loadData();
         showToast({
           type: 'success',
-          title: '✓ Class Inward Saved',
-          subtitle: `Class ID: ${curClass}`,
+          title: isAutoSave ? '✓ Class Complete — Auto-Saved' : '✓ Class Inward Saved',
+          subtitle: `Class ID: ${curClass} (${res.totalSavedForClass} scripts)`,
+          duration: 2500,
         });
+        setShowSaveConfirmModal(false);
         // Continue to the next stage: return to class list view with updated status
         setTimeout(() => {
           backToClassSelection();
+          isAutoSavingRef.current = false;
         }, 1200);
       } else {
         playScanWarningSound();
@@ -375,7 +390,9 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           type: 'error',
           title: '✕ Inward Failed',
           subtitle: res.error || res.message || 'Failed to save class inward',
+          duration: 2500,
         });
+        isAutoSavingRef.current = false;
       }
     } catch (err: any) {
       playScanWarningSound();
@@ -383,10 +400,49 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         type: 'error',
         title: '✕ Inward Failed',
         subtitle: err?.message || 'Please try again',
+        duration: 2500,
       });
+      isAutoSavingRef.current = false;
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const onSaveButtonClick = () => {
+    const curClass = selectedClassIdRef.current || selectedClassId;
+    if (!curClass || isSaving) return;
+
+    const bundle = importedService.getClassBundle(curClass);
+    const inwarded = bundle ? (bundle.inwardedCount ?? bundle.receivedCount) : 0;
+    const notInwarded = bundle ? (bundle.notInwardedCount ?? bundle.missingCount) : 0;
+    const total = bundle ? bundle.expectedCount : 0;
+
+    if (inwarded === 0) {
+      playScanWarningSound();
+      showToast({
+        type: 'warning',
+        title: '⚠ No Scripts Inwarded',
+        subtitle: 'Scan at least 1 booklet before saving',
+        duration: 2000,
+      });
+      return;
+    }
+
+    // If Not Inward == 0, save directly!
+    if (notInwarded === 0) {
+      handleSaveClassInward(false);
+      return;
+    }
+
+    // If Not Inward > 0 (pending scripts remain), show confirmation modal with checkbox!
+    setSaveConfirmData({
+      classId: curClass,
+      inwardedCount: inwarded,
+      notInwardedCount: notInwarded,
+      totalCount: total,
+    });
+    setSaveConfirmChecked(false);
+    setShowSaveConfirmModal(true);
   };
 
   // ==============================================================================
@@ -516,6 +572,30 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           subtitle: canonicalMemberId,
           duration: 1100,
         });
+
+        // Check if all scripts for this class are now inwarded (notInwardedCount === 0) -> Auto Save
+        const updatedBundle = importedService.getClassBundle(cleanCid);
+        const notInwardRemaining = updatedBundle ? (updatedBundle.notInwardedCount ?? updatedBundle.missingCount) : 1;
+        if (
+          updatedBundle &&
+          updatedBundle.expectedCount > 0 &&
+          notInwardRemaining === 0 &&
+          !isAutoSavingRef.current
+        ) {
+          isAutoSavingRef.current = true;
+          console.log('[AUTO-SAVE] All scripts inwarded via manual entry (Not Inward = 0). Auto-saving bundle.');
+          showToast({
+            type: 'success',
+            title: '✓ All Scripts Inwarded!',
+            subtitle: `Class ID: ${cleanCid} — Auto-saving bundle...`,
+            duration: 2500,
+          });
+          playScanSuccessSound();
+          setTimeout(() => {
+            handleSaveClassInward(true);
+          }, 800);
+        }
+
         return true;
       } else {
         console.error('[MANUAL INWARD FLOW] Insert:            FAIL');
@@ -622,6 +702,30 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           subtitle: res.member_id || code,
           duration: 2000,
         });
+
+        // Check if all scripts for this class are now inwarded (notInwardedCount === 0) -> Auto Save
+        const updatedBundle = importedService.getClassBundle(activeCid);
+        const notInwardRemaining = updatedBundle ? (updatedBundle.notInwardedCount ?? updatedBundle.missingCount) : 1;
+        if (
+          updatedBundle &&
+          updatedBundle.expectedCount > 0 &&
+          notInwardRemaining === 0 &&
+          !isAutoSavingRef.current
+        ) {
+          isAutoSavingRef.current = true;
+          console.log('[AUTO-SAVE] All scripts inwarded via camera barcode (Not Inward = 0). Auto-saving bundle.');
+          showToast({
+            type: 'success',
+            title: '✓ All Scripts Inwarded!',
+            subtitle: `Class ID: ${activeCid} — Auto-saving bundle...`,
+            duration: 2500,
+          });
+          playScanSuccessSound();
+          setTimeout(() => {
+            handleSaveClassInward(true);
+          }, 800);
+        }
+
         return true;
       } else {
         playScanWarningSound();
@@ -1002,7 +1106,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={handleSaveClassInward}
+                onClick={onSaveButtonClick}
                 disabled={isSaving}
                 className="px-3 py-1 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-[11px] font-black uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-1 cursor-pointer disabled:opacity-50"
                 title="Save Class Inward and continue"
@@ -1450,6 +1554,88 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 );
               })
             )}
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION POPUP MODAL (Requirement 2): Shown when user clicks SAVE and Not Inward > 0 */}
+      {showSaveConfirmModal && saveConfirmData && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5 border border-slate-200 flex flex-col gap-4">
+            {/* Header */}
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <AlertTriangle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-black text-slate-900 leading-tight">
+                  Confirm Bundle Inward Save
+                </h3>
+                <p className="text-xs text-slate-500 font-mono mt-0.5">
+                  Class ID: <span className="font-bold text-slate-800">{saveConfirmData.classId}</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Script counts badge summary */}
+            <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+              <div className="bg-white p-2 rounded-lg border border-emerald-200 text-center shadow-2xs">
+                <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Inwarded</div>
+                <div className="text-lg font-black text-emerald-700">
+                  {saveConfirmData.inwardedCount} <span className="text-xs text-slate-400 font-normal">scripts</span>
+                </div>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-amber-200 text-center shadow-2xs">
+                <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Pending (Not Inward)</div>
+                <div className="text-lg font-black text-amber-700">
+                  {saveConfirmData.notInwardedCount} <span className="text-xs text-slate-400 font-normal">scripts</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Question prompt */}
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to save this bundle? Currently, the inwarded section has{' '}
+              <strong className="text-slate-900">{saveConfirmData.inwardedCount}</strong> scripts out of{' '}
+              <strong className="text-slate-900">{saveConfirmData.totalCount}</strong> expected scripts, and{' '}
+              <strong className="text-amber-700">{saveConfirmData.notInwardedCount}</strong> scripts remain pending.
+            </p>
+
+            {/* Mandatory Checkbox */}
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200 cursor-pointer select-none transition-colors hover:bg-amber-100/60">
+              <input
+                type="checkbox"
+                checked={saveConfirmChecked}
+                onChange={(e) => setSaveConfirmChecked(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded text-[#1565D8] focus:ring-[#1565D8] border-slate-300 cursor-pointer"
+              />
+              <span className="text-[11px] font-bold text-slate-800 leading-snug">
+                I confirm saving Class {saveConfirmData.classId} with {saveConfirmData.inwardedCount} scripts inwarded ({saveConfirmData.notInwardedCount} scripts pending).
+              </span>
+            </label>
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowSaveConfirmModal(false)}
+                className="flex-1 py-2.5 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 active:scale-98 rounded-xl transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!saveConfirmChecked || isSaving}
+                onClick={() => {
+                  setShowSaveConfirmModal(false);
+                  handleSaveClassInward(false);
+                }}
+                className="flex-1 py-2.5 text-xs font-black uppercase tracking-wider text-white bg-[#16A34A] hover:bg-[#15803D] active:scale-98 rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Check className="h-3.5 w-3.5" />
+                <span>{isSaving ? 'Saving...' : 'Confirm & Save'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
