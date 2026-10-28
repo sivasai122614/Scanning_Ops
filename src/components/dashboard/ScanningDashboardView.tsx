@@ -605,20 +605,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
             className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
 
-          {/* PART 7: Targeted Barcode Aiming Guide Overlay */}
-          {cameraActive && (
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              <div className="relative w-[80%] h-[40%] rounded-xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
-                {/* Corner Reticle Accents */}
-                <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
-                <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
-                <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
-                {/* Subtle Red Aiming Laser Line */}
-                <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
-              </div>
-            </div>
-          )}
+
 
           {cameraLoading && (
             <div className="text-center text-white px-4">

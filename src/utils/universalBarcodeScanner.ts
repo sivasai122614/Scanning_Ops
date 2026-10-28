@@ -285,9 +285,9 @@ export function startContinuousDualScanning(
   const scanMode: ScannerScanFormat = options?.scanMode || 'barcode';
   const isQrMode = scanMode === 'qr_code';
 
-  // Sizing: 640x200 for 1D barcodes; 480x480 square for QR codes
-  const canvasW = isQrMode ? 480 : CROP_CANVAS_WIDTH;
-  const canvasH = isQrMode ? 480 : CROP_CANVAS_HEIGHT;
+  // Full-frame canvas sizing: 640x360 (16:9 rectangle) for 1D barcodes; 640x480 (4:3) for QR codes
+  const canvasW = 640;
+  const canvasH = isQrMode ? 480 : 360;
 
   const scanCanvas = document.createElement('canvas');
   scanCanvas.width = canvasW;
@@ -331,7 +331,7 @@ export function startContinuousDualScanning(
     if (!isRunning) return;
 
     console.log(
-      `[SCANNER ENGINE ACTIVE] Mode: ${scanMode}`,
+      `[SCANNER ENGINE ACTIVE] Mode: ${scanMode} (Full Frame Scan)`,
       nativeDetector
         ? 'Native BarcodeDetector (Hardware Accelerated)'
         : (isQrMode ? 'Dedicated ZXing QRCodeReader' : 'Dedicated ZXing Code39Reader / Code128Reader')
@@ -355,27 +355,14 @@ export function startContinuousDualScanning(
             const vw = videoEl.videoWidth;
             const vh = videoEl.videoHeight;
 
-            // Crop calculation: Square for QR mode (70% min dimension), 80%x40% for 1D mode
-            let cropW: number;
-            let cropH: number;
-            if (isQrMode) {
-              const minDim = Math.min(vw, vh);
-              cropW = minDim * 0.72;
-              cropH = minDim * 0.72;
-            } else {
-              cropW = vw * 0.80;
-              cropH = vh * 0.40;
-            }
-            const cropX = (vw - cropW) / 2;
-            const cropY = (vh - cropH) / 2;
-
-            // Draw cropped viewfinder region directly onto reusable canvas
+            // Full-frame capture without artificial bounding box restriction (User requirement 2, 3, 4)
+            // Barcodes & QR codes anywhere in the camera feed will be detected immediately
             scanCtx.drawImage(
               videoEl,
-              cropX,
-              cropY,
-              cropW,
-              cropH,
+              0,
+              0,
+              vw,
+              vh,
               0,
               0,
               canvasW,
@@ -387,10 +374,10 @@ export function startContinuousDualScanning(
             let engineUsed: 'native-barcode-detector' | 'zxing-code39' | 'zxing-code128' | 'zxing-qrcode' | 'native-qr' =
               isQrMode ? 'zxing-qrcode' : 'zxing-code39';
 
-            // PATH A: Native BarcodeDetector if available
+            // PATH A: Native BarcodeDetector if available (hardware accelerated full frame)
             if (nativeDetector) {
               try {
-                const barcodes = await nativeDetector.detect(scanCanvas);
+                const barcodes = await nativeDetector.detect(videoEl);
                 if (barcodes && barcodes.length > 0) {
                   for (const b of barcodes) {
                     if (b.rawValue && b.rawValue.trim()) {
@@ -402,7 +389,21 @@ export function startContinuousDualScanning(
                   }
                 }
               } catch {
-                // Fall through to ZXing
+                try {
+                  const barcodes = await nativeDetector.detect(scanCanvas);
+                  if (barcodes && barcodes.length > 0) {
+                    for (const b of barcodes) {
+                      if (b.rawValue && b.rawValue.trim()) {
+                        detectedText = b.rawValue.trim().replace(/^\*+|\*+$/g, '');
+                        detectedFormat = b.format || (isQrMode ? 'qr_code' : 'code_39');
+                        engineUsed = isQrMode ? 'native-qr' : 'native-barcode-detector';
+                        break;
+                      }
+                    }
+                  }
+                } catch {
+                  // Fall through to ZXing
+                }
               }
             }
 

@@ -191,6 +191,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               clean === 'shid' ||
               clean === 'clsid' ||
               clean === 'schoolid' ||
+              clean === 'scheduleid' ||
+              clean === 'schedule' ||
+              h.includes('schedule') ||
               h.includes('sh id') ||
               h.includes('sh_id') ||
               h.includes('school id')
@@ -786,7 +789,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                           <thead className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] uppercase tracking-wider text-[#64748B] font-bold">
                             <tr>
                               <th className="py-2.5 px-4 w-12 text-center">#</th>
-                              <th className="py-2.5 px-4">Class ID</th>
+                              <th className="py-2.5 px-4">Class ID / SH ID</th>
                               <th className="py-2.5 px-4 text-center">Members (unqid)</th>
                               <th className="py-2.5 px-4 text-center">Expected Booklets</th>
                               <th className="py-2.5 px-4 text-center">Status</th>

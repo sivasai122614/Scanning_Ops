@@ -1277,8 +1277,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
           </div>
 
-          {/* Viewport */}
-          <div className="relative bg-black w-full aspect-16/9 min-h-[165px] max-h-[24vh] flex items-center justify-center overflow-hidden">
+          {/* Viewport: Dynamic Aspect Ratio (16:9 Rectangle for Barcode, 4:3 for QR Code) with NO detection area overlays */}
+          <div
+            className={`relative bg-black w-full flex items-center justify-center overflow-hidden transition-all duration-300 ${
+              scanFormat === 'qr_code'
+                ? 'aspect-[4/3] min-h-[220px] max-h-[38vh]'
+                : 'aspect-[16/9] min-h-[165px] max-h-[28vh]'
+            }`}
+          >
             <video
               ref={videoRef}
               playsInline
@@ -1286,32 +1292,6 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               autoPlay
               className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
             />
-
-            {/* Targeted Barcode Aiming Guide Overlay (1D Barcode Mode) */}
-            {cameraActive && scanFormat === 'barcode' && (
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div className="relative w-[82%] h-[46%] rounded-lg border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
-                  <div className="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-emerald-400" />
-                  <div className="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 border-emerald-400" />
-                  <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-emerald-400" />
-                  <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-emerald-400" />
-                  <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
-                </div>
-              </div>
-            )}
-
-            {/* Targeted QR Code Aiming Guide Overlay (2D QR Mode) */}
-            {cameraActive && scanFormat === 'qr_code' && (
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div className="relative w-[130px] h-[130px] rounded-xl border-2 border-cyan-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
-                  <div className="absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-cyan-400" />
-                  <div className="absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-cyan-400" />
-                  <div className="absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-cyan-400" />
-                  <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-cyan-400" />
-                  <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-cyan-400/80 shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pulse" />
-                </div>
-              </div>
-            )}
 
             {cameraLoading && (
               <div className="text-center text-white px-4">

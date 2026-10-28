@@ -309,7 +309,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       {/* 2. Statistics KPI Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES</div>
+          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES / SH IDs</div>
           <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalClasses}</div>
           <div className="text-[11px] text-[#64748B] mt-0.5">Imported Sessions</div>
         </div>
@@ -352,7 +352,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             <strong className="text-[#172033] font-black">{totalReceived}</strong> / {totalExpected} scanned
           </span>
           <span className="text-[11px] font-semibold text-[#64748B]">
-            {completedCount} of {totalClasses} classes completed
+            {completedCount} of {totalClasses} completed
           </span>
         </div>
       </div>
@@ -457,10 +457,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         <div className="p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <div className="text-xs font-bold uppercase tracking-wider text-[#172033]">
-              Class-Wise Live Monitoring
+              Class ID / SH ID Live Monitoring
             </div>
             <span className="px-2 py-0.5 bg-[#F1F5F9] text-[#475569] text-[10px] font-black rounded-md font-tabular">
-              {bundles.length} Classes
+              {bundles.length} Bundles
             </span>
           </div>
 
@@ -470,7 +470,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#94A3B8]" />
               <input
                 type="text"
-                placeholder="Search Class ID..."
+                placeholder="Search Class ID / SH ID..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 className="pl-8 pr-3 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg text-xs font-medium text-[#172033] focus:bg-white focus:border-[#1565D8] focus:outline-hidden"
@@ -511,7 +511,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         {/* Content View: Grid vs List */}
         {bundles.length === 0 ? (
           <div className="p-8 text-center text-[#64748B] text-xs">
-            No classes imported yet. Import examination data to view class monitoring.
+            No classes or SH IDs imported yet. Import examination data to view live monitoring.
           </div>
         ) : viewMode === 'grid' ? (
           /* GRID VIEW */
@@ -536,7 +536,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                     className="bg-white border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl p-3.5 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
                   >
                     <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
-                      <span className="font-mono font-black text-sm text-[#172033]">CLASS {b.classId}</span>
+                      <span className="font-mono font-black text-sm text-[#172033]">CLASS / SH ID {b.classId}</span>
                       <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
                         {b.status}
                       </span>
@@ -585,7 +585,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             <table className="w-full text-left text-xs font-sans">
               <thead className="bg-[#F8FAFC] text-[11px] font-bold text-[#64748B] uppercase tracking-wider border-b border-[#E2E8F0]">
                 <tr>
-                  <th className="py-2.5 px-3">Class ID</th>
+                  <th className="py-2.5 px-3">Class ID / SH ID</th>
                   <th className="py-2.5 px-3">Expected</th>
                   <th className="py-2.5 px-3">Scanned</th>
                   <th className="py-2.5 px-3">Pending</th>
