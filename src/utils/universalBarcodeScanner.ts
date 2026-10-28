@@ -28,18 +28,21 @@
 import {
   Code39Reader,
   Code128Reader,
+  QRCodeReader,
   RGBLuminanceSource,
   HybridBinarizer,
   BinaryBitmap,
   NotFoundException,
 } from '@zxing/library';
 
+export type ScannerScanFormat = 'barcode' | 'qr_code' | 'both';
+
 export interface BarcodeScanResult {
   text: string;
   format?: string;
   perf?: {
     detectionMs: number;
-    engine: 'native-barcode-detector' | 'zxing-code39' | 'zxing-code128';
+    engine: 'native-barcode-detector' | 'zxing-code39' | 'zxing-code128' | 'zxing-qrcode' | 'native-qr';
   };
 }
 
@@ -261,59 +264,83 @@ export async function requestCameraStream(
  * STEP 10: Maintains exactly ONE active requestAnimationFrame detection loop.
  * STEP 16: Uses direct Code39Reader and Code128Reader for sub-3ms decoding.
  */
+/**
+ * Starts continuous single-loop barcode/QR scanning on an active HTMLVideoElement.
+ *
+ * Supports scanMode: 'barcode' | 'qr_code' | 'both'.
+ * When 'qr_code', crops a square region and invokes QRCodeReader / native QR detector.
+ * When 'barcode', crops wide 1D slot and invokes Code39Reader / Code128Reader.
+ */
 export function startContinuousDualScanning(
   videoEl: HTMLVideoElement,
   onBarcodeDetected: (result: BarcodeScanResult) => void,
   options?: {
     throttleMs?: number;
+    scanMode?: ScannerScanFormat;
   }
 ): { stop: () => void } {
   let isRunning = true;
   let isBusy = false;
   let animFrameId: number | null = null;
+  const scanMode: ScannerScanFormat = options?.scanMode || 'barcode';
+  const isQrMode = scanMode === 'qr_code';
 
-  // STEP 8: Single reusable offscreen canvas created ONCE
+  // Sizing: 640x200 for 1D barcodes; 480x480 square for QR codes
+  const canvasW = isQrMode ? 480 : CROP_CANVAS_WIDTH;
+  const canvasH = isQrMode ? 480 : CROP_CANVAS_HEIGHT;
+
   const scanCanvas = document.createElement('canvas');
-  scanCanvas.width = CROP_CANVAS_WIDTH;
-  scanCanvas.height = CROP_CANVAS_HEIGHT;
+  scanCanvas.width = canvasW;
+  scanCanvas.height = canvasH;
   const scanCtx = scanCanvas.getContext('2d', {
     willReadFrequently: true,
     alpha: false,
   });
 
-  // STEP 16: Instantiate dedicated readers ONCE
+  // Dedicated readers
   const code39Reader = new Code39Reader();
   const code128Reader = new Code128Reader();
+  const qrCodeReader = new QRCodeReader();
 
   const throttleInterval = options?.throttleMs || 25; // ~30-40 fps scan check rate
   let lastScanTimestamp = 0;
 
   const initAndRun = async () => {
-    // STEP 2: Check native BarcodeDetector once
     let nativeDetector: any = null;
-    const hasNativeCode39 = await checkNativeCode39Support();
 
-    if (hasNativeCode39) {
+    if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
       try {
-        nativeDetector = await createNativeBarcodeDetector();
+        const BarcodeDetectorClass = (window as any).BarcodeDetector;
+        if (typeof BarcodeDetectorClass.getSupportedFormats === 'function') {
+          const supportedFormats: string[] = await BarcodeDetectorClass.getSupportedFormats();
+          const targetFormats = isQrMode
+            ? (supportedFormats.includes('qr_code') ? ['qr_code'] : [])
+            : (scanMode === 'both'
+                ? ['code_39', 'code_128', 'qr_code'].filter(f => supportedFormats.includes(f))
+                : ['code_39', 'code_128'].filter(f => supportedFormats.includes(f)));
+
+          if (targetFormats.length > 0) {
+            nativeDetector = new BarcodeDetectorClass({ formats: targetFormats });
+          }
+        }
       } catch (e) {
-        console.warn('[SCANNER] Native detector creation error:', e);
+        console.warn('[SCANNER] Native detector error:', e);
       }
     }
 
     if (!isRunning) return;
 
     console.log(
-      '[SCANNER ENGINE ACTIVE]',
+      `[SCANNER ENGINE ACTIVE] Mode: ${scanMode}`,
       nativeDetector
         ? 'Native BarcodeDetector (Hardware Accelerated)'
-        : 'Dedicated ZXing Code39Reader / Code128Reader'
+        : (isQrMode ? 'Dedicated ZXing QRCodeReader' : 'Dedicated ZXing Code39Reader / Code128Reader')
     );
 
     const scanFrame = async (now: number) => {
       if (!isRunning) return;
 
-      // Throttle and re-entry guard (STEP 10 & 12)
+      // Throttle and re-entry guard
       if (!isBusy && now - lastScanTimestamp >= throttleInterval) {
         if (
           videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
@@ -328,13 +355,21 @@ export function startContinuousDualScanning(
             const vw = videoEl.videoWidth;
             const vh = videoEl.videoHeight;
 
-            // STEP 4: Central barcode scan region (80% width, 40% height)
-            const cropW = vw * 0.80;
-            const cropH = vh * 0.40;
+            // Crop calculation: Square for QR mode (70% min dimension), 80%x40% for 1D mode
+            let cropW: number;
+            let cropH: number;
+            if (isQrMode) {
+              const minDim = Math.min(vw, vh);
+              cropW = minDim * 0.72;
+              cropH = minDim * 0.72;
+            } else {
+              cropW = vw * 0.80;
+              cropH = vh * 0.40;
+            }
             const cropX = (vw - cropW) / 2;
             const cropY = (vh - cropH) / 2;
 
-            // Draw cropped viewfinder region directly onto reusable 640x200 canvas
+            // Draw cropped viewfinder region directly onto reusable canvas
             scanCtx.drawImage(
               videoEl,
               cropX,
@@ -343,89 +378,108 @@ export function startContinuousDualScanning(
               cropH,
               0,
               0,
-              CROP_CANVAS_WIDTH,
-              CROP_CANVAS_HEIGHT
+              canvasW,
+              canvasH
             );
 
             let detectedText: string | null = null;
-            let detectedFormat: string = 'code_39';
-            let engineUsed: 'native-barcode-detector' | 'zxing-code39' | 'zxing-code128' =
-              'zxing-code39';
+            let detectedFormat: string = isQrMode ? 'qr_code' : 'code_39';
+            let engineUsed: 'native-barcode-detector' | 'zxing-code39' | 'zxing-code128' | 'zxing-qrcode' | 'native-qr' =
+              isQrMode ? 'zxing-qrcode' : 'zxing-code39';
 
-            // PATH A: Native BarcodeDetector if Code 39 supported natively
+            // PATH A: Native BarcodeDetector if available
             if (nativeDetector) {
               try {
-                // Pass cropped canvas to native detector for high speed
                 const barcodes = await nativeDetector.detect(scanCanvas);
                 if (barcodes && barcodes.length > 0) {
                   for (const b of barcodes) {
                     if (b.rawValue && b.rawValue.trim()) {
                       detectedText = b.rawValue.trim().replace(/^\*+|\*+$/g, '');
-                      detectedFormat = b.format || 'code_39';
-                      engineUsed = 'native-barcode-detector';
+                      detectedFormat = b.format || (isQrMode ? 'qr_code' : 'code_39');
+                      engineUsed = isQrMode ? 'native-qr' : 'native-barcode-detector';
                       break;
                     }
                   }
                 }
-              } catch (nativeErr) {
-                // If native detection transiently fails on this frame, fall through to ZXing
+              } catch {
+                // Fall through to ZXing
               }
             }
 
-            // PATH B: Direct ZXing Code39Reader / Code128Reader (<2.5ms)
+            // PATH B: Dedicated ZXing Readers
             if (!detectedText) {
               try {
-                const imageData = scanCtx.getImageData(
-                  0,
-                  0,
-                  CROP_CANVAS_WIDTH,
-                  CROP_CANVAS_HEIGHT
-                );
-                const lumSource = new RGBLuminanceSource(
-                  imageData.data,
-                  CROP_CANVAS_WIDTH,
-                  CROP_CANVAS_HEIGHT
-                );
+                const imageData = scanCtx.getImageData(0, 0, canvasW, canvasH);
+                const lumSource = new RGBLuminanceSource(imageData.data, canvasW, canvasH);
                 const binarizer = new HybridBinarizer(lumSource);
                 const binaryBitmap = new BinaryBitmap(binarizer);
 
-                // 1. Try dedicated Code39Reader (1.7ms)
-                try {
-                  const res39 = code39Reader.decode(binaryBitmap);
-                  if (res39 && res39.getText()) {
-                    detectedText = res39.getText().trim().replace(/^\*+|\*+$/g, '');
-                    detectedFormat = 'code_39';
-                    engineUsed = 'zxing-code39';
-                  }
-                } catch (e39) {
-                  if (!(e39 instanceof NotFoundException)) {
-                    // ignore normal not found
-                  }
-                } finally {
-                  code39Reader.reset();
-                }
-
-                // 2. If Code 39 didn't find barcode, try Code128Reader (0.8ms)
-                if (!detectedText) {
+                if (isQrMode) {
+                  // Dedicated QR Code Reader
                   try {
-                    const res128 = code128Reader.decode(binaryBitmap);
-                    if (res128 && res128.getText()) {
-                      detectedText = res128.getText().trim().replace(/^\*+|\*+$/g, '');
-                      detectedFormat = 'code_128';
-                      engineUsed = 'zxing-code128';
+                    const resQr = qrCodeReader.decode(binaryBitmap);
+                    if (resQr && resQr.getText()) {
+                      detectedText = resQr.getText().trim();
+                      detectedFormat = 'qr_code';
+                      engineUsed = 'zxing-qrcode';
                     }
-                  } catch (e128) {
-                    // normal not found
+                  } catch (eQr) {
+                    // Not found in this frame
                   } finally {
-                    code128Reader.reset();
+                    qrCodeReader.reset();
+                  }
+                } else {
+                  // 1. Try dedicated Code39Reader (1.7ms)
+                  try {
+                    const res39 = code39Reader.decode(binaryBitmap);
+                    if (res39 && res39.getText()) {
+                      detectedText = res39.getText().trim().replace(/^\*+|\*+$/g, '');
+                      detectedFormat = 'code_39';
+                      engineUsed = 'zxing-code39';
+                    }
+                  } catch {
+                    // Not found
+                  } finally {
+                    code39Reader.reset();
+                  }
+
+                  // 2. If Code 39 didn't find barcode, try Code128Reader (0.8ms)
+                  if (!detectedText) {
+                    try {
+                      const res128 = code128Reader.decode(binaryBitmap);
+                      if (res128 && res128.getText()) {
+                        detectedText = res128.getText().trim().replace(/^\*+|\*+$/g, '');
+                        detectedFormat = 'code_128';
+                        engineUsed = 'zxing-code128';
+                      }
+                    } catch {
+                      // Not found
+                    } finally {
+                      code128Reader.reset();
+                    }
+                  }
+
+                  // 3. Fallback to QR check if scanMode is 'both'
+                  if (!detectedText && scanMode === 'both') {
+                    try {
+                      const resQr = qrCodeReader.decode(binaryBitmap);
+                      if (resQr && resQr.getText()) {
+                        detectedText = resQr.getText().trim();
+                        detectedFormat = 'qr_code';
+                        engineUsed = 'zxing-qrcode';
+                      }
+                    } catch {
+                    } finally {
+                      qrCodeReader.reset();
+                    }
                   }
                 }
-              } catch (zxingErr) {
+              } catch {
                 // frame decode drop
               }
             }
 
-            // If a valid barcode was recognized in this frame
+            // If a valid barcode / QR was recognized in this frame
             if (detectedText && isRunning) {
               const detectionMs = Math.round(performance.now() - frameStart);
               onBarcodeDetected({
@@ -565,6 +619,26 @@ export async function decodeBarcodeFromImageFile(
           // Not found
         } finally {
           c128.reset();
+        }
+
+        const qr = new QRCodeReader();
+        try {
+          const resQr = qr.decode(bmp);
+          if (resQr && resQr.getText()) {
+            URL.revokeObjectURL(url);
+            return resolve({
+              text: resQr.getText().trim(),
+              format: 'qr_code',
+              perf: {
+                detectionMs: Math.round(performance.now() - t0),
+                engine: 'zxing-qrcode',
+              },
+            });
+          }
+        } catch {
+          // Not found
+        } finally {
+          qr.reset();
         }
 
         URL.revokeObjectURL(url);

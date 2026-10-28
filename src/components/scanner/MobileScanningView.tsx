@@ -107,6 +107,26 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const [isSubmittingManual, setIsSubmittingManual] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
+  // Scan format state (Barcode 1D vs QR Code 2D) per user requirement
+  const [scanFormat, setScanFormat] = useState<'barcode' | 'qr_code'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('examscan_scan_format');
+      if (saved === 'barcode' || saved === 'qr_code') return saved;
+    }
+    return 'barcode';
+  });
+  const [showScanTypeModal, setShowScanTypeModal] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('examscan_scan_format_prompted') !== 'true';
+    }
+    return true;
+  });
+  const scanFormatRef = useRef<'barcode' | 'qr_code'>(scanFormat);
+
+  useEffect(() => {
+    scanFormatRef.current = scanFormat;
+  }, [scanFormat]);
+
   // Save confirmation modal state (Requirement 2)
   const [showSaveConfirmModal, setShowSaveConfirmModal] = useState<boolean>(false);
   const [saveConfirmChecked, setSaveConfirmChecked] = useState<boolean>(false);
@@ -277,7 +297,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               handleCameraBarcodeScan(detected);
             }
           },
-          { throttleMs: 25 }
+          { throttleMs: 25, scanMode: scanFormatRef.current }
         );
         scannerControllerRef.current = controller;
       }
@@ -290,6 +310,26 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       setCameraActive(false);
       setCameraError(err?.message || 'Camera is in standby. Enter identifier manually below.');
     }
+  };
+
+  const handleSelectScanFormat = (format: 'barcode' | 'qr_code') => {
+    setScanFormat(format);
+    scanFormatRef.current = format;
+    try {
+      localStorage.setItem('examscan_scan_format', format);
+      localStorage.setItem('examscan_scan_format_prompted', 'true');
+    } catch {}
+    setShowScanTypeModal(false);
+    showToast({
+      type: 'info',
+      title: format === 'qr_code' ? '📱 QR Code Mode Enabled' : '📊 Barcode Mode Enabled',
+      subtitle: format === 'qr_code' ? 'Camera configured for QR matrix' : 'Camera configured for 1D barcodes',
+      duration: 1500,
+    });
+    stopCamera();
+    setTimeout(() => {
+      startCamera();
+    }, 150);
   };
 
   const dismissModals = () => {
@@ -1062,6 +1102,62 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
       <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={2000} />
 
+      {/* SCAN TYPE MODAL (Prompted when Inward Role opens per user requirement) */}
+      {showScanTypeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-5 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-[#EFF6FF] text-[#1565D8] rounded-2xl mx-auto mb-3 border border-[#BFDBFE]">
+              <ScanIcon className="h-6 w-6" />
+            </div>
+
+            <h3 className="text-base font-black text-[#172033] uppercase tracking-wide">
+              Select Scan Type
+            </h3>
+            <p className="text-xs text-[#64748B] mt-1 mb-4 leading-relaxed">
+              Inward role open cheygane: Barcode or QR Code select chesukondi.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <button
+                type="button"
+                onClick={() => handleSelectScanFormat('barcode')}
+                className={`p-3.5 rounded-xl border-2 text-center transition-all cursor-pointer ${
+                  scanFormat === 'barcode'
+                    ? 'border-[#1565D8] bg-blue-50/70 shadow-xs'
+                    : 'border-[#CBD5E1] hover:border-slate-400 bg-white'
+                }`}
+              >
+                <div className="text-2xl mb-1">📊</div>
+                <div className="text-xs font-black text-[#172033] uppercase">Barcode (1D)</div>
+                <div className="text-[10px] text-[#64748B] mt-0.5">Code 128 / Code 39</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectScanFormat('qr_code')}
+                className={`p-3.5 rounded-xl border-2 text-center transition-all cursor-pointer ${
+                  scanFormat === 'qr_code'
+                    ? 'border-[#1565D8] bg-blue-50/70 shadow-xs'
+                    : 'border-[#CBD5E1] hover:border-slate-400 bg-white'
+                }`}
+              >
+                <div className="text-2xl mb-1">📱</div>
+                <div className="text-xs font-black text-[#172033] uppercase">QR Code (2D)</div>
+                <div className="text-[10px] text-[#64748B] mt-0.5">Matrix QR Code</div>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowScanTypeModal(false)}
+              className="w-full py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors cursor-pointer"
+            >
+              Confirm Selection
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* FIXED TOP SECTION: Header, Active Class Banner & Camera Viewfinder */}
       <div className="sticky top-0 z-30 bg-[#F8FAFC] pt-2 px-3 pb-2 space-y-2 border-b border-[#CBD5E1]/60 shadow-xs">
         {/* 1. Header & Active Mode Indicator */}
@@ -1080,7 +1176,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                   : 'bg-emerald-50 text-[#16A34A] border-emerald-200'
               }`}
             >
-              {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS ID' : 'STAGE 2: MEMBER ID'}
+              {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS / SH ID' : 'STAGE 2: MEMBER ID'}
             </div>
           </div>
 
@@ -1092,15 +1188,48 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           )}
         </div>
 
-        {/* MEMBER_MODE BANNER: Active Class ID */}
+        {/* SCAN FORMAT TOGGLE (Barcode vs QR Code) */}
+        <div className="flex items-center justify-between bg-white px-2.5 py-1.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+          <div className="flex items-center gap-1.5">
+            <ScanIcon className="h-3.5 w-3.5 text-[#1565D8]" />
+            <span className="text-[11px] font-bold text-[#172033] uppercase">Scan Format:</span>
+          </div>
+
+          <div className="inline-flex rounded-lg bg-slate-100 p-0.5 border border-slate-200">
+            <button
+              type="button"
+              onClick={() => handleSelectScanFormat('barcode')}
+              className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer ${
+                scanFormat === 'barcode'
+                  ? 'bg-[#1565D8] text-white shadow-xs'
+                  : 'text-[#64748B] hover:text-[#172033]'
+              }`}
+            >
+              📊 Barcode
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectScanFormat('qr_code')}
+              className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer ${
+                scanFormat === 'qr_code'
+                  ? 'bg-[#1565D8] text-white shadow-xs'
+                  : 'text-[#64748B] hover:text-[#172033]'
+              }`}
+            >
+              📱 QR Code
+            </button>
+          </div>
+        </div>
+
+        {/* MEMBER_MODE BANNER: Active Class / SH ID */}
         {scannerMode === 'MEMBER_MODE' && selectedClassId && (
           <div className="bg-[#1565D8] text-white p-2.5 rounded-xl shadow-xs flex items-center justify-between">
             <div>
               <div className="text-[9px] uppercase font-bold text-blue-200 tracking-wider">
-                CURRENT CLASS ID BUNDLE
+                CURRENT CLASS / SH ID BUNDLE
               </div>
               <div className="text-sm font-black font-mono tracking-wide">
-                CLASS ID {selectedClassId}
+                CLASS / SH ID {selectedClassId}
               </div>
             </div>
             <div className="flex items-center gap-1.5">
@@ -1133,12 +1262,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <div className="flex items-center gap-1.5 font-bold">
               <ScanIcon className="h-3.5 w-3.5 text-[#60A5FA]" />
               <span>
-                {scannerMode === 'CLASS_MODE' ? 'Scan Class ID' : `Scan Member ID (Class ID ${selectedClassId})`}
+                {scannerMode === 'CLASS_MODE'
+                  ? 'Scan Class / SH ID'
+                  : `Scan Member ID (Class / SH ID ${selectedClassId})`}
               </span>
             </div>
-            <span className="text-[10px] text-slate-400 font-mono">
-              {cameraActive ? 'CAMERA ACTIVE' : 'STANDBY'}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-cyan-400 font-mono font-bold uppercase">
+                {scanFormat === 'qr_code' ? 'QR Code' : 'Barcode'}
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {cameraActive ? 'CAMERA ACTIVE' : 'STANDBY'}
+              </span>
+            </div>
           </div>
 
           {/* Viewport */}
@@ -1151,8 +1287,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
             />
 
-            {/* Targeted Barcode Aiming Guide Overlay */}
-            {cameraActive && (
+            {/* Targeted Barcode Aiming Guide Overlay (1D Barcode Mode) */}
+            {cameraActive && scanFormat === 'barcode' && (
               <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                 <div className="relative w-[82%] h-[46%] rounded-lg border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]">
                   <div className="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-emerald-400" />
@@ -1160,6 +1296,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                   <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-emerald-400" />
                   <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-emerald-400" />
                   <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.9)] animate-pulse" />
+                </div>
+              </div>
+            )}
+
+            {/* Targeted QR Code Aiming Guide Overlay (2D QR Mode) */}
+            {cameraActive && scanFormat === 'qr_code' && (
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div className="relative w-[130px] h-[130px] rounded-xl border-2 border-cyan-400/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
+                  <div className="absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-cyan-400" />
+                  <div className="absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-cyan-400" />
+                  <div className="absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-cyan-400" />
+                  <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-cyan-400" />
+                  <div className="absolute inset-x-2 top-1/2 -translate-y-1/2 h-0.5 bg-cyan-400/80 shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pulse" />
                 </div>
               </div>
             )}
@@ -1249,7 +1398,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           !isRestrictedInward ? (
             <div className="grid grid-cols-4 gap-2">
               <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-                <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
+                <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS / SH IDS</div>
                 <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
               </div>
               <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
@@ -1271,14 +1420,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 <ScanIcon className="h-4 w-4 text-[#1565D8]" />
                 <span className="font-bold text-[#1E40AF]">Ready for Inward Scanning</span>
               </div>
-              <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class Barcode</span>
+              <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class / SH Code</span>
             </div>
           )
         ) : (
           /* MEMBER_MODE Class Bundle Statistics (Positioned directly under camera) */
           <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-[#172033]">
-              <span>Class ID {selectedClassId} Statistics</span>
+              <span>Class / SH ID {selectedClassId} Statistics</span>
               <span className="font-mono text-xs text-[#16A34A] font-black">
                 {classStats.inwardedCount} / {classStats.importedCount} ({classStats.progress}%)
               </span>
@@ -1319,7 +1468,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-3">
           <div className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider mb-1.5 flex items-center justify-between">
             <span>
-              {scannerMode === 'CLASS_MODE' ? 'Manual Class ID Entry' : `Manual Inward into Class ID ${selectedClassId}`}
+              {scannerMode === 'CLASS_MODE' ? 'Manual Class / SH ID Entry' : `Manual Inward into Class / SH ID ${selectedClassId}`}
             </span>
             <span className="text-[9px] text-[#1565D8] font-normal">
               {scannerMode === 'CLASS_MODE' ? 'Stage 1' : 'Stage 2'}
@@ -1332,7 +1481,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               value={manualInput}
               onChange={e => setManualInput(e.target.value)}
               placeholder={
-                scannerMode === 'CLASS_MODE' ? 'Enter Class ID' : 'Enter Member ID'
+                scannerMode === 'CLASS_MODE' ? 'Enter Class ID / SH ID' : 'Enter Member ID (or scan Barcode / QR)'
               }
               className="flex-1 px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8] font-mono uppercase"
               autoCapitalize="characters"
@@ -1349,7 +1498,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                   : 'bg-[#16A34A] hover:bg-[#15803D]'
               }`}
             >
-              {scannerMode === 'CLASS_MODE' ? 'OPEN CLASS ID' : 'INWARD'}
+              {scannerMode === 'CLASS_MODE' ? 'OPEN CLASS / SH ID' : 'INWARD'}
             </button>
 
             <input
@@ -1373,17 +1522,17 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       {/* 4. CONTENT AREA: CLASS LIST (CLASS_MODE) VS MEMBER LIST (MEMBER_MODE) */}
       {scannerMode === 'CLASS_MODE' ? (
-        /* STAGE 1: CLASS ID BUNDLES */
+        /* STAGE 1: CLASS / SH ID BUNDLES */
         isRestrictedInward ? (
           <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-5 text-center">
             <div className="flex h-11 w-11 items-center justify-center bg-blue-50 text-[#1565D8] rounded-xl mx-auto mb-2.5 border border-blue-200">
               <ScanIcon className="h-5 w-5" />
             </div>
             <h3 className="text-xs font-black text-[#172033] uppercase tracking-wide">
-              Scan Booklet or Enter Class ID
+              Scan Booklet or Enter Class / SH ID
             </h3>
             <p className="text-[11px] text-[#64748B] mt-1 max-w-xs mx-auto leading-relaxed">
-              Scan the barcode on the examination booklet or enter a Class ID above to open its bundle for inwarding.
+              Scan the barcode or QR code on the examination booklet or enter a Class / SH ID above to open its bundle for inwarding.
             </p>
           </div>
         ) : (
@@ -1391,7 +1540,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
               <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
                 <Layers className="h-4 w-4 text-[#1565D8]" />
-                <span>CLASS ID BUNDLES</span>
+                <span>CLASS / SH ID BUNDLES</span>
                 <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
                   {bundles.length}
                 </span>
@@ -1402,7 +1551,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                 type="text"
                 value={classFilter}
                 onChange={e => setClassFilter(e.target.value)}
-                placeholder="Filter Class ID..."
+                placeholder="Filter Class / SH ID..."
                 className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
               />
             </div>
@@ -1427,7 +1576,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-mono font-black text-sm text-[#172033]">
-                            CLASS ID {b.classId}
+                            CLASS / SH ID {b.classId}
                           </span>
                           <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
                             {b.status}

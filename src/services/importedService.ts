@@ -924,7 +924,65 @@ class ImportedService {
             created_at: i.created_at || new Date().toISOString(),
           }));
         }
-      } catch {}
+      } catch (e) {
+        console.warn('[ImportedService] Supabase scan_session_items sync note:', e);
+      }
+
+      // Auto-reconcile manual inward records into saved_scanned_data
+      // Guarantees all inward records (e.g. 19 scanned + 1 manual = 20 total) exist in saved_scanned_data
+      if (this.manualInwarded.length > 0 && isSupabaseConfigured) {
+        const existingSavedSet = new Set(
+          this.savedScanned.map(s => `${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
+        );
+        const missingFromSaved: any[] = [];
+        for (const m of this.manualInwarded) {
+          const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
+          const cid = normalizeIdentifier(m.class_id);
+          if (!mid || !cid) continue;
+          const key = `${cid.toLowerCase()}::${mid.toLowerCase()}`;
+          if (!existingSavedSet.has(key)) {
+            existingSavedSet.add(key);
+            const rowId = m.id || generateUUID();
+            const rec: SavedScannedRecord = {
+              id: rowId,
+              scan_session_id: m.session_code,
+              college_name: m.college_name || this.activeUniversity || 'General University',
+              class_id: cid,
+              sch_id: m.school_id,
+              member_id: mid,
+              barcode: m.booklet_barcode || mid,
+              scanned_by: m.inwarded_by || 'Manual Inward',
+              scanned_at: m.scanned_at || m.created_at || new Date().toISOString(),
+              saved_by: m.inwarded_by || 'Manual Inward',
+              saved_at: m.created_at || new Date().toISOString(),
+              status: 'SAVED',
+            };
+            this.savedScanned.push(rec);
+            missingFromSaved.push({
+              id: rowId,
+              scan_session_id: null,
+              import_session_id: this.activeSessionId || null,
+              college_name: rec.college_name,
+              class_id: cid,
+              member_id: mid,
+              barcode: rec.barcode,
+              scanned_by: rec.scanned_by,
+              scanned_at: rec.scanned_at,
+              saved_by: rec.saved_by,
+              saved_at: rec.saved_at,
+              status: 'SAVED',
+            });
+          }
+        }
+        if (missingFromSaved.length > 0) {
+          try {
+            await supabase.from('saved_scanned_data').insert(missingFromSaved);
+            console.log(`[ImportedService] Reconciled ${missingFromSaved.length} manual records into saved_scanned_data`);
+          } catch (syncErr) {
+            console.warn('[ImportedService] Error syncing missing manual inwards into saved_scanned_data:', syncErr);
+          }
+        }
+      }
 
       // Reconcile inward records with authoritative imported reference dataset
       this.reconcileInwardStateWithImportedData();
@@ -1700,6 +1758,59 @@ class ImportedService {
 
           return { record: matchedRec };
         }
+
+        // Step E: Hyphenated Barcode / QR Code Value (e.g. "0021-24EMBA1122" or "SH001-24EMBA1122")
+        // Left side = Class ID / SH ID, Right side = Member ID
+        if (normalized.includes('-')) {
+          const hyphenIdx = normalized.indexOf('-');
+          const leftPart = normalizeIdentifier(normalized.substring(0, hyphenIdx));
+          const rightPart = normalizeIdentifier(normalized.substring(hyphenIdx + 1));
+          if (leftPart && rightPart) {
+            let qHyp = supabase
+              .from('imported_inward_data')
+              .select('*')
+              .eq('member_id', rightPart);
+            if (cleanClass) {
+              qHyp = qHyp.eq('class_id', cleanClass);
+            }
+
+            const { data: byHyp } = await qHyp.limit(5);
+            if (byHyp && byHyp.length > 0) {
+              const matchedRow = byHyp.find((r: any) =>
+                normalizeIdentifier(r.class_id).toLowerCase() === leftPart.toLowerCase() ||
+                (r.sch_id && normalizeIdentifier(r.sch_id).toLowerCase() === leftPart.toLowerCase())
+              ) || byHyp[0];
+
+              if (matchedRow) {
+                const matchedMemberId = normalizeIdentifier(matchedRow.member_id);
+                const matchedClassId = normalizeIdentifier(matchedRow.class_id);
+                console.log(`[SCANNER] Hyphenated QR/Barcode match: Class ${matchedClassId}, Member ${matchedMemberId}`);
+
+                const matchedRec: ImportInwardedRecord = {
+                  id: matchedRow.id || `${matchedClassId}_${matchedMemberId}`,
+                  import_session_id: matchedRow.import_session_id || 'default_session',
+                  college_name: matchedRow.university_name || matchedRow.college_name || this.activeUniversity || '',
+                  university_name: matchedRow.university_name || matchedRow.college_name || this.activeUniversity || '',
+                  class_id: matchedClassId,
+                  sch_id: matchedRow.sch_id,
+                  member_id: matchedMemberId,
+                  barcode: matchedRow.barcode ? normalizeIdentifier(matchedRow.barcode) : normalized,
+                  created_by: matchedRow.created_by,
+                  created_at: matchedRow.created_at || new Date().toISOString(),
+                };
+
+                const existingIdx = this.importInwarded.findIndex(r => r.id === matchedRec.id);
+                if (existingIdx >= 0) {
+                  this.importInwarded[existingIdx] = matchedRec;
+                } else {
+                  this.importInwarded.push(matchedRec);
+                }
+
+                return { record: matchedRec };
+              }
+            }
+          }
+        }
       } catch (err) {
         console.warn('[SCANNER] Supabase lookup exception:', err);
       }
@@ -1718,6 +1829,16 @@ class ImportedService {
 
       // 2. Exact Member ID match
       if (rMem === cleanLower) return true;
+
+      // 3. Hyphenated barcode / QR code match (e.g. "0021-24EMBA1122" or "SH001-24EMBA1122")
+      if (cleanLower.includes('-')) {
+        const hyphenIdx = cleanLower.indexOf('-');
+        const partClass = cleanLower.substring(0, hyphenIdx).trim();
+        const partMember = cleanLower.substring(hyphenIdx + 1).trim();
+        const matchC = normalizeIdentifier(r.class_id).toLowerCase() === partClass ||
+                       (r.sch_id && normalizeIdentifier(r.sch_id).toLowerCase() === partClass);
+        if (matchC && rMem === partMember) return true;
+      }
 
       return false;
     };
@@ -2214,6 +2335,24 @@ class ImportedService {
           scannedBy: item.detected_by || currentUser.name || 'Operator',
           scannedAt: item.detected_at || now,
           sourceItemId: item.id,
+        });
+      }
+    }
+
+    // Include all manual inward records for this class (public.manual_inward_data) to ensure 100% data sync
+    const classManualRecords = this.manualInwarded.filter(
+      m => normalizeIdentifier(m.class_id).toLowerCase() === cleanCid.toLowerCase()
+    );
+    for (const m of classManualRecords) {
+      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
+      if (!mid) continue;
+      if (!candidatesByMemberId.has(mid.toLowerCase())) {
+        candidatesByMemberId.set(mid.toLowerCase(), {
+          memberId: mid,
+          barcode: m.booklet_barcode || mid,
+          scannedBy: m.inwarded_by || 'Manual Inward',
+          scannedAt: m.scanned_at || m.created_at || now,
+          schoolId: m.school_id || null,
         });
       }
     }
@@ -3400,6 +3539,26 @@ class ImportedService {
             .eq('class_id', cleanCid)
             .eq('member_id', canonicalMid);
         } catch {}
+
+        // Mirror directly into public.saved_scanned_data so all inwarded records exist in saved_scanned_data
+        try {
+          await supabase.from('saved_scanned_data').insert({
+            id: newRecord.id,
+            scan_session_id: null,
+            import_session_id: session?.import_session_id || this.activeSessionId || null,
+            college_name: newRecord.college_name,
+            class_id: newRecord.class_id,
+            member_id: newRecord.member_id,
+            barcode: newRecord.booklet_barcode || newRecord.member_id,
+            scanned_by: newRecord.inwarded_by,
+            scanned_at: newRecord.scanned_at,
+            saved_by: newRecord.inwarded_by,
+            saved_at: newRecord.created_at,
+            status: 'SAVED',
+          });
+        } catch (mErr) {
+          console.warn('[ImportedService] saved_scanned_data mirror note:', mErr);
+        }
       } catch (err: any) {
         console.error('[ImportedService] manual_inward_data Supabase exception:', err);
         return {
@@ -3412,6 +3571,28 @@ class ImportedService {
 
     // 5. Update local state and notify subscribers immediately
     this.manualInwarded.push(newRecord);
+
+    const alreadyInSaved = this.savedScanned.some(
+      s => normalizeIdentifier(s.class_id).toLowerCase() === cleanCid.toLowerCase() &&
+           normalizeIdentifier(s.member_id).toLowerCase() === canonicalMid.toLowerCase()
+    );
+    if (!alreadyInSaved) {
+      this.savedScanned.push({
+        id: newRecord.id,
+        scan_session_id: session?.id,
+        import_session_id: session?.import_session_id || this.activeSessionId || undefined,
+        college_name: newRecord.college_name || session?.college_name || this.activeUniversity || 'Standard Center',
+        class_id: newRecord.class_id,
+        member_id: newRecord.member_id || canonicalMid || 'UNKNOWN',
+        barcode: newRecord.booklet_barcode || newRecord.member_id || canonicalMid,
+        scanned_by: newRecord.inwarded_by || 'Manual Inward',
+        scanned_at: newRecord.scanned_at || now,
+        saved_by: newRecord.inwarded_by || 'Manual Inward',
+        saved_at: now,
+        status: 'SAVED',
+      });
+    }
+
     this.moveClassToTop(cleanCid);
     this.saveToLocalStorage();
     this.notify();

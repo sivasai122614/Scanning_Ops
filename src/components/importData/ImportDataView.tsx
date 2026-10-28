@@ -178,39 +178,61 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
         const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
 
-        // Header Detection:
+        // Header Detection for Class ID / SH ID:
         let classColIdx = headerRow.findIndex(
-          (h: string) =>
-            h.includes('class') || h.includes('batch') || h.includes('cls') || h.includes('bundle')
-        );
-
-        let memberColIdx = headerRow.findIndex(
-          (h: string, idx: number) =>
-            idx !== classColIdx &&
-            (h.includes('unqid') ||
-             h.includes('unq') ||
-             h.includes('member') ||
-             h.includes('student') ||
-             h.includes('roll') ||
-             (h.includes('id') && !h.includes('class') && !h.includes('barcode')))
+          (h: string) => {
+            const clean = h.replace(/[^a-z0-9]/g, '');
+            return (
+              h.includes('class') ||
+              h.includes('batch') ||
+              h.includes('cls') ||
+              h.includes('bundle') ||
+              clean === 'sh' ||
+              clean === 'shid' ||
+              clean === 'clsid' ||
+              clean === 'schoolid' ||
+              h.includes('sh id') ||
+              h.includes('sh_id') ||
+              h.includes('school id')
+            );
+          }
         );
 
         let barcodeColIdx = headerRow.findIndex(
           (h: string, idx: number) =>
             idx !== classColIdx &&
-            idx !== memberColIdx &&
-            (h.includes('barcode') || h.includes('bar_code') || h.includes('bar code'))
+            (h.includes('barcode') ||
+             h.includes('bar_code') ||
+             h.includes('bar code') ||
+             h.includes('barcode value') ||
+             h.includes('barcode_value') ||
+             h.includes('qr') ||
+             h.includes('code'))
         );
 
-        if (classColIdx === -1 && memberColIdx === -1 && headerRow.length >= 2) {
+        let memberColIdx = headerRow.findIndex(
+          (h: string, idx: number) =>
+            idx !== classColIdx &&
+            idx !== barcodeColIdx &&
+            (h.includes('unqid') ||
+             h.includes('unq') ||
+             h.includes('member') ||
+             h.includes('student') ||
+             h.includes('roll') ||
+             (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh')))
+        );
+
+        if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 2) {
           classColIdx = 0;
           memberColIdx = 1;
           if (headerRow.length >= 3) {
             barcodeColIdx = 2;
           }
-        } else if (classColIdx === -1) {
-          classColIdx = 0;
-        } else if (memberColIdx === -1) {
+        } else if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx >= 0) {
+          // Barcode only column: Class and Member will be extracted from hyphenated values
+        } else if (classColIdx === -1 && memberColIdx !== -1) {
+          classColIdx = memberColIdx === 0 ? 1 : 0;
+        } else if (memberColIdx === -1 && classColIdx !== -1) {
           memberColIdx = classColIdx === 0 ? 1 : 0;
         }
 
@@ -223,10 +245,43 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           if (!rowData || rowData.length === 0) continue;
 
           // Pure string extraction to preserve leading zeros e.g. 0020
-          const rawClass = String(rowData[classColIdx] ?? '').trim();
-          const rawMember = String(rowData[memberColIdx] ?? '').trim();
-          const rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
-          const finalBarcode = rawBarcode || rawMember;
+          let rawClass = classColIdx >= 0 ? String(rowData[classColIdx] ?? '').trim() : '';
+          let rawMember = memberColIdx >= 0 ? String(rowData[memberColIdx] ?? '').trim() : '';
+          let rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
+
+          // Rule 4: If barcode value is present (or rawMember contains hyphen when class is missing),
+          // split by hyphen: Left = Class ID / SH ID, Right = Member ID
+          if (rawBarcode && rawBarcode.includes('-')) {
+            const dashIdx = rawBarcode.indexOf('-');
+            const partLeft = rawBarcode.substring(0, dashIdx).trim();
+            const partRight = rawBarcode.substring(dashIdx + 1).trim();
+            if (!rawClass && partLeft) rawClass = partLeft;
+            if (!rawMember && partRight) rawMember = partRight;
+          }
+
+          if (!rawClass && rawMember && rawMember.includes('-')) {
+            const dashIdx = rawMember.indexOf('-');
+            const partLeft = rawMember.substring(0, dashIdx).trim();
+            const partRight = rawMember.substring(dashIdx + 1).trim();
+            if (partLeft && partRight) {
+              if (!rawBarcode) rawBarcode = rawMember;
+              rawClass = partLeft;
+              rawMember = partRight;
+            }
+          }
+
+          if (rawClass && !rawMember && rawClass.includes('-')) {
+            const dashIdx = rawClass.indexOf('-');
+            const partLeft = rawClass.substring(0, dashIdx).trim();
+            const partRight = rawClass.substring(dashIdx + 1).trim();
+            if (partLeft && partRight) {
+              if (!rawBarcode) rawBarcode = rawClass;
+              rawClass = partLeft;
+              rawMember = partRight;
+            }
+          }
+
+          const finalBarcode = rawBarcode || (rawClass && rawMember ? `${rawClass}-${rawMember}` : rawMember);
 
           if (!rawClass && !rawMember) continue;
 
@@ -238,12 +293,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               barcode: finalBarcode || undefined,
               unqid: rawMember || 'MISSING',
               status: 'invalid',
-              reason: !rawClass ? 'Class ID is blank' : 'Member ID / unqid is blank',
+              reason: !rawClass ? 'Class ID / SH ID is blank' : 'Member ID / unqid is blank',
             });
             continue;
           }
 
-          // Uniqueness identity: CLASS ID + MEMBER ID
+          // Uniqueness identity: CLASS/SH ID + MEMBER ID
           const uniqueKey = `${rawClass.toLowerCase()}::${rawMember.toLowerCase()}`;
           if (seenKeysInFile.has(uniqueKey)) {
             rows.push({
@@ -280,7 +335,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
         const validRows = rows.filter(r => r.status === 'valid');
         if (validRows.length === 0) {
-          throw new Error('No valid records found. Please check that Class ID and Member ID are populated.');
+          throw new Error('No valid records found. Please check that Class ID / SH ID and Member ID are populated.');
         }
 
         const groups: ClassGroupPreview[] = [];
