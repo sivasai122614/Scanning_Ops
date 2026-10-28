@@ -29,6 +29,7 @@ import {
   List,
   Search,
   Copy,
+  Trash2,
 } from 'lucide-react';
 import { importedService, ClassBundle } from '../../services/importedService';
 
@@ -121,6 +122,13 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   // Step Loading State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
+
+  // Deletion modals state (Synchronized deletion of imported data and saved scan data)
+  const [classToDelete, setClassToDelete] = useState<string | null>(null);
+  const [showClearAllModal, setShowClearAllModal] = useState<boolean>(false);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  // Option to replace existing data or append
+  const [replaceExistingData, setReplaceExistingData] = useState<boolean>(true);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -401,6 +409,31 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     executeImport(items);
   };
 
+  const handleConfirmDeleteClass = async () => {
+    if (!classToDelete) return;
+    setIsDeleting(true);
+    try {
+      await importedService.deleteClassBundle(classToDelete);
+      setClassToDelete(null);
+    } catch (e) {
+      console.warn('Delete class error:', e);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleConfirmClearAll = async () => {
+    setIsDeleting(true);
+    try {
+      await importedService.clearAllImportedAndScannedData();
+      setShowClearAllModal(false);
+    } catch (e) {
+      console.warn('Clear all error:', e);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const executeImport = async (itemsToInsert: { class_id: string; member_id: string; barcode?: string }[]) => {
     setDuplicateModalData(null);
     setIsProcessing(true);
@@ -416,7 +449,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       const res = await importedService.bulkInsert(
         itemsToInsert,
         universityName.trim(),
-        selectedFile?.name || 'inward_import.xlsx'
+        selectedFile?.name || 'inward_import.xlsx',
+        undefined,
+        replaceExistingData
       );
 
       if (!res.success) {
@@ -1032,6 +1067,26 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               )}
 
+              {/* Import Mode Options */}
+              <div className="pt-2.5 pb-1 border-t border-[#E2E8F0] flex flex-col gap-1.5">
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#172033]">
+                  <input
+                    type="checkbox"
+                    checked={replaceExistingData}
+                    onChange={e => setReplaceExistingData(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-[#1565D8] focus:ring-[#1565D8]"
+                  />
+                  <span>
+                    Replace existing classes &amp; reset previous scan records (Fresh Inward Import)
+                  </span>
+                </label>
+                <div className="text-[11px] text-[#64748B] pl-6">
+                  {replaceExistingData
+                    ? 'Recommended: Cleans up old batches and previous saved scans to start fresh with this Excel file.'
+                    : 'Appends new records and merges with existing classes without deleting previous scans.'}
+                </div>
+              </div>
+
               {/* Action Button: Import & Save to Database */}
               <div className="pt-3 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3">
                 <div className="text-xs text-[#64748B]">
@@ -1059,19 +1114,30 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                     <span>Active Inward System Data ({existingBundles.length} Classes):</span>
                   </div>
                   <div className="text-[11px] text-[#64748B] mt-0.5">
-                    Click the <strong className="text-[#1565D8]">Eye icon</strong> on any class or member to preview unqid.
+                    Deleting a class strictly purges its imported records AND saved scan data.
                   </div>
                 </div>
-                {onNavigateToScan && (
+                <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
                   <button
                     type="button"
-                    onClick={onNavigateToScan}
-                    className="px-3.5 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+                    onClick={() => setShowClearAllModal(true)}
+                    className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-300 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                    title="Clear all imported classes and wipe saved scan data"
                   >
-                    <span>Open Scan Dashboard</span>
-                    <ArrowRight className="h-3.5 w-3.5" />
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Clear All Inward Data</span>
                   </button>
-                )}
+                  {onNavigateToScan && (
+                    <button
+                      type="button"
+                      onClick={onNavigateToScan}
+                      className="px-3.5 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Open Scan Dashboard</span>
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1082,7 +1148,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   >
                     <div>
                       <div className="flex items-center justify-between text-[10px] font-bold text-[#64748B] uppercase">
-                        <span>Class ID</span>
+                        <span>CLASS / SH ID</span>
                         <span className="text-[#1565D8] font-mono">{b.expectedCount} Expected</span>
                       </div>
                       <div className="font-mono font-black text-base text-[#172033] mt-0.5">
@@ -1095,7 +1161,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                       </div>
                     </div>
 
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -1109,7 +1175,17 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         title="Preview unqid for this class"
                       >
                         <Eye className="h-3.5 w-3.5" />
-                        <span>Preview unqid ({b.expectedCount})</span>
+                        <span>Preview ({b.expectedCount})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setClassToDelete(b.classId)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg border border-red-200 transition-colors cursor-pointer"
+                        title={`Delete Class / SH ID ${b.classId} and all its saved scans`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Delete</span>
                       </button>
                     </div>
                   </div>
@@ -1350,6 +1426,76 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             >
               Close Preview
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Class Confirmation Modal */}
+      {classToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-base font-black uppercase text-[#172033]">
+              Delete Class / SH ID {classToDelete}?
+            </h3>
+            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
+              This will remove class <strong className="text-[#172033] font-mono">{classToDelete}</strong> from imported data and strictly delete all corresponding saved scan records and session history from the database.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setClassToDelete(null)}
+                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDeleteClass}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Deleting...' : 'Yes, Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Inward Data Confirmation Modal */}
+      {showClearAllModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-base font-black uppercase text-[#172033]">
+              Clear All Inward Data?
+            </h3>
+            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
+              Are you sure you want to permanently clear all imported classes? This will reset all expected booklet records and purge all saved scans so you can start with a fresh batch.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setShowClearAllModal(false)}
+                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmClearAll}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Clearing...' : 'Clear Everything'}
+              </button>
+            </div>
           </div>
         </div>
       )}

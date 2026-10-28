@@ -1277,12 +1277,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
           </div>
 
-          {/* Viewport: Dynamic Aspect Ratio (16:9 Rectangle for Barcode, 4:3 for QR Code) with NO detection area overlays */}
+          {/* Viewport: Dynamic Aspect Ratio (Compact Slim Rectangle for Barcode, 4:3 for QR Code) with NO detection area overlays */}
           <div
             className={`relative bg-black w-full flex items-center justify-center overflow-hidden transition-all duration-300 ${
               scanFormat === 'qr_code'
-                ? 'aspect-[4/3] min-h-[220px] max-h-[38vh]'
-                : 'aspect-[16/9] min-h-[165px] max-h-[28vh]'
+                ? 'aspect-[4/3] min-h-[190px] max-h-[30vh]'
+                : 'aspect-[2.5/1] min-h-[90px] max-h-[14vh] sm:max-h-[110px]'
             }`}
           >
             <video

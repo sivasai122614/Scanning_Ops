@@ -406,18 +406,40 @@ class ImportedService {
    */
   public reconcileInwardStateWithImportedData() {
     if (this.importInwarded.length === 0) {
+      // When imported data is completely cleared or deleted, clear all saved scans and active sessions in sync
+      this.savedScanned = [];
+      this.manualInwarded = [];
+      this.scanSessions = [];
+      this.scanItems = [];
+      this.classOrder = [];
+      this.saveToLocalStorage();
       return;
     }
 
-    // Historical saved scans and manual inward records represent permanent operational history
-    // and MUST NEVER be deleted or pruned during reconciliation or sync.
-    // Only uncommitted pending (draft) items are reconciled against valid classes.
-    const validClassMembers = new Set(
-      this.importInwarded.map(r => `${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
+    // When classes are deleted or removed from imported data, strictly prune any saved scans,
+    // manual inwards, and sessions belonging to the deleted classes so stale data does not persist
+    const validClassIds = new Set(
+      this.importInwarded.map(r => normalizeIdentifier(r.class_id).toLowerCase())
+    );
+
+    this.savedScanned = this.savedScanned.filter(s =>
+      validClassIds.has(normalizeIdentifier(s.class_id).toLowerCase())
+    );
+
+    this.manualInwarded = this.manualInwarded.filter(m =>
+      validClassIds.has(normalizeIdentifier(m.class_id).toLowerCase())
+    );
+
+    this.scanSessions = this.scanSessions.filter(s =>
+      validClassIds.has(normalizeIdentifier(s.class_id).toLowerCase())
     );
 
     this.scanItems = this.scanItems.filter(i =>
-      i.status === 'SAVED' || validClassMembers.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
+      validClassIds.has(normalizeIdentifier(i.class_id).toLowerCase())
+    );
+
+    this.classOrder = this.classOrder.filter(c =>
+      validClassIds.has(normalizeIdentifier(c).toLowerCase())
     );
 
     this.saveToLocalStorage();
@@ -858,22 +880,34 @@ class ImportedService {
         }
       } catch {}
 
-      if (combinedSaved.length > 0) {
-        this.savedScanned = combinedSaved.map((s: any) => ({
-          id: s.id,
-          scan_session_id: s.scan_session_id,
-          import_session_id: s.import_session_id,
-          college_name: s.college_name || this.activeUniversity,
-          class_id: normalizeIdentifier(s.class_id),
-          sch_id: s.sch_id,
-          member_id: normalizeIdentifier(s.member_id),
-          barcode: s.barcode ? normalizeIdentifier(s.barcode) : undefined,
-          scanned_by: s.scanned_by || 'Operator',
-          scanned_at: s.scanned_at || new Date().toISOString(),
-          saved_by: s.saved_by || 'Operator',
-          saved_at: s.saved_at || new Date().toISOString(),
-          status: s.status || 'SAVED',
-        }));
+      if (this.importInwarded.length === 0) {
+        this.savedScanned = [];
+        this.saveToLocalStorage();
+      } else if (combinedSaved.length > 0) {
+        const validClassIds = new Set(
+          this.importInwarded.map(r => normalizeIdentifier(r.class_id).toLowerCase())
+        );
+
+        this.savedScanned = combinedSaved
+          .filter((s: any) => validClassIds.has(normalizeIdentifier(s.class_id).toLowerCase()))
+          .map((s: any) => ({
+            id: s.id,
+            scan_session_id: s.scan_session_id,
+            import_session_id: s.import_session_id,
+            college_name: s.college_name || this.activeUniversity,
+            class_id: normalizeIdentifier(s.class_id),
+            sch_id: s.sch_id,
+            member_id: normalizeIdentifier(s.member_id),
+            barcode: s.barcode ? normalizeIdentifier(s.barcode) : undefined,
+            scanned_by: s.scanned_by || 'Operator',
+            scanned_at: s.scanned_at || new Date().toISOString(),
+            saved_by: s.saved_by || 'Operator',
+            saved_at: s.saved_at || new Date().toISOString(),
+            status: s.status || 'SAVED',
+          }));
+        this.saveToLocalStorage();
+      } else {
+        this.savedScanned = [];
         this.saveToLocalStorage();
       }
 
@@ -2594,9 +2628,33 @@ class ImportedService {
     items: { class_id: string; member_id: string; sch_id?: string; barcode?: string }[],
     universityName: string,
     sourceFileName?: string,
-    onProgress?: (inserted: number, total: number) => void
+    onProgress?: (inserted: number, total: number) => void,
+    replaceExisting: boolean = false
   ): Promise<{ success: boolean; inserted: number; error?: string; session?: ImportSession }> {
     const cleanUniversity = (universityName || '').trim();
+
+    // If replaceExisting is requested, clear previous classes and scans first
+    if (replaceExisting) {
+      this.importInwarded = [];
+      this.savedScanned = [];
+      this.manualInwarded = [];
+      this.scanSessions = [];
+      this.scanItems = [];
+      this.classOrder = [];
+      if (isSupabaseConfigured) {
+        try {
+          await Promise.allSettled([
+            supabase.from('import_inwarded_data').delete().neq('id', 'placeholder'),
+            supabase.from('imported_inward_data').delete().neq('id', 'placeholder'),
+            supabase.from('saved_scanned_data').delete().neq('id', 'placeholder'),
+            supabase.from('saved_scan_data').delete().neq('id', 'placeholder'),
+            supabase.from('manual_inward_data').delete().neq('id', 'placeholder'),
+            supabase.from('scan_sessions').delete().neq('id', 'placeholder'),
+            supabase.from('scan_session_items').delete().neq('id', 'placeholder'),
+          ]);
+        } catch {}
+      }
+    }
 
     // SECTION 13: COLLEGE / UNIVERSITY REQUIRED
     if (!cleanUniversity) {
@@ -2747,10 +2805,10 @@ class ImportedService {
     this.activeUniversity = cleanUniversity;
     this.activeSessionId = sessionId;
 
-    if (isFirstImport) {
+    if (isFirstImport || replaceExisting) {
       this.importInwarded = newRecords;
     } else {
-      // FIX #2: Merge new imported records with existing records without duplicate key collisions
+      // Merge new imported records with existing records without duplicate key collisions
       const existingKeySet = new Set(
         this.importInwarded.map(r => `${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
       );
@@ -3965,6 +4023,109 @@ class ImportedService {
     };
   }
 
+  /**
+   * Delete a specific Class Bundle from imported data and strictly delete all corresponding
+   * saved scan data, manual inward records, active sessions, and scan items in both local state and Supabase.
+   */
+  public async deleteClassBundle(classId: string): Promise<{ success: boolean; deletedCount: number; deletedScansCount: number }> {
+    const cleanCid = normalizeIdentifier(classId);
+    if (!cleanCid) return { success: false, deletedCount: 0, deletedScansCount: 0 };
+    const cidLower = cleanCid.toLowerCase();
+
+    // 1. Delete from importInwarded
+    const initialImpCount = this.importInwarded.length;
+    this.importInwarded = this.importInwarded.filter(
+      r => normalizeIdentifier(r.class_id).toLowerCase() !== cidLower
+    );
+    const deletedImpCount = initialImpCount - this.importInwarded.length;
+
+    // 2. Delete from savedScanned (Table 4: saved_scanned_data)
+    const initialSavedCount = this.savedScanned.length;
+    this.savedScanned = this.savedScanned.filter(
+      s => normalizeIdentifier(s.class_id).toLowerCase() !== cidLower
+    );
+    const deletedSavedCount = initialSavedCount - this.savedScanned.length;
+
+    // 3. Delete from manualInwarded (Table 2: manual_inward_data)
+    this.manualInwarded = this.manualInwarded.filter(
+      m => normalizeIdentifier(m.class_id).toLowerCase() !== cidLower
+    );
+
+    // 4. Delete from scanSessions & scanItems
+    this.scanSessions = this.scanSessions.filter(
+      s => normalizeIdentifier(s.class_id).toLowerCase() !== cidLower
+    );
+    this.scanItems = this.scanItems.filter(
+      i => normalizeIdentifier(i.class_id).toLowerCase() !== cidLower
+    );
+
+    // 5. Remove from classOrder
+    this.classOrder = this.classOrder.filter(
+      c => normalizeIdentifier(c).toLowerCase() !== cidLower
+    );
+
+    // 6. Delete from Supabase if connected
+    if (isSupabaseConfigured) {
+      try {
+        await Promise.allSettled([
+          supabase.from('import_inwarded_data').delete().ilike('class_id', cleanCid),
+          supabase.from('imported_inward_data').delete().ilike('class_id', cleanCid),
+          supabase.from('saved_scanned_data').delete().ilike('class_id', cleanCid),
+          supabase.from('saved_scan_data').delete().ilike('class_id', cleanCid),
+          supabase.from('manual_inward_data').delete().ilike('class_id', cleanCid),
+          supabase.from('scan_sessions').delete().ilike('class_id', cleanCid),
+          supabase.from('scan_session_items').delete().ilike('class_id', cleanCid),
+        ]);
+      } catch (err) {
+        console.warn('[ImportedService] Supabase delete class error:', err);
+      }
+    }
+
+    this.saveToLocalStorage();
+    this.notify();
+
+    return {
+      success: true,
+      deletedCount: deletedImpCount,
+      deletedScansCount: deletedSavedCount,
+    };
+  }
+
+  /**
+   * Clears ALL imported data and strictly purges all corresponding saved scan data,
+   * manual inward records, and scan sessions in both local state and Supabase.
+   */
+  public async clearAllImportedAndScannedData(): Promise<{ success: boolean }> {
+    this.importInwarded = [];
+    this.manualInwarded = [];
+    this.scanSessions = [];
+    this.savedScanned = [];
+    this.scanItems = [];
+    this.importSessions = [];
+    this.classOrder = [];
+
+    if (isSupabaseConfigured) {
+      try {
+        await Promise.allSettled([
+          supabase.from('import_inwarded_data').delete().neq('id', 'placeholder'),
+          supabase.from('imported_inward_data').delete().neq('id', 'placeholder'),
+          supabase.from('saved_scanned_data').delete().neq('id', 'placeholder'),
+          supabase.from('saved_scan_data').delete().neq('id', 'placeholder'),
+          supabase.from('manual_inward_data').delete().neq('id', 'placeholder'),
+          supabase.from('scan_sessions').delete().neq('id', 'placeholder'),
+          supabase.from('scan_session_items').delete().neq('id', 'placeholder'),
+          supabase.from('import_sessions').delete().neq('id', 'placeholder'),
+        ]);
+      } catch (err) {
+        console.warn('[ImportedService] Supabase clear all error:', err);
+      }
+    }
+
+    this.saveToLocalStorage();
+    this.notify();
+    return { success: true };
+  }
+
   public clearAll() {
     this.importInwarded = [];
     this.manualInwarded = [];
@@ -3974,6 +4135,7 @@ class ImportedService {
     this.importSessions = [];
     this.classOrder = [];
     this.saveToLocalStorage();
+    this.notify();
   }
 }
 

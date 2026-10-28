@@ -24,6 +24,7 @@ import {
   FileSpreadsheet,
   RotateCcw,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import {
   importedService,
@@ -56,6 +57,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
   const [manualRecords, setManualRecords] = useState<ManualInwardedRecord[]>([]);
 
+  // Delete Class State
+  const [classToDelete, setClassToDelete] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
   // Load and subscribe to live data
   const loadData = useCallback(() => {
     const bList = importedService.getClassBundles();
@@ -80,6 +85,20 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       clearInterval(interval);
     };
   }, [loadData]);
+
+  const handleConfirmDeleteClass = async () => {
+    if (!classToDelete) return;
+    setIsDeleting(true);
+    try {
+      await importedService.deleteClassBundle(classToDelete);
+      setClassToDelete(null);
+      loadData();
+    } catch (err) {
+      console.warn('Delete class error:', err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Today's formatted date
   const todayStr = new Date().toLocaleDateString('en-US', {
@@ -537,9 +556,19 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   >
                     <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
                       <span className="font-mono font-black text-sm text-[#172033]">CLASS / SH ID {b.classId}</span>
-                      <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
-                        {b.status}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
+                          {b.status}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setClassToDelete(b.classId)}
+                          className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                          title={`Delete Class / SH ID ${b.classId} and saved scan data`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="py-2.5 space-y-1.5 text-xs font-tabular">
@@ -592,6 +621,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   <th className="py-2.5 px-3">Progress</th>
                   <th className="py-2.5 px-3">Status</th>
                   <th className="py-2.5 px-3">Operator</th>
+                  <th className="py-2.5 px-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E2E8F0]">
@@ -646,6 +676,16 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                         <td className="py-2.5 px-3 text-[#172033] font-medium text-xs whitespace-nowrap">
                           {b.operatorText || '—'}
                         </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setClassToDelete(b.classId)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                            title={`Delete Class / SH ID ${b.classId} and saved scan records`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -662,6 +702,41 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         defaultStartDate={filterStartDate}
         defaultEndDate={filterEndDate}
       />
+
+      {/* Delete Class Confirmation Modal */}
+      {classToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
+          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-base font-black uppercase text-[#172033]">
+              Delete Class / SH ID {classToDelete}?
+            </h3>
+            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
+              This will remove class <strong className="text-[#172033] font-mono">{classToDelete}</strong> from inward schedules and strictly delete all corresponding saved scan records and operational history from the database.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setClassToDelete(null)}
+                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDeleteClass}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Deleting...' : 'Yes, Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
