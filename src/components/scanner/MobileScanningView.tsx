@@ -360,10 +360,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setMemberTab('inwarded');
     dismissModals();
 
+    // Explicitly transition status to IN PROGRESS immediately upon bundle opening
+    const opName = user?.username || user?.full_name || user?.email?.split('@')[0] || currentOperator || 'Siva Sai';
+    importedService.startClassScanSession(cleanCid, opName);
+
     showToast({
       type: 'success',
       title: '✓ Class Opened Successfully',
-      subtitle: `Class ID: ${cleanCid}`,
+      subtitle: `Class ID: ${cleanCid} — Scanning In Progress`,
     });
 
     // 3. Re-initialize camera for MEMBER_MODE

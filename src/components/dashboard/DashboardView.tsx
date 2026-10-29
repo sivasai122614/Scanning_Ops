@@ -34,6 +34,7 @@ import {
   ManualInwardedRecord,
 } from '../../services/importedService';
 import { ManualInwardModal } from './ManualInwardModal';
+import { exportScanningStatusOverviewToExcel } from '../../utils/excelExport';
 
 interface DashboardViewProps {
   onNavigateToSessions?: () => void;
@@ -78,6 +79,21 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   // Delete Class State
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // Status Overview Excel Export
+  const [isExportingOverview, setIsExportingOverview] = useState<boolean>(false);
+
+  const handleExportStatusOverviewExcel = async () => {
+    if (bundles.length === 0) return;
+    setIsExportingOverview(true);
+    try {
+      await exportScanningStatusOverviewToExcel(bundles, universityName, sessionSummary || undefined);
+    } catch (err) {
+      console.error('Failed to export status overview to Excel:', err);
+    } finally {
+      setIsExportingOverview(false);
+    }
+  };
 
   // Load and subscribe to live data
   const loadData = useCallback(() => {
@@ -240,7 +256,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     return result;
   }, [bundles, searchQuery, statusFilter, sortBy]);
 
-  const hasScanningStarted = totalReceived > 0;
+  const hasScanningStarted = totalReceived > 0 || inProgressCount > 0 || partialSavedCount > 0 || completedCount > 0;
 
   // Quick Preset Helper for Date Range
   const setDatePreset = (preset: 'all' | 'today' | 'yesterday' | 'oct_example') => {
@@ -505,9 +521,22 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
       {/* 5. Scanning Status Overview Grid */}
       <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
-        <div className="text-xs font-bold uppercase tracking-wider text-[#172033] mb-3 flex items-center gap-1.5">
-          <Layers className="h-4 w-4 text-[#1565D8]" />
-          <span>Scanning Status Overview</span>
+        <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-xs font-bold uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+            <Layers className="h-4 w-4 text-[#1565D8]" />
+            <span>Scanning Status Overview</span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleExportStatusOverviewExcel}
+            disabled={isExportingOverview || bundles.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Export complete Scanning Status Overview to Excel (.xlsx)"
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5 text-white" />
+            <span>{isExportingOverview ? 'Exporting...' : 'Export to Excel'}</span>
+          </button>
         </div>
 
         {!hasScanningStarted ? (

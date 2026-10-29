@@ -1527,37 +1527,42 @@ class ImportedService {
       let isSaved = false;
       let operatorText = '—';
 
-      // Check whether SAVE has ever been pressed for this class
-      const hasBeenSaved = (
-        sess?.status === 'COMPLETED' ||
-        sess?.status === 'SAVED' ||
-        Boolean(sess?.saved_at) ||
-        this.savedScanned.some(s => normalizeIdentifier(s.class_id).toLowerCase() === classId.toLowerCase())
-      );
-
-      if (pendingCount > 0) {
-        // Scanning started but SAVE has NOT been pressed (or additional scans added since last save)
-        status = 'IN PROGRESS';
-        operatorText = sessionStartedBy !== '—' ? sessionStartedBy : currentUserName;
-      } else if (hasBeenSaved && savedCount >= expectedCount && expectedCount > 0) {
-        // User pressed SAVE and scanned = expected
+      // Bundle Status Calculation:
+      // 1. COMPLETED: All scripts received (e.g. 70/70 scripts) OR explicitly completed
+      if (expectedCount > 0 && receivedCount >= expectedCount) {
         status = 'COMPLETED';
         isCompleted = true;
         isSaved = true;
         const op = sessionSavedBy !== '—' ? sessionSavedBy : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
         operatorText = `Completed by ${op}`;
-      } else if (hasBeenSaved && savedCount > 0) {
-        // User pressed SAVE and scanned < expected
+      }
+      // 2. PARTIAL / SAVED: ONLY when user explicitly pressed the SAVE button with missing scripts (e.g. 69/70)
+      //    Requires session.status === 'SAVED' with a valid saved_at timestamp, and not actively in-progress
+      else if (
+        sess?.status === 'SAVED' &&
+        Boolean(sess?.saved_at) &&
+        pendingCount === 0 &&
+        savedCount > 0 &&
+        savedCount < expectedCount
+      ) {
         status = 'PARTIAL / SAVED';
         isSaved = true;
-        const op = sessionSavedBy !== '—' ? sessionSavedBy : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
+        const op = sessionSavedBy !== '—' ? sessionSavedBy : currentUserName;
         operatorText = `Saved by ${op}`;
-      } else if (receivedCount > 0) {
-        // Has scanned items, but SAVE not pressed yet
+      }
+      // 3. IN PROGRESS: Bundle has been started by user, scanning is active, or scripts are scanned but SAVE not clicked yet
+      else if (
+        sess?.status === 'ACTIVE' ||
+        pendingCount > 0 ||
+        receivedCount > 0 ||
+        Boolean(sess?.started_at)
+      ) {
         status = 'IN PROGRESS';
+        isSaved = false;
         operatorText = sessionStartedBy !== '—' ? sessionStartedBy : currentUserName;
-      } else {
-        // No scan started
+      }
+      // 4. NOT STARTED: No activity, 0 received, 0 pending, no session started
+      else {
         status = 'NOT STARTED';
         operatorText = '—';
       }
@@ -2230,6 +2235,33 @@ class ImportedService {
     }
 
     this.saveToLocalStorage();
+    return session;
+  }
+
+  /**
+   * Explicitly starts a scanning session for a class bundle when opened by the operator.
+   * Immediately marks bundle status as 'IN PROGRESS' and updates scan_sessions.
+   */
+  public async startClassScanSession(classId: string, operatorName?: string): Promise<ScanSession> {
+    const cleanCid = normalizeIdentifier(classId);
+    this.moveClassToTop(cleanCid);
+    const session = await this.ensureScanSession(cleanCid);
+    const currentName = operatorName || resolveOperatorName(getCurrentUser().name);
+    if (session) {
+      session.started_by = currentName;
+      session.status = 'ACTIVE';
+      session.last_activity_at = new Date().toISOString();
+      if (isSupabaseConfigured) {
+        try {
+          await supabase
+            .from('scan_sessions')
+            .update({ status: 'ACTIVE', started_by: currentName, last_activity_at: new Date().toISOString() })
+            .eq('id', session.id);
+        } catch {}
+      }
+    }
+    this.saveToLocalStorage();
+    this.notify();
     return session;
   }
 
