@@ -21,6 +21,7 @@ import {
   Search,
   X,
   Filter,
+  ArrowUpDown,
   FileSpreadsheet,
   RotateCcw,
   Sparkles,
@@ -42,11 +43,28 @@ interface DashboardViewProps {
   onNavigateToImport?: () => void;
 }
 
+export type StatusFilterType = 'ALL' | 'COMPLETED' | 'IN_PROGRESS' | 'PARTIAL' | 'NOT_STARTED';
+export type SortByType =
+  | 'default'
+  | 'completed_first'
+  | 'started_first'
+  | 'not_started_first'
+  | 'scanned_desc'
+  | 'scanned_asc'
+  | 'pending_desc'
+  | 'progress_desc'
+  | 'class_asc'
+  | 'class_desc';
+
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Status Filter & Sorting for Live Monitoring (Requirement 4)
+  const [statusFilter, setStatusFilter] = useState<StatusFilterType>('ALL');
+  const [sortBy, setSortBy] = useState<SortByType>('default');
 
   // Date Range Filter States (Requirement 7 & 10: X to Y date sorting for bulk data)
   const [filterStartDate, setFilterStartDate] = useState<string>('');
@@ -75,10 +93,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     loadData();
     const unsub = importedService.subscribe(loadData);
 
-    // Requirement 4: Real-time background sync poller (every 2.5 seconds) to guarantee live analysis
+    // Real-time background sync poller (every 5 seconds) to guarantee live analysis without overwhelming high-load connections
     const interval = setInterval(() => {
       importedService.syncFromSupabase();
-    }, 2500);
+    }, 5000);
 
     return () => {
       unsub();
@@ -148,7 +166,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const activeManualCount = filterStartDate || filterEndDate ? filteredManualRecords.length : manualRecords.length;
 
   const totalReceived = baseTotalReceived;
-  const totalPending = Math.max(0, totalExpected - totalReceived);
+  const totalPending = sessionSummary?.totalPending !== undefined ? sessionSummary.totalPending : Math.max(0, totalExpected - totalReceived);
   const completionRate = totalExpected > 0 ? Math.round((totalReceived / totalExpected) * 100) : 0;
 
   // Manual Progress Percentage compared to Total Received
@@ -159,6 +177,68 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const inProgressCount = bundles.filter(b => b.status === 'IN PROGRESS').length;
   const partialSavedCount = bundles.filter(b => b.status === 'PARTIAL / SAVED').length;
   const notStartedCount = bundles.filter(b => b.status === 'NOT STARTED').length;
+
+  // Requirement 4: Filter & Sort Scanned Bundles by Status (Completed, Started/In Progress, Not Started) and Counts
+  const filteredAndSortedBundles = useMemo(() => {
+    let result = [...bundles];
+
+    // 1. Text Search Filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      result = result.filter(b => b.classId.toLowerCase().includes(q));
+    }
+
+    // 2. Status Filter
+    if (statusFilter !== 'ALL') {
+      result = result.filter(b => {
+        if (statusFilter === 'COMPLETED') return b.status === 'COMPLETED';
+        if (statusFilter === 'IN_PROGRESS') return b.status === 'IN PROGRESS';
+        if (statusFilter === 'PARTIAL') return b.status === 'PARTIAL / SAVED';
+        if (statusFilter === 'NOT_STARTED') return b.status === 'NOT STARTED';
+        return true;
+      });
+    }
+
+    // 3. Sorting (Completed, Started/In Progress, Not Started, Scanned Count, Pending Count, etc.)
+    result.sort((a, b) => {
+      if (sortBy === 'completed_first') {
+        const rank = (s: string) => (s === 'COMPLETED' ? 0 : s === 'IN PROGRESS' ? 1 : s === 'PARTIAL / SAVED' ? 2 : 3);
+        const diff = rank(a.status) - rank(b.status);
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'started_first') {
+        const rank = (s: string) => (s === 'IN PROGRESS' ? 0 : s === 'PARTIAL / SAVED' ? 1 : s === 'COMPLETED' ? 2 : 3);
+        const diff = rank(a.status) - rank(b.status);
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'not_started_first') {
+        const rank = (s: string) => (s === 'NOT STARTED' ? 0 : s === 'IN PROGRESS' ? 1 : s === 'PARTIAL / SAVED' ? 2 : 3);
+        const diff = rank(a.status) - rank(b.status);
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'scanned_desc') {
+        const diff = b.receivedCount - a.receivedCount;
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'scanned_asc') {
+        const diff = a.receivedCount - b.receivedCount;
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'pending_desc') {
+        const pA = Math.max(0, a.expectedCount - a.receivedCount);
+        const pB = Math.max(0, b.expectedCount - b.receivedCount);
+        const diff = pB - pA;
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'progress_desc') {
+        const diff = b.progressPercentage - a.progressPercentage;
+        if (diff !== 0) return diff;
+      } else if (sortBy === 'class_asc') {
+        return a.classId.localeCompare(b.classId, undefined, { numeric: true, sensitivity: 'base' });
+      } else if (sortBy === 'class_desc') {
+        return b.classId.localeCompare(a.classId, undefined, { numeric: true, sensitivity: 'base' });
+      }
+
+      // Default: retain original sequence (classOrder)
+      return 0;
+    });
+
+    return result;
+  }, [bundles, searchQuery, statusFilter, sortBy]);
 
   const hasScanningStarted = totalReceived > 0;
 
@@ -444,46 +524,103 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         ) : (
           /* Active State After First Valid Booklet */
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Not Started</div>
+            <button
+              type="button"
+              onClick={() => setStatusFilter(prev => prev === 'NOT_STARTED' ? 'ALL' : 'NOT_STARTED')}
+              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+                statusFilter === 'NOT_STARTED'
+                  ? 'bg-slate-100 border-[#64748B] ring-2 ring-slate-400 shadow-xs'
+                  : 'bg-[#F8FAFC] border-[#E2E8F0] hover:bg-slate-100/70'
+              }`}
+              title="Click to filter by Not Started classes"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] flex items-center justify-between">
+                <span>Not Started</span>
+                {statusFilter === 'NOT_STARTED' && (
+                  <span className="text-[9px] bg-[#64748B] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                )}
+              </div>
               <div className="text-xl font-bold font-tabular text-[#475569] mt-0.5">{notStartedCount}</div>
               <div className="text-[10px] text-[#64748B] mt-0.5">Classes pending intake</div>
-            </div>
+            </button>
 
-            <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#1D4ED8]">In Progress</div>
+            <button
+              type="button"
+              onClick={() => setStatusFilter(prev => prev === 'IN_PROGRESS' ? 'ALL' : 'IN_PROGRESS')}
+              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+                statusFilter === 'IN_PROGRESS'
+                  ? 'bg-[#EFF6FF] border-[#1D4ED8] ring-2 ring-[#93C5FD] shadow-xs'
+                  : 'bg-[#EFF6FF] border-[#BFDBFE] hover:bg-[#DBEAFE]/70'
+              }`}
+              title="Click to filter by In Progress classes"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#1D4ED8] flex items-center justify-between">
+                <span>In Progress</span>
+                {statusFilter === 'IN_PROGRESS' && (
+                  <span className="text-[9px] bg-[#1D4ED8] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                )}
+              </div>
               <div className="text-xl font-bold font-tabular text-[#1565D8] mt-0.5">{inProgressCount}</div>
               <div className="text-[10px] text-[#1E40AF] mt-0.5">Currently inwarding</div>
-            </div>
+            </button>
 
-            <div className="p-3 bg-[#FEF3C7] border border-[#FDE68A] rounded-lg">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#B45309]">Partial / Saved</div>
+            <button
+              type="button"
+              onClick={() => setStatusFilter(prev => prev === 'PARTIAL' ? 'ALL' : 'PARTIAL')}
+              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+                statusFilter === 'PARTIAL'
+                  ? 'bg-[#FEF3C7] border-[#B45309] ring-2 ring-[#FDE68A] shadow-xs'
+                  : 'bg-[#FEF3C7] border-[#FDE68A] hover:bg-[#FDE68A]/70'
+              }`}
+              title="Click to filter by Partial / Saved classes"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#B45309] flex items-center justify-between">
+                <span>Partial / Saved</span>
+                {statusFilter === 'PARTIAL' && (
+                  <span className="text-[9px] bg-[#B45309] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                )}
+              </div>
               <div className="text-xl font-bold font-tabular text-[#B45309] mt-0.5">{partialSavedCount}</div>
               <div className="text-[10px] text-[#92400E] mt-0.5">Inwarded with pending</div>
-            </div>
+            </button>
 
-            <div className="p-3 bg-[#DCFCE7] border border-[#BBF7D0] rounded-lg">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D]">Completed</div>
+            <button
+              type="button"
+              onClick={() => setStatusFilter(prev => prev === 'COMPLETED' ? 'ALL' : 'COMPLETED')}
+              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+                statusFilter === 'COMPLETED'
+                  ? 'bg-[#DCFCE7] border-[#15803D] ring-2 ring-[#BBF7D0] shadow-xs'
+                  : 'bg-[#DCFCE7] border-[#BBF7D0] hover:bg-[#BBF7D0]/70'
+              }`}
+              title="Click to filter by Completed classes"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D] flex items-center justify-between">
+                <span>Completed</span>
+                {statusFilter === 'COMPLETED' && (
+                  <span className="text-[9px] bg-[#15803D] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                )}
+              </div>
               <div className="text-xl font-bold font-tabular text-[#16A34A] mt-0.5">{completedCount}</div>
               <div className="text-[10px] text-[#166534] mt-0.5">All booklets verified</div>
-            </div>
+            </button>
           </div>
         )}
       </div>
 
-      {/* 6. Class-Wise Realtime Monitoring List */}
+      {/* 6. Class-Wise Realtime Monitoring List with Status Sorting (Requirement 4) */}
       <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        {/* Top Header & Search/View Bar */}
+        <div className="p-4 border-b border-[#E2E8F0] flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <div className="text-xs font-bold uppercase tracking-wider text-[#172033]">
               Class ID / SH ID Live Monitoring
             </div>
             <span className="px-2 py-0.5 bg-[#F1F5F9] text-[#475569] text-[10px] font-black rounded-md font-tabular">
-              {bundles.length} Bundles
+              {filteredAndSortedBundles.length} of {bundles.length}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Search Box */}
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#94A3B8]" />
@@ -503,6 +640,28 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   <X className="h-3 w-3" />
                 </button>
               )}
+            </div>
+
+            {/* Sort Selector Dropdown (Requirement 4: completed, started, not started sort) */}
+            <div className="flex items-center gap-1.5 bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg px-2 py-1">
+              <ArrowUpDown className="h-3.5 w-3.5 text-[#1565D8] shrink-0" />
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as SortByType)}
+                className="bg-transparent text-xs font-semibold text-[#172033] focus:outline-hidden cursor-pointer"
+                title="Sort scanned classes"
+              >
+                <option value="default">Sort: Default Order</option>
+                <option value="completed_first">Sort: Completed First</option>
+                <option value="started_first">Sort: Started / In Progress First</option>
+                <option value="not_started_first">Sort: Not Started First</option>
+                <option value="scanned_desc">Sort: Most Scanned First</option>
+                <option value="scanned_asc">Sort: Least Scanned First</option>
+                <option value="pending_desc">Sort: Most Pending First</option>
+                <option value="progress_desc">Sort: Highest Progress %</option>
+                <option value="class_asc">Sort: Class ID (A → Z)</option>
+                <option value="class_desc">Sort: Class ID (Z → A)</option>
+              </select>
             </div>
 
             {/* Grid / List View Toggle */}
@@ -527,86 +686,175 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         </div>
 
+        {/* Status Filter Tab Pills (Requirement 4: Quick Status Categorization) */}
+        <div className="px-4 py-2 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] mr-1">Status:</span>
+          
+          <button
+            type="button"
+            onClick={() => setStatusFilter('ALL')}
+            className={`px-2.5 py-1 rounded-md font-bold text-xs transition-colors cursor-pointer ${
+              statusFilter === 'ALL'
+                ? 'bg-[#1565D8] text-white shadow-xs'
+                : 'bg-white border border-[#CBD5E1] text-[#475569] hover:bg-slate-100'
+            }`}
+          >
+            All ({bundles.length})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('COMPLETED')}
+            className={`px-2.5 py-1 rounded-md font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
+              statusFilter === 'COMPLETED'
+                ? 'bg-[#16A34A] text-white shadow-xs'
+                : 'bg-white border border-[#86EFAC] text-[#166534] hover:bg-emerald-50'
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span>Completed ({completedCount})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('IN_PROGRESS')}
+            className={`px-2.5 py-1 rounded-md font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
+              statusFilter === 'IN_PROGRESS'
+                ? 'bg-[#1D4ED8] text-white shadow-xs'
+                : 'bg-white border border-[#93C5FD] text-[#1D4ED8] hover:bg-blue-50'
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+            <span>In Progress / Started ({inProgressCount})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('PARTIAL')}
+            className={`px-2.5 py-1 rounded-md font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
+              statusFilter === 'PARTIAL'
+                ? 'bg-[#B45309] text-white shadow-xs'
+                : 'bg-white border border-[#FDE68A] text-[#92400E] hover:bg-amber-50'
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            <span>Partial / Saved ({partialSavedCount})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter('NOT_STARTED')}
+            className={`px-2.5 py-1 rounded-md font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5 ${
+              statusFilter === 'NOT_STARTED'
+                ? 'bg-[#475569] text-white shadow-xs'
+                : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+            <span>Not Started ({notStartedCount})</span>
+          </button>
+
+          {statusFilter !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter('ALL')}
+              className="text-[11px] text-[#DC2626] hover:underline font-semibold ml-auto flex items-center gap-1 cursor-pointer"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Reset Status Filter</span>
+            </button>
+          )}
+        </div>
+
         {/* Content View: Grid vs List */}
         {bundles.length === 0 ? (
           <div className="p-8 text-center text-[#64748B] text-xs">
             No classes or SH IDs imported yet. Import examination data to view live monitoring.
           </div>
+        ) : filteredAndSortedBundles.length === 0 ? (
+          <div className="p-8 text-center text-[#64748B] text-xs space-y-2">
+            <div>No classes match status filter <strong>"{statusFilter}"</strong> {searchQuery && `or search "${searchQuery}"`}.</div>
+            <button
+              type="button"
+              onClick={() => { setStatusFilter('ALL'); setSearchQuery(''); }}
+              className="px-3 py-1 bg-[#1565D8] text-white font-bold text-xs rounded-lg cursor-pointer hover:bg-[#0D47A1]"
+            >
+              Show All Classes
+            </button>
+          </div>
         ) : viewMode === 'grid' ? (
           /* GRID VIEW */
           <div className="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
-            {bundles
-              .filter(b => !searchQuery.trim() || b.classId.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-              .map(b => {
-                let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-                if (b.status === 'COMPLETED') {
-                  badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-                } else if (b.status === 'IN PROGRESS') {
-                  badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-                } else if (b.status === 'PARTIAL / SAVED') {
-                  badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
-                }
+            {filteredAndSortedBundles.map(b => {
+              let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+              if (b.status === 'COMPLETED') {
+                badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+              } else if (b.status === 'IN PROGRESS') {
+                badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+              } else if (b.status === 'PARTIAL / SAVED') {
+                badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
+              }
 
-                const classPending = Math.max(0, b.expectedCount - b.receivedCount);
+              const classPending = Math.max(0, b.expectedCount - b.receivedCount);
 
-                return (
-                  <div
-                    key={b.classId}
-                    className="bg-white border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl p-3.5 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
-                  >
-                    <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
-                      <span className="font-mono font-black text-sm text-[#172033]">CLASS / SH ID {b.classId}</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
-                          {b.status}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setClassToDelete(b.classId)}
-                          className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                          title={`Delete Class / SH ID ${b.classId} and saved scan data`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="py-2.5 space-y-1.5 text-xs font-tabular">
-                      <div className="flex items-center justify-between text-[#64748B]">
-                        <span>Expected Booklets</span>
-                        <span className="font-bold text-[#172033]">{b.expectedCount}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-[#1565D8]">
-                        <span>Scanned / Verified</span>
-                        <span className="font-bold">{b.receivedCount}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-[#DC2626]">
-                        <span>Pending to Inward</span>
-                        <span className="font-bold">{classPending}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-[#64748B]">
-                        <span>Operator</span>
-                        <span className="font-semibold text-[#172033] text-[11px] truncate max-w-[150px]" title={b.operatorText || '—'}>
-                          {b.operatorText || '—'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-[#E2E8F0]">
-                      <div className="flex items-center justify-between text-[11px] mb-1">
-                        <span className="text-[#64748B] font-bold">Progress</span>
-                        <span className="font-bold font-tabular text-[#16A34A]">{b.progressPercentage}%</span>
-                      </div>
-                      <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
-                        <div
-                          className="h-full bg-[#16A34A] rounded-full transition-all"
-                          style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
-                        />
-                      </div>
+              return (
+                <div
+                  key={b.classId}
+                  className="bg-white border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl p-3.5 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
+                    <span className="font-mono font-black text-sm text-[#172033]">CLASS / SH ID {b.classId}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
+                        {b.status}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setClassToDelete(b.classId)}
+                        className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                        title={`Delete Class / SH ID ${b.classId} and saved scan data`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </div>
-                );
-              })}
+
+                  <div className="py-2.5 space-y-1.5 text-xs font-tabular">
+                    <div className="flex items-center justify-between text-[#64748B]">
+                      <span>Expected Booklets</span>
+                      <span className="font-bold text-[#172033]">{b.expectedCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#1565D8]">
+                      <span>Scanned / Verified</span>
+                      <span className="font-bold">{b.receivedCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#DC2626]">
+                      <span>Pending to Inward</span>
+                      <span className="font-bold">{classPending}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[#64748B]">
+                      <span>Operator</span>
+                      <span className="font-semibold text-[#172033] text-[11px] truncate max-w-[150px]" title={b.operatorText || '—'}>
+                        {b.operatorText || '—'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-[#E2E8F0]">
+                    <div className="flex items-center justify-between text-[11px] mb-1">
+                      <span className="text-[#64748B] font-bold">Progress</span>
+                      <span className="font-bold font-tabular text-[#16A34A]">{b.progressPercentage}%</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                      <div
+                        className="h-full bg-[#16A34A] rounded-full transition-all"
+                        style={{ width: `${Math.min(100, b.progressPercentage)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           /* LIST VIEW */
@@ -625,34 +873,32 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E2E8F0]">
-                {bundles
-                  .filter(b => !searchQuery.trim() || b.classId.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-                  .map(b => {
-                    let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-                    if (b.status === 'COMPLETED') {
-                      badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-                    } else if (b.status === 'IN PROGRESS') {
-                      badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-                    } else if (b.status === 'PARTIAL / SAVED') {
-                      badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
-                    }
+                {filteredAndSortedBundles.map(b => {
+                  let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                  if (b.status === 'COMPLETED') {
+                    badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                  } else if (b.status === 'IN PROGRESS') {
+                    badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                  } else if (b.status === 'PARTIAL / SAVED') {
+                    badgeColor = 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]';
+                  }
 
-                    const classPending = Math.max(0, b.expectedCount - b.receivedCount);
+                  const classPending = Math.max(0, b.expectedCount - b.receivedCount);
 
-                    return (
-                      <tr key={b.classId} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-2.5 px-3 font-mono font-bold text-[#172033]">
-                          {b.classId}
-                        </td>
-                        <td className="py-2.5 px-3 font-tabular font-medium text-[#172033]">
-                          {b.expectedCount}
-                        </td>
-                        <td className="py-2.5 px-3 font-tabular font-bold text-[#1565D8]">
-                          {b.receivedCount}
-                        </td>
-                        <td className="py-2.5 px-3 font-tabular font-bold text-[#DC2626]">
-                          {classPending}
-                        </td>
+                  return (
+                    <tr key={b.classId} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-2.5 px-3 font-mono font-bold text-[#172033]">
+                        {b.classId}
+                      </td>
+                      <td className="py-2.5 px-3 font-tabular font-medium text-[#172033]">
+                        {b.expectedCount}
+                      </td>
+                      <td className="py-2.5 px-3 font-tabular font-bold text-[#1565D8]">
+                        {b.receivedCount}
+                      </td>
+                      <td className="py-2.5 px-3 font-tabular font-bold text-[#DC2626]">
+                        {classPending}
+                      </td>
                         <td className="py-2.5 px-3">
                           <div className="flex items-center gap-2">
                             <div className="h-1.5 w-16 bg-slate-200 rounded-full overflow-hidden">

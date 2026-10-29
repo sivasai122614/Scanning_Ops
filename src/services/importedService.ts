@@ -323,12 +323,80 @@ const STORAGE_SAVED_SCANNED = 'examscan_saved_scanned_v5';
 const STORAGE_SCAN_ITEMS = 'examscan_scan_items_v5';
 const STORAGE_IMPORT_SESSIONS = 'examscan_import_sessions_v5';
 const STORAGE_CLASS_ORDER = 'examscan_class_order_v5';
+const STORAGE_YET_TO_BE_INWARD = 'examscan_yet_to_be_inward_v5';
 
 const BATCH_SIZE = 500;
 
+/**
+ * Direct exact count query from Supabase PostgreSQL using HEAD request.
+ * Returns the exact integer count (e.g. 3,159 records) directly from the database
+ * in milliseconds without transferring table rows!
+ */
+async function fetchExactTableCount(
+  tableName: string,
+  filterFn?: (query: any) => any
+): Promise<{ count: number | null; error: any }> {
+  if (!isSupabaseConfigured) return { count: null, error: 'Supabase not configured' };
+  try {
+    let query = supabase.from(tableName).select('*', { count: 'exact', head: true });
+    if (filterFn) {
+      query = filterFn(query);
+    }
+    const { count, error } = await query;
+    if (error) return { count: null, error };
+    return { count: count ?? 0, error: null };
+  } catch (err) {
+    return { count: null, error: err };
+  }
+}
+
+/**
+ * Robust fetcher for Supabase tables.
+ * Uses PostgREST Range header chunking (.range(from, to)) so tables with thousands
+ * of rows (e.g. 3,159, 10,000, 50,000+) are cleanly retrieved without 1,000-row limits.
+ */
+async function fetchAllRowsFromTable(
+  tableName: string,
+  filterFn?: (query: any) => any,
+  selectCols = '*'
+): Promise<{ data: any[] | null; error: any }> {
+  if (!isSupabaseConfigured) return { data: null, error: 'Supabase not configured' };
+  const CHUNK_SIZE = 1000;
+  let allRows: any[] = [];
+  const maxPages = 150; // supports up to 150,000 rows
+
+  let page = 0;
+  let lastError: any = null;
+  while (page < maxPages) {
+    const from = page * CHUNK_SIZE;
+    const to = from + CHUNK_SIZE - 1;
+    let query = supabase.from(tableName).select(selectCols).range(from, to);
+    if (filterFn) {
+      query = filterFn(query);
+    }
+    const { data, error } = await query;
+    if (error) {
+      lastError = error;
+      console.warn(`[fetchAllRowsFromTable] ${tableName} range ${from}-${to} notice:`, error.message);
+      if (page === 0) return { data: null, error };
+      break;
+    }
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      break;
+    }
+    allRows.push(...data);
+    if (data.length < CHUNK_SIZE) {
+      break;
+    }
+    page++;
+  }
+  return { data: allRows, error: allRows.length > 0 ? null : lastError };
+}
+
 class ImportedService {
-  // In-memory representations of the 4 database tables + pending items
+  // In-memory representations of the database tables + pending items
   private importInwarded: ImportInwardedRecord[] = [];
+  private yetToBeInward: ImportInwardedRecord[] = []; // Dedicated Table: yet_to_be_inward (Pending scripts)
   private manualInwarded: ManualInwardedRecord[] = [];
   private scanSessions: ScanSession[] = [];
   private savedScanned: SavedScannedRecord[] = [];
@@ -336,11 +404,18 @@ class ImportedService {
   private importSessions: ImportSession[] = [];
   private classOrder: string[] = []; // Tracks class sorting: recently scanned classes at top
 
+  // Authoritative direct backend counts
+  private backendExpectedCount: number = 0;
+  private backendReceivedCount: number = 0;
+  private backendPendingCount: number = 0;
+  private backendManualCount: number = 0;
+
   private activeUniversity: string = '';
   private activeSessionId: string | null = null;
   private listeners: (() => void)[] = [];
   private realtimeChannel: any = null;
   public isInitialized: boolean = false;
+  private isSyncing: boolean = false;
 
   constructor() {
     this.loadFromLocalStorage();
@@ -362,6 +437,9 @@ class ImportedService {
     try {
       const storedImp = localStorage.getItem(STORAGE_IMPORT_INWARDED);
       if (storedImp) this.importInwarded = JSON.parse(storedImp);
+
+      const storedYet = localStorage.getItem(STORAGE_YET_TO_BE_INWARD);
+      if (storedYet) this.yetToBeInward = JSON.parse(storedYet);
 
       const storedMan = localStorage.getItem(STORAGE_MANUAL_INWARDED);
       if (storedMan) this.manualInwarded = JSON.parse(storedMan);
@@ -389,6 +467,11 @@ class ImportedService {
         this.activeUniversity = this.importInwarded[0].college_name || this.importInwarded[0].university_name || '';
       }
 
+      // Reconcile counts
+      this.backendExpectedCount = this.importInwarded.length;
+      this.backendReceivedCount = this.savedScanned.length;
+      this.backendPendingCount = this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
+
       // Immediately reconcile with imported reference dataset to eliminate any stale orphan inward state
       this.reconcileInwardStateWithImportedData();
     } catch (e) {
@@ -407,11 +490,15 @@ class ImportedService {
   public reconcileInwardStateWithImportedData() {
     if (this.importInwarded.length === 0) {
       // When imported data is completely cleared or deleted, clear all saved scans and active sessions in sync
+      this.yetToBeInward = [];
       this.savedScanned = [];
       this.manualInwarded = [];
       this.scanSessions = [];
       this.scanItems = [];
       this.classOrder = [];
+      this.backendExpectedCount = 0;
+      this.backendReceivedCount = 0;
+      this.backendPendingCount = 0;
       this.saveToLocalStorage();
       return;
     }
@@ -420,6 +507,10 @@ class ImportedService {
     // manual inwards, and sessions belonging to the deleted classes so stale data does not persist
     const validClassIds = new Set(
       this.importInwarded.map(r => normalizeIdentifier(r.class_id).toLowerCase())
+    );
+
+    this.yetToBeInward = this.yetToBeInward.filter(y =>
+      validClassIds.has(normalizeIdentifier(y.class_id).toLowerCase())
     );
 
     this.savedScanned = this.savedScanned.filter(s =>
@@ -448,6 +539,7 @@ class ImportedService {
   private saveToLocalStorage() {
     try {
       localStorage.setItem(STORAGE_IMPORT_INWARDED, JSON.stringify(this.importInwarded));
+      localStorage.setItem(STORAGE_YET_TO_BE_INWARD, JSON.stringify(this.yetToBeInward));
       localStorage.setItem(STORAGE_MANUAL_INWARDED, JSON.stringify(this.manualInwarded));
       localStorage.setItem(STORAGE_SCAN_SESSIONS, JSON.stringify(this.scanSessions));
       localStorage.setItem(STORAGE_SAVED_SCANNED, JSON.stringify(this.savedScanned));
@@ -514,6 +606,11 @@ class ImportedService {
           'postgres_changes',
           { event: '*', schema: 'public', table: 'saved_scanned_data' },
           (payload) => this.handleRealtimeEvent('saved_scanned_data', payload)
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'yet_to_be_inward' },
+          (payload) => this.handleRealtimeEvent('yet_to_be_inward', payload)
         )
         .on(
           'postgres_changes',
@@ -704,6 +801,36 @@ class ImportedService {
         // Always trigger authoritative sync to catch table clears, bulk deletes, or untracked deletes
         this.scheduleAuthoritativeSync(100);
       }
+    } else if (table === 'yet_to_be_inward') {
+      if (eventType === 'INSERT' && newRecord) {
+        if (!this.yetToBeInward.some(y => y.id === newRecord.id)) {
+          this.yetToBeInward.push({
+            id: newRecord.id,
+            import_session_id: newRecord.import_session_id || 'default_sess',
+            college_name: newRecord.college_name || newRecord.university_name || this.activeUniversity,
+            university_name: newRecord.university_name || newRecord.college_name || this.activeUniversity,
+            class_id: normalizeIdentifier(newRecord.class_id),
+            sch_id: newRecord.sch_id,
+            member_id: normalizeIdentifier(newRecord.member_id),
+            barcode: newRecord.barcode ? normalizeIdentifier(newRecord.barcode) : undefined,
+            created_at: newRecord.created_at || new Date().toISOString(),
+          });
+          this.backendPendingCount = this.yetToBeInward.length;
+          stateChanged = true;
+        }
+      } else if (eventType === 'DELETE') {
+        if (oldRecord && oldRecord.id) {
+          this.yetToBeInward = this.yetToBeInward.filter(y => y.id !== oldRecord.id);
+        } else if (oldRecord && oldRecord.class_id && oldRecord.member_id) {
+          this.yetToBeInward = this.yetToBeInward.filter(
+            y => !(normalizeIdentifier(y.class_id).toLowerCase() === normalizeIdentifier(oldRecord.class_id).toLowerCase() &&
+                   normalizeIdentifier(y.member_id).toLowerCase() === normalizeIdentifier(oldRecord.member_id).toLowerCase())
+          );
+        }
+        this.backendPendingCount = this.yetToBeInward.length;
+        stateChanged = true;
+        this.scheduleAuthoritativeSync(100);
+      }
     }
 
     if (stateChanged) {
@@ -719,12 +846,40 @@ class ImportedService {
 
   /**
    * Sync all tables from remote Supabase (Authoritative Single Source of Truth)
-   * A successful query returning 0 records is authoritative and clears local cache.
+   * Uses paginated chunking (1,000 rows per page up to 150,000 rows) so that
+   * bulk data never caps/defaults to 1,000, and backend deletions accurately decrease counts.
    */
   public async syncFromSupabase() {
     if (!isSupabaseConfigured) return;
+    if (this.isSyncing) return;
+    this.isSyncing = true;
 
     try {
+      // 0. Query Authoritative PostgreSQL Exact Table Counts (Direct HEAD requests: zero row payload)
+      try {
+        const [expCntRes, recCntRes, yetCntRes, manCntRes] = await Promise.allSettled([
+          fetchExactTableCount('imported_inward_data'),
+          fetchExactTableCount('saved_scanned_data'),
+          fetchExactTableCount('yet_to_be_inward'),
+          fetchExactTableCount('manual_inward_data'),
+        ]);
+
+        if (expCntRes.status === 'fulfilled' && expCntRes.value.count !== null) {
+          this.backendExpectedCount = expCntRes.value.count;
+        }
+        if (recCntRes.status === 'fulfilled' && recCntRes.value.count !== null) {
+          this.backendReceivedCount = recCntRes.value.count;
+        }
+        if (yetCntRes.status === 'fulfilled' && yetCntRes.value.count !== null) {
+          this.backendPendingCount = yetCntRes.value.count;
+        }
+        if (manCntRes.status === 'fulfilled' && manCntRes.value.count !== null) {
+          this.backendManualCount = manCntRes.value.count;
+        }
+      } catch (cntErr) {
+        console.warn('[ImportedService] Exact counts query notice:', cntErr);
+      }
+
       // 1. Fetch import sessions
       try {
         const { data: sessData, error: sessErr } = await supabase
@@ -751,15 +906,12 @@ class ImportedService {
         // Optional session table
       }
 
-      // 2. Fetch imported data from primary production table imported_inward_data or physical table imported_inward
+      // 2. Fetch imported data with full pagination (supports high loads: 5k, 10k, 50k+ records)
       let impRows: any[] | null = null;
       let querySuccess = false;
       let queryError: any = null;
 
-      const { data: impData, error: impErr } = await supabase
-        .from('imported_inward_data')
-        .select('*')
-        .limit(50000);
+      const { data: impData, error: impErr } = await fetchAllRowsFromTable('imported_inward_data');
 
       if (!impErr && impData !== null && Array.isArray(impData)) {
         impRows = impData;
@@ -768,10 +920,7 @@ class ImportedService {
         queryError = impErr;
         // Fallback check in case physical table imported_inward exists
         try {
-          const { data: physData, error: physErr } = await supabase
-            .from('imported_inward')
-            .select('*')
-            .limit(50000);
+          const { data: physData, error: physErr } = await fetchAllRowsFromTable('imported_inward');
           if (!physErr && physData !== null && Array.isArray(physData)) {
             impRows = physData;
             querySuccess = true;
@@ -782,10 +931,7 @@ class ImportedService {
         if (!querySuccess) {
           // Fallback check in case import_inwarded_data view exists
           try {
-            const { data: impFallback, error: fbErr } = await supabase
-              .from('import_inwarded_data')
-              .select('*')
-              .limit(50000);
+            const { data: impFallback, error: fbErr } = await fetchAllRowsFromTable('import_inwarded_data');
             if (!fbErr && impFallback !== null && Array.isArray(impFallback)) {
               impRows = impFallback;
               querySuccess = true;
@@ -795,7 +941,7 @@ class ImportedService {
         }
       }
 
-      // FIX #1: If query failed due to network, RLS or error, preserve existing local state
+      // If query failed due to network, RLS or error, preserve existing local state
       if (!querySuccess || queryError) {
         console.warn('[ImportedService] Supabase sync error/denial — preserving existing local state:', queryError?.message || queryError);
       } else if (querySuccess && impRows !== null) {
@@ -803,7 +949,6 @@ class ImportedService {
           console.log('[ImportedService] Supabase returned 0 imported records. Representing imported data as empty, preserving scan history.');
           this.importInwarded = [];
           this.importSessions = [];
-          // CRITICAL FIX #1: NEVER delete saved_scanned_data, saved_scan_data, manual_inward_data, scan_session_items, or scan_sessions!
         } else {
           this.importInwarded = impRows.map((r: any) => ({
             id: r.id || `${r.class_id}_${r.member_id || r.mem_id}`,
@@ -828,8 +973,8 @@ class ImportedService {
         this.notify();
       }
 
-      // 3. Fetch scan_sessions
-      const { data: scanSessData, error: scanSessErr } = await supabase.from('scan_sessions').select('*');
+      // 3. Fetch scan_sessions (paginated)
+      const { data: scanSessData, error: scanSessErr } = await fetchAllRowsFromTable('scan_sessions');
       if (!scanSessErr && scanSessData !== null && Array.isArray(scanSessData)) {
         this.scanSessions = scanSessData.map((s: any) => ({
           id: s.id,
@@ -848,14 +993,14 @@ class ImportedService {
         this.saveToLocalStorage();
       }
 
-      // 4. Fetch saved_scanned_data (and check saved_scan_data)
+      // 4. Fetch saved_scanned_data with full pagination (and check saved_scan_data)
       let combinedSaved: any[] = [];
-      const { data: savedData, error: savedErr } = await supabase.from('saved_scanned_data').select('*').limit(50000);
+      const { data: savedData, error: savedErr } = await fetchAllRowsFromTable('saved_scanned_data');
       if (!savedErr && savedData !== null && Array.isArray(savedData)) {
         combinedSaved.push(...savedData);
       }
       try {
-        const { data: altData, error: altErr } = await supabase.from('saved_scan_data').select('*').limit(50000);
+        const { data: altData, error: altErr } = await fetchAllRowsFromTable('saved_scan_data');
         if (!altErr && altData !== null && Array.isArray(altData)) {
           const existingIds = new Set(combinedSaved.map(s => s.id));
           for (const s of altData) {
@@ -911,12 +1056,9 @@ class ImportedService {
         this.saveToLocalStorage();
       }
 
-      // 5. Fetch manual_inward_data
+      // 5. Fetch manual_inward_data (paginated)
       try {
-        const { data: manData, error: manErr } = await supabase
-          .from('manual_inward_data')
-          .select('*')
-          .limit(50000);
+        const { data: manData, error: manErr } = await fetchAllRowsFromTable('manual_inward_data');
         if (!manErr && manData !== null && Array.isArray(manData)) {
           this.manualInwarded = manData.map((m: any) => ({
             id: m.id,
@@ -942,9 +1084,9 @@ class ImportedService {
         console.warn('[ImportedService] Supabase manual_inward_data sync note:', e);
       }
 
-      // 6. Fetch scan_session_items (pending items)
+      // 6. Fetch scan_session_items (paginated)
       try {
-        const { data: itemsData, error: itemsErr } = await supabase.from('scan_session_items').select('*').limit(20000);
+        const { data: itemsData, error: itemsErr } = await fetchAllRowsFromTable('scan_session_items');
         if (!itemsErr && itemsData !== null && Array.isArray(itemsData)) {
           this.scanItems = itemsData.map((i: any) => ({
             id: i.id,
@@ -1018,6 +1160,95 @@ class ImportedService {
         }
       }
 
+      // 7. Fetch yet_to_be_inward (Dedicated Pending Booklets table)
+      try {
+        const { data: yetData, error: yetErr } = await fetchAllRowsFromTable('yet_to_be_inward');
+        if (!yetErr && yetData !== null && Array.isArray(yetData)) {
+          this.yetToBeInward = yetData.map((r: any) => ({
+            id: r.id || `${r.class_id}_${r.member_id}`,
+            import_session_id: r.import_session_id || 'default_session',
+            college_name: r.university_name || r.college_name || this.activeUniversity || '',
+            university_name: r.university_name || r.college_name || this.activeUniversity || '',
+            class_id: normalizeIdentifier(r.class_id),
+            sch_id: r.sch_id,
+            member_id: normalizeIdentifier(r.member_id),
+            barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            created_by: r.created_by,
+            created_at: r.created_at || new Date().toISOString(),
+          }));
+          this.backendPendingCount = this.yetToBeInward.length;
+
+          // AUTO-SEED: If yet_to_be_inward is empty in Supabase, but imported_inward_data has records:
+          if (this.yetToBeInward.length === 0 && this.importInwarded.length > 0 && isSupabaseConfigured) {
+            console.log('[ImportedService] yet_to_be_inward is empty in Supabase. Auto-populating from imported_inward_data...');
+            const savedKeySet = new Set(
+              this.savedScanned.map(s => `${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
+            );
+            const pendingToSeed = this.importInwarded.filter(
+              i => !savedKeySet.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
+            );
+
+            if (pendingToSeed.length > 0) {
+              this.yetToBeInward = pendingToSeed.map(p => ({
+                id: p.id,
+                import_session_id: p.import_session_id || 'default_session',
+                college_name: p.college_name || p.university_name || 'VIT',
+                university_name: p.university_name || p.college_name || 'VIT',
+                class_id: p.class_id,
+                sch_id: p.sch_id,
+                member_id: p.member_id,
+                barcode: p.barcode || p.member_id,
+                created_at: p.created_at || new Date().toISOString(),
+              }));
+              this.backendPendingCount = this.yetToBeInward.length;
+
+              // Insert into Supabase yet_to_be_inward in chunks of 500
+              const seedRows = pendingToSeed.map(p => ({
+                id: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id) ? p.id : undefined,
+                import_session_id: p.import_session_id || 'default_session',
+                university_name: p.university_name || p.college_name || 'VIT',
+                college_name: p.college_name || p.university_name || 'VIT',
+                class_id: p.class_id,
+                sch_id: p.sch_id || null,
+                member_id: p.member_id,
+                barcode: p.barcode || p.member_id,
+                created_at: p.created_at || new Date().toISOString(),
+              }));
+
+              (async () => {
+                try {
+                  for (let i = 0; i < seedRows.length; i += 500) {
+                    await supabase.from('yet_to_be_inward').insert(seedRows.slice(i, i + 500));
+                  }
+                  console.log(`[ImportedService] Auto-seeded ${seedRows.length} rows into yet_to_be_inward in Supabase`);
+                } catch (autoErr) {
+                  console.warn('[ImportedService] Auto-seed note:', autoErr);
+                }
+              })();
+            }
+          }
+        } else if (yetErr) {
+          // Fallback if table not created yet in Supabase
+          this.backendPendingCount = Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
+        }
+      } catch (yetSyncErr) {
+        console.warn('[ImportedService] yet_to_be_inward sync notice:', yetSyncErr);
+      }
+
+      // Reconcile count priorities:
+      // Authoritative expected = max(backend count, imported in memory)
+      if (this.importInwarded.length > 0 && (this.backendExpectedCount === 0 || this.importInwarded.length > this.backendExpectedCount)) {
+        this.backendExpectedCount = this.importInwarded.length;
+      }
+      if (this.savedScanned.length > 0 && (this.backendReceivedCount === 0 || this.savedScanned.length > this.backendReceivedCount)) {
+        this.backendReceivedCount = this.savedScanned.length;
+      }
+      if (this.yetToBeInward.length > 0) {
+        this.backendPendingCount = this.yetToBeInward.length;
+      } else if (this.backendPendingCount === 0 && this.backendExpectedCount > 0) {
+        this.backendPendingCount = Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
+      }
+
       // Reconcile inward records with authoritative imported reference dataset
       this.reconcileInwardStateWithImportedData();
 
@@ -1027,6 +1258,8 @@ class ImportedService {
       this.isInitialized = true;
     } catch (e) {
       console.warn('[ImportedService] Supabase sync note:', e);
+    } finally {
+      this.isSyncing = false;
     }
   }
 
@@ -1116,9 +1349,11 @@ class ImportedService {
       r => !uni || r.college_name.toLowerCase() === uni.toLowerCase()
     );
 
-    const expectedCount = expected.length;
-    const scannedCount = saved.length;
-    const notScannedCount = Math.max(0, expectedCount - scannedCount);
+    const expectedCount = Math.max(this.backendExpectedCount, expected.length);
+    const scannedCount = Math.max(this.backendReceivedCount, saved.length);
+    const notScannedCount = this.backendPendingCount > 0
+      ? this.backendPendingCount
+      : (this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, expectedCount - scannedCount));
     const totalClasses = new Set(expected.map(r => r.class_id)).size;
     const completionPercentage = expectedCount > 0 ? Math.round((scannedCount / expectedCount) * 100) : 0;
 
@@ -1136,17 +1371,17 @@ class ImportedService {
     const bundles = this.getClassBundles();
     const uni = this.activeUniversity;
 
-    let totalExpected = 0;
-    let totalSaved = 0;
-    let totalPending = 0;
+    let totalExpectedFromBundles = 0;
+    let totalSavedFromBundles = 0;
+    let totalPendingFromBundles = 0;
     let completedClasses = 0;
     let partialClasses = 0;
     let notStartedClasses = 0;
 
     for (const b of bundles) {
-      totalExpected += b.expectedCount;
-      totalSaved += b.savedCount;
-      totalPending += b.pendingCount;
+      totalExpectedFromBundles += b.expectedCount;
+      totalSavedFromBundles += b.savedCount;
+      totalPendingFromBundles += b.pendingCount;
 
       if (b.status === 'COMPLETED') {
         completedClasses++;
@@ -1157,9 +1392,17 @@ class ImportedService {
       }
     }
 
-    const totalReceived = totalSaved + totalPending;
-    const totalMissing = Math.max(0, totalExpected - totalReceived);
-    const overallCompletion = totalExpected > 0 ? Math.round((totalSaved / totalExpected) * 100) : 0;
+    const effectiveExpected = Math.max(this.backendExpectedCount, totalExpectedFromBundles, this.importInwarded.length);
+    const effectiveSaved = Math.max(this.backendReceivedCount, totalSavedFromBundles, this.savedScanned.length);
+    const effectivePending = this.backendPendingCount > 0
+      ? this.backendPendingCount
+      : (this.yetToBeInward.length > 0
+        ? this.yetToBeInward.length
+        : Math.max(0, effectiveExpected - effectiveSaved));
+
+    const totalReceived = effectiveSaved + totalPendingFromBundles;
+    const totalMissing = effectivePending;
+    const overallCompletion = effectiveExpected > 0 ? Math.round((effectiveSaved / effectiveExpected) * 100) : 0;
 
     return {
       universityName: uni,
@@ -1167,9 +1410,9 @@ class ImportedService {
       completedClasses,
       partialClasses,
       notStartedClasses,
-      totalExpected,
-      totalSaved,
-      totalPending,
+      totalExpected: effectiveExpected,
+      totalSaved: effectiveSaved,
+      totalPending: effectivePending,
       totalReceived,
       totalMissing,
       overallCompletion,
@@ -2504,6 +2747,27 @@ class ImportedService {
     // 6. Update in-memory state
     if (newSavedRecords.length > 0) {
       this.savedScanned.push(...newSavedRecords);
+
+      // Delete inwarded members from yet_to_be_inward (3-Table Architecture)
+      if (isSupabaseConfigured) {
+        try {
+          const memberIds = newSavedRecords.map(r => r.member_id);
+          await supabase
+            .from('yet_to_be_inward')
+            .delete()
+            .eq('class_id', cleanCid)
+            .in('member_id', memberIds);
+        } catch (delYetErr) {
+          console.warn('[SAVE CLASS BUNDLE] Note deleting from yet_to_be_inward:', delYetErr);
+        }
+      }
+
+      const savedMidSet = new Set(newSavedRecords.map(r => normalizeIdentifier(r.member_id).toLowerCase()));
+      this.yetToBeInward = this.yetToBeInward.filter(
+        y => !(normalizeIdentifier(y.class_id).toLowerCase() === cleanCid.toLowerCase() && savedMidSet.has(normalizeIdentifier(y.member_id).toLowerCase()))
+      );
+      this.backendReceivedCount = this.savedScanned.length;
+      this.backendPendingCount = this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
     }
 
     for (const item of pendingScanItems) {
@@ -2782,6 +3046,25 @@ class ImportedService {
           if (onProgress) onProgress(processed, total);
         }
 
+        // 3. Insert into dedicated yet_to_be_inward table (3-Table Architecture)
+        try {
+          const yetToBeRecords = newRecords.map(r => ({
+            id: r.id,
+            import_session_id: sessionId,
+            university_name: cleanUniversity,
+            college_name: cleanUniversity,
+            class_id: r.class_id,
+            member_id: r.member_id,
+            barcode: r.barcode || r.member_id,
+            created_at: now,
+          }));
+          for (let i = 0; i < yetToBeRecords.length; i += BATCH_SIZE) {
+            await supabase.from('yet_to_be_inward').insert(yetToBeRecords.slice(i, i + BATCH_SIZE));
+          }
+        } catch (yetErr) {
+          console.warn('[ImportedService] yet_to_be_inward insert note:', yetErr);
+        }
+
         // Direct count verification query
         try {
           const { count: verifiedCount } = await supabase
@@ -2807,6 +3090,7 @@ class ImportedService {
 
     if (isFirstImport || replaceExisting) {
       this.importInwarded = newRecords;
+      this.yetToBeInward = [...newRecords];
     } else {
       // Merge new imported records with existing records without duplicate key collisions
       const existingKeySet = new Set(
@@ -2816,7 +3100,10 @@ class ImportedService {
         r => !existingKeySet.has(`${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
       );
       this.importInwarded = [...this.importInwarded, ...uniqueNewRecords];
+      this.yetToBeInward = [...this.yetToBeInward, ...uniqueNewRecords];
     }
+    this.backendExpectedCount = this.importInwarded.length;
+    this.backendPendingCount = this.yetToBeInward.length;
 
     // Initialize class order
     const importedClasses = Array.from(new Set(newRecords.map(r => r.class_id)));
@@ -2859,10 +3146,7 @@ class ImportedService {
 
     if (isSupabaseConfigured) {
       try {
-        const { data: dbExpected1 } = await supabase
-          .from('imported_inward_data')
-          .select('*')
-          .eq('university_name', uni);
+        const { data: dbExpected1 } = await fetchAllRowsFromTable('imported_inward_data', q => q.eq('university_name', uni));
 
         if (dbExpected1 && Array.isArray(dbExpected1) && dbExpected1.length > 0) {
           uniExpected = dbExpected1.map((r: any) => ({
@@ -2877,10 +3161,7 @@ class ImportedService {
           }));
         } else {
           try {
-            const { data: dbExpected2 } = await supabase
-              .from('import_inwarded_data')
-              .select('*')
-              .or(`college_name.eq.${uni},university_name.eq.${uni}`);
+            const { data: dbExpected2 } = await fetchAllRowsFromTable('import_inwarded_data', q => q.or(`college_name.eq.${uni},university_name.eq.${uni}`));
 
             if (dbExpected2 && Array.isArray(dbExpected2)) {
               uniExpected = dbExpected2.map((r: any) => ({
@@ -2901,10 +3182,7 @@ class ImportedService {
           }
         }
 
-        const { data: dbSaved } = await supabase
-          .from('saved_scanned_data')
-          .select('*')
-          .eq('college_name', uni);
+        const { data: dbSaved } = await fetchAllRowsFromTable('saved_scanned_data', q => q.eq('college_name', uni));
 
         if (dbSaved && Array.isArray(dbSaved)) {
           uniSaved = dbSaved.map((s: any) => ({
@@ -3617,6 +3895,17 @@ class ImportedService {
         } catch (mErr) {
           console.warn('[ImportedService] saved_scanned_data mirror note:', mErr);
         }
+
+        // Delete inwarded member from yet_to_be_inward table (3-Table Architecture)
+        try {
+          await supabase
+            .from('yet_to_be_inward')
+            .delete()
+            .eq('class_id', cleanCid)
+            .eq('member_id', canonicalMid);
+        } catch (yDelErr) {
+          console.warn('[ImportedService] yet_to_be_inward delete note:', yDelErr);
+        }
       } catch (err: any) {
         console.error('[ImportedService] manual_inward_data Supabase exception:', err);
         return {
@@ -3650,6 +3939,13 @@ class ImportedService {
         status: 'SAVED',
       });
     }
+
+    // Update yet_to_be_inward in-memory state and counts
+    this.yetToBeInward = this.yetToBeInward.filter(
+      y => !(normalizeIdentifier(y.class_id).toLowerCase() === cleanCid.toLowerCase() && normalizeIdentifier(y.member_id).toLowerCase() === canonicalMid.toLowerCase())
+    );
+    this.backendReceivedCount = this.savedScanned.length;
+    this.backendPendingCount = this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
 
     this.moveClassToTop(cleanCid);
     this.saveToLocalStorage();
@@ -4002,10 +4298,28 @@ class ImportedService {
         if (updErr) {
           console.warn('[REALTIME INWARD] imported_inward_data scan_status update note:', updErr);
         }
+
+        // Delete from yet_to_be_inward table (3-Table Architecture)
+        try {
+          await supabase
+            .from('yet_to_be_inward')
+            .delete()
+            .eq('class_id', cleanActiveCid)
+            .eq('member_id', resolvedMemberId);
+        } catch (yDelErr) {
+          console.warn('[REALTIME INWARD] yet_to_be_inward delete note:', yDelErr);
+        }
       } catch (dbErr) {
         console.warn('[MEMBER SCAN] Supabase realtime persistence note:', dbErr);
       }
     }
+
+    // Update yet_to_be_inward in memory and counts
+    this.yetToBeInward = this.yetToBeInward.filter(
+      y => !(normalizeIdentifier(y.class_id).toLowerCase() === cleanActiveCid.toLowerCase() && normalizeIdentifier(y.member_id).toLowerCase() === resolvedMemberId.toLowerCase())
+    );
+    this.backendReceivedCount = this.savedScanned.length;
+    this.backendPendingCount = this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
 
     this.moveClassToTop(cleanActiveCid);
     this.saveToLocalStorage();
@@ -4051,7 +4365,12 @@ class ImportedService {
       m => normalizeIdentifier(m.class_id).toLowerCase() !== cidLower
     );
 
-    // 4. Delete from scanSessions & scanItems
+    // 4. Delete from yetToBeInward (Dedicated Pending table)
+    this.yetToBeInward = this.yetToBeInward.filter(
+      y => normalizeIdentifier(y.class_id).toLowerCase() !== cidLower
+    );
+
+    // 5. Delete from scanSessions & scanItems
     this.scanSessions = this.scanSessions.filter(
       s => normalizeIdentifier(s.class_id).toLowerCase() !== cidLower
     );
@@ -4059,17 +4378,23 @@ class ImportedService {
       i => normalizeIdentifier(i.class_id).toLowerCase() !== cidLower
     );
 
-    // 5. Remove from classOrder
+    // 6. Remove from classOrder
     this.classOrder = this.classOrder.filter(
       c => normalizeIdentifier(c).toLowerCase() !== cidLower
     );
 
-    // 6. Delete from Supabase if connected
+    // Update counts
+    this.backendExpectedCount = this.importInwarded.length;
+    this.backendReceivedCount = this.savedScanned.length;
+    this.backendPendingCount = this.yetToBeInward.length;
+
+    // 7. Delete from Supabase if connected
     if (isSupabaseConfigured) {
       try {
         await Promise.allSettled([
           supabase.from('import_inwarded_data').delete().ilike('class_id', cleanCid),
           supabase.from('imported_inward_data').delete().ilike('class_id', cleanCid),
+          supabase.from('yet_to_be_inward').delete().ilike('class_id', cleanCid),
           supabase.from('saved_scanned_data').delete().ilike('class_id', cleanCid),
           supabase.from('saved_scan_data').delete().ilike('class_id', cleanCid),
           supabase.from('manual_inward_data').delete().ilike('class_id', cleanCid),
@@ -4097,18 +4422,24 @@ class ImportedService {
    */
   public async clearAllImportedAndScannedData(): Promise<{ success: boolean }> {
     this.importInwarded = [];
+    this.yetToBeInward = [];
     this.manualInwarded = [];
     this.scanSessions = [];
     this.savedScanned = [];
     this.scanItems = [];
     this.importSessions = [];
     this.classOrder = [];
+    this.backendExpectedCount = 0;
+    this.backendReceivedCount = 0;
+    this.backendPendingCount = 0;
+    this.backendManualCount = 0;
 
     if (isSupabaseConfigured) {
       try {
         await Promise.allSettled([
           supabase.from('import_inwarded_data').delete().neq('id', 'placeholder'),
           supabase.from('imported_inward_data').delete().neq('id', 'placeholder'),
+          supabase.from('yet_to_be_inward').delete().neq('id', 'placeholder'),
           supabase.from('saved_scanned_data').delete().neq('id', 'placeholder'),
           supabase.from('saved_scan_data').delete().neq('id', 'placeholder'),
           supabase.from('manual_inward_data').delete().neq('id', 'placeholder'),
@@ -4128,12 +4459,17 @@ class ImportedService {
 
   public clearAll() {
     this.importInwarded = [];
+    this.yetToBeInward = [];
     this.manualInwarded = [];
     this.scanSessions = [];
     this.savedScanned = [];
     this.scanItems = [];
     this.importSessions = [];
     this.classOrder = [];
+    this.backendExpectedCount = 0;
+    this.backendReceivedCount = 0;
+    this.backendPendingCount = 0;
+    this.backendManualCount = 0;
     this.saveToLocalStorage();
     this.notify();
   }
