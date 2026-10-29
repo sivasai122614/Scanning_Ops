@@ -1,10 +1,10 @@
 // ==============================================================================
 // ExamScan Top Header (Blue Theme #1565D8 - Light Theme System)
-// Mobile-first, compact height, white text/icons matching visual reference
+// Full-width aligned with sidebar, clean brand logo, streamlined Logout menu
 // ==============================================================================
 
-import React from 'react';
-import { ArrowLeft, Bell, ScanLine, ShieldCheck, Lock, LogOut, FileSpreadsheet } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowLeft, ScanLine, LogOut } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 interface AppHeaderProps {
@@ -20,34 +20,30 @@ interface AppHeaderProps {
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
   title,
-  subtitle,
   showBackButton = false,
   onBack,
   rightAction,
-  onOpenNotifications,
-  onOpenProfile,
-  onNavigateToImport,
 }) => {
-  const { user, role, lockSession, logout } = useAuth();
-  const [showDropdown, setShowDropdown] = React.useState(false);
+  const { user, role, logout } = useAuth();
+  const [showDropdown, setShowDropdown] = useState(false);
 
   return (
-    <header className="sticky top-0 z-40 w-full bg-[#1565D8] text-white shadow-sm">
-      <div className="max-w-5xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-3">
-        {/* Left Slot: Back Button OR Logo */}
-        <div className="flex items-center gap-2 min-w-0">
+    <header className="sticky top-0 z-40 w-full bg-[#1565D8] text-white shadow-sm border-b border-blue-600/30">
+      <div className="w-full px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+        {/* Left Slot: Back Button OR Brand Logo (Clean left alignment) */}
+        <div className="flex items-center gap-3 min-w-0">
           {showBackButton ? (
             <button
               type="button"
               onClick={onBack}
-              className="h-10 w-10 -ml-1.5 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/20 transition-colors focus:outline-none"
+              className="h-9 w-9 -ml-1 flex items-center justify-center rounded-lg hover:bg-white/10 active:bg-white/20 transition-colors focus:outline-hidden cursor-pointer"
               aria-label="Go Back"
             >
               <ArrowLeft className="h-5 w-5 text-white" />
             </button>
           ) : (
             <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white text-[#1565D8] shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-[#1565D8] shadow-xs shrink-0">
                 <ScanLine className="h-5 w-5 stroke-[2.5]" />
               </div>
             </div>
@@ -56,15 +52,18 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           {/* Title / Brand Display */}
           <div className="min-w-0">
             {showBackButton ? (
-              <h1 className="text-base sm:text-lg font-semibold text-white tracking-tight truncate">
+              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight truncate">
                 {title || 'Inward Scan'}
               </h1>
             ) : (
               <div>
-                <div className="text-base font-bold text-white tracking-tight leading-tight">
-                  Inward Scan
+                <div className="text-base font-bold text-white tracking-tight leading-tight flex items-center gap-2">
+                  <span>Inward Scan</span>
+                  <span className="hidden lg:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/15 text-blue-100 tracking-wide uppercase">
+                    Valuation Camp Hub
+                  </span>
                 </div>
-                <div className="text-[10px] text-blue-100 font-normal leading-tight hidden sm:block">
+                <div className="text-[10px] text-blue-100 font-medium leading-tight hidden sm:block">
                   Digitize. Verify. Simplify.
                 </div>
               </div>
@@ -72,54 +71,28 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           </div>
         </div>
 
-        {/* Center Slot (if custom title in desktop/tablet) */}
+        {/* Center Slot (Custom section title pill in desktop) */}
         {!showBackButton && title && (
-          <div className="hidden md:block text-sm font-semibold text-white/90 truncate">
-            {title}
+          <div className="hidden md:flex items-center gap-2 text-sm font-semibold text-white/95 bg-white/10 px-3.5 py-1 rounded-full border border-white/15 shadow-xs">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span>{title}</span>
           </div>
         )}
 
-        {/* Right Slot: Contextual Actions / Notifications & Profile */}
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Top Import Button */}
-          {onNavigateToImport && (
-            <button
-              type="button"
-              onClick={onNavigateToImport}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white text-[#1565D8] hover:bg-blue-50 active:bg-blue-100 text-xs font-bold transition-all shadow-xs cursor-pointer focus:outline-none"
-              aria-label="Import Data"
-              title="Import Excel Data"
-            >
-              <FileSpreadsheet className="h-4 w-4 text-[#1565D8]" />
-              <span className="font-bold">Import</span>
-            </button>
-          )}
-
+        {/* Right Slot: User Avatar Profile Dropdown (Import & Notifications REMOVED) */}
+        <div className="flex items-center gap-3 shrink-0">
           {rightAction ? (
             rightAction
           ) : (
-            <>
-              {/* Notification Bell */}
+            <div className="relative">
               <button
                 type="button"
-                onClick={onOpenNotifications}
-                className="relative h-9 w-9 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/20 transition-colors focus:outline-none"
-                aria-label="Notifications"
-                title="Notifications"
+                onClick={() => setShowDropdown(!showDropdown)}
+                className="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-white/10 active:bg-white/20 transition-all focus:outline-hidden group cursor-pointer"
+                aria-label="User Menu"
+                title={user?.full_name || 'Staff User'}
               >
-                <Bell className="h-4 w-4 text-white" />
-                <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-[#1565D8]" />
-              </button>
-
-              {/* User Avatar Circle */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowDropdown(!showDropdown)}
-                  className="h-8 w-8 flex items-center justify-center rounded-full bg-white text-[#1565D8] font-bold text-xs shadow-xs hover:ring-2 hover:ring-white/40 focus:outline-none transition-all"
-                  aria-label="User Profile"
-                  title={user?.full_name || 'Staff User'}
-                >
+                <div className="h-8 w-8 flex items-center justify-center rounded-full bg-white text-[#1565D8] font-bold text-xs shadow-xs group-hover:ring-2 group-hover:ring-white/40 transition-all">
                   {user?.full_name
                     ? user.full_name
                         .split(' ')
@@ -128,65 +101,45 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                         .join('')
                         .toUpperCase()
                     : 'OP'}
-                </button>
+                </div>
+                <div className="hidden sm:flex flex-col text-left">
+                  <span className="text-xs font-bold text-white leading-tight">
+                    {user?.full_name || 'Administrator'}
+                  </span>
+                  <span className="text-[10px] text-blue-100 font-medium leading-tight">
+                    {role?.name || 'Administrator'}
+                  </span>
+                </div>
+              </button>
 
-                {/* Profile Quick Popover */}
-                {showDropdown && (
-                  <div
-                    className="absolute right-0 mt-2 w-56 rounded-lg border border-[#E2E8F0] bg-white p-1.5 shadow-lg text-[#172033] z-50 animate-in fade-in zoom-in-95 duration-100"
-                    onMouseLeave={() => setShowDropdown(false)}
-                  >
-                    <div className="px-3 py-2 border-b border-slate-100">
-                      <div className="font-semibold text-xs text-[#172033]">{user?.full_name}</div>
-                      <div className="text-[11px] text-[#64748B] truncate">{user?.email}</div>
-                      <div className="mt-1 text-[10px] font-medium text-[#1565D8] uppercase tracking-wider">
-                        {role?.name || 'Operator'}
-                      </div>
-                    </div>
-
-                    <div className="py-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDropdown(false);
-                          onOpenProfile?.();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#172033] hover:bg-slate-50 rounded-md transition-colors text-left"
-                      >
-                        <ShieldCheck className="h-4 w-4 text-[#64748B]" />
-                        <span>Staff Profile</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDropdown(false);
-                          lockSession();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#172033] hover:bg-slate-50 rounded-md transition-colors text-left"
-                      >
-                        <Lock className="h-4 w-4 text-[#64748B]" />
-                        <span>Lock Terminal</span>
-                      </button>
-                    </div>
-
-                    <div className="border-t border-slate-100 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDropdown(false);
-                          logout();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#DC2626] hover:bg-rose-50 rounded-md transition-colors text-left font-medium"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span>Sign Out</span>
-                      </button>
+              {/* Profile Dropdown: User identity header + Logout action only */}
+              {showDropdown && (
+                <div
+                  className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl text-[#172033] z-50 animate-in fade-in zoom-in-95 duration-100"
+                  onMouseLeave={() => setShowDropdown(false)}
+                >
+                  <div className="px-3 py-2.5 bg-slate-50 rounded-lg border border-slate-100 mb-1.5">
+                    <div className="font-bold text-xs text-slate-800">{user?.full_name || 'Administrator'}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{user?.email || 'admin@inward.in'}</div>
+                    <div className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-[#1565D8] uppercase tracking-wider">
+                      {role?.name || 'ADMINISTRATOR'}
                     </div>
                   </div>
-                )}
-              </div>
-            </>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDropdown(false);
+                      logout();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg transition-colors text-left font-bold cursor-pointer"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    <span>Logout</span>
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>

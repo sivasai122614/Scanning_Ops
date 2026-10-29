@@ -47,6 +47,7 @@ import {
   BarcodeScanResult,
 } from '../../utils/universalBarcodeScanner';
 import { ScannerTopToast, ScannerToastData } from '../scanner/ScannerTopToast';
+import { useBarcodeGunListener } from '../../utils/useBarcodeGunListener';
 
 interface BundleStatisticsViewProps {
   classId: string;
@@ -116,6 +117,14 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
     const unsub = importedService.subscribe(loadData);
     return () => unsub();
   }, [classId, loadData]);
+
+  // Dedicated Hardware Barcode Gun Listener inside Bundle View
+  useBarcodeGunListener({
+    enabled: true,
+    onScan: (event) => {
+      handleBarcodeScan(event.barcode);
+    },
+  });
 
   // Camera lifecycle for Bundle Scan
   useEffect(() => {

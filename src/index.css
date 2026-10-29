@@ -76,3 +76,123 @@
 .font-tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/* ==============================================================================
+   Ultra-Smooth Hardware Scanner Wave, Radar Ripple & Liquid Animations
+   ============================================================================== */
+
+@keyframes ripple-wave {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes shockwave-burst {
+  0% {
+    transform: scale(0.6);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(3.5);
+    opacity: 0;
+  }
+}
+
+@keyframes laser-sweep {
+  0% {
+    top: 5%;
+    opacity: 0.2;
+  }
+  50% {
+    top: 90%;
+    opacity: 1;
+  }
+  100% {
+    top: 5%;
+    opacity: 0.2;
+  }
+}
+
+@keyframes liquid-gradient-wave {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes soundwave-bar {
+  0%, 100% {
+    transform: scaleY(0.25);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+@keyframes floating-sine {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes smooth-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(21, 101, 216, 0.15), inset 0 0 15px rgba(21, 101, 216, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(21, 101, 216, 0.35), inset 0 0 25px rgba(21, 101, 216, 0.18);
+  }
+}
+
+.animate-ripple-1 {
+  animation: ripple-wave 3.2s cubic-bezier(0.15, 0.85, 0.25, 1) infinite;
+}
+.animate-ripple-2 {
+  animation: ripple-wave 3.2s cubic-bezier(0.15, 0.85, 0.25, 1) infinite 1.05s;
+}
+.animate-ripple-3 {
+  animation: ripple-wave 3.2s cubic-bezier(0.15, 0.85, 0.25, 1) infinite 2.1s;
+}
+
+.animate-laser-sweep {
+  animation: laser-sweep 2.6s ease-in-out infinite;
+}
+
+.animate-liquid-wave {
+  background-size: 250% 250%;
+  animation: liquid-gradient-wave 4s ease infinite;
+}
+
+.animate-soundwave-1 { animation: soundwave-bar 1.2s ease-in-out infinite 0.1s; }
+.animate-soundwave-2 { animation: soundwave-bar 1.2s ease-in-out infinite 0.35s; }
+.animate-soundwave-3 { animation: soundwave-bar 1.2s ease-in-out infinite 0.6s; }
+.animate-soundwave-4 { animation: soundwave-bar 1.2s ease-in-out infinite 0.2s; }
+.animate-soundwave-5 { animation: soundwave-bar 1.2s ease-in-out infinite 0.45s; }
+.animate-soundwave-6 { animation: soundwave-bar 1.2s ease-in-out infinite 0.7s; }
+
+.animate-floating-sine {
+  animation: floating-sine 8s linear infinite;
+}
+
+.animate-smooth-glow {
+  animation: smooth-glow 3.5s ease-in-out infinite;
+}
+

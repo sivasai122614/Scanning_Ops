@@ -488,7 +488,25 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const validCount = parsedRows.filter(r => r.status === 'valid').length;
 
   return (
-    <div className="space-y-4 font-sans max-w-4xl mx-auto pb-12">
+    <div className="space-y-6 font-sans w-full pb-16">
+      {/* Embedded High-Performance Wave Animation Keyframes */}
+      <style>{`
+        @keyframes import-sine-1 {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        @keyframes import-sine-2 {
+          0% { transform: translateX(-50%); }
+          100% { transform: translateX(0); }
+        }
+        .anim-import-sine-1 {
+          animation: import-sine-1 14s linear infinite;
+        }
+        .anim-import-sine-2 {
+          animation: import-sine-2 20s linear infinite;
+        }
+      `}</style>
+
       {/* 1. Step-by-Step Processing Overlay */}
       {isProcessing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
@@ -531,38 +549,84 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         </div>
       )}
 
-      {/* 2. Primary Card: UPLOAD INWARD EXCEL FILE */}
-      <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        <div className="p-4 bg-[#1565D8] text-white flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <FileSpreadsheet className="h-6 w-6" />
+      {/* Hero Data Ingestion Wave Banner (Full Width) */}
+      <div className="relative overflow-hidden rounded-2xl border border-[#CBD5E1] bg-gradient-to-r from-blue-900 via-[#1565D8] to-indigo-900 p-5 sm:p-6 text-white shadow-md">
+        <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden">
+          <svg className="absolute w-[200%] h-full anim-import-sine-1" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,40 C150,90 350,0 500,45 C650,90 850,10 1000,50 C1150,90 1200,40 1200,40 L1200,120 L0,120 Z"
+              fill="rgba(56, 189, 248, 0.4)"
+            />
+          </svg>
+          <svg className="absolute w-[200%] h-full anim-import-sine-2" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,60 C200,10 400,80 600,40 C800,0 1000,70 1200,50 L1200,120 L0,120 Z"
+              fill="rgba(129, 140, 248, 0.35)"
+            />
+          </svg>
+        </div>
+
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-cyan-400/20 border border-cyan-300/40 text-cyan-200 text-[10px] font-black uppercase tracking-wider">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 animate-pulse" />
+              <span>EXAMINATION SCRIPT BASELINE DATASET INGESTION</span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mt-1">
+              Import Class Bundles &amp; Candidate Baseline
+            </h2>
+            <p className="text-xs text-blue-100 max-w-2xl mt-0.5">
+              Upload institutional Excel dataset (.xlsx, .csv). Classes and expected booklet totals are structured into live inward bundles across all operator stations.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 self-start md:self-auto">
+            <button
+              type="button"
+              onClick={handleDownloadSample}
+              className="flex items-center gap-2 px-4 py-2.5 bg-white/15 hover:bg-white/25 border border-white/25 rounded-xl text-xs font-black uppercase tracking-wider text-white backdrop-blur-md shadow-xs transition-all active:scale-95 cursor-pointer"
+            >
+              <Download className="h-4 w-4" />
+              <span>Sample Template</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Primary Card: UPLOAD INWARD EXCEL FILE (Full Width) */}
+      <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
+        <div className="p-4 sm:p-5 bg-gradient-to-r from-[#1565D8] to-[#0D47A1] text-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center bg-white/15 rounded-xl">
+              <FileSpreadsheet className="h-6 w-6 text-white" />
+            </div>
             <div>
-              <div className="text-xs uppercase tracking-wider text-white/80 font-bold">Data Ingestion</div>
-              <h1 className="text-base font-bold">UPLOAD INWARD EXCEL FILE</h1>
+              <div className="text-[11px] uppercase tracking-wider text-white/80 font-bold">Data Ingestion Engine</div>
+              <h1 className="text-base sm:text-lg font-bold">UPLOAD INWARD EXCEL FILE</h1>
             </div>
           </div>
           <button
             type="button"
             onClick={handleDownloadSample}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors cursor-pointer"
             title="Download sample Excel file with Class ID and Member ID"
           >
             <Download className="h-3.5 w-3.5" />
-            <span>Sample Template</span>
+            <span className="hidden sm:inline">Sample Template</span>
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-6 sm:p-8 space-y-5">
           {/* Required Columns Specification Banner */}
-          <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg text-xs text-[#1E40AF]">
-            <div className="font-bold uppercase tracking-wider text-[11px] mb-1">Required Columns:</div>
-            <div className="flex items-center gap-4 text-xs font-mono font-semibold">
-              <span className="bg-white px-2 py-0.5 border border-[#BFDBFE] rounded-md">Class ID</span>
+          <div className="p-4 bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl text-xs text-[#1E40AF]">
+            <div className="font-bold uppercase tracking-wider text-[11px] mb-1.5">Required Baseline Columns:</div>
+            <div className="flex items-center gap-3 text-xs font-mono font-semibold">
+              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs">Class ID</span>
               <span className="text-[#64748B] font-sans">and</span>
-              <span className="bg-white px-2 py-0.5 border border-[#BFDBFE] rounded-md">Member ID</span>
+              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs">Member ID</span>
             </div>
-            <div className="text-[11px] text-[#3B82F6] mt-1.5 font-sans">
-              Columns are auto-detected by header name. Leading zeros (e.g. 0031) are strictly preserved.
+            <div className="text-xs text-[#3B82F6] mt-2 font-sans">
+              Columns are auto-detected by header name. Leading zeros (e.g. 0031) are strictly preserved as text.
             </div>
           </div>
 
@@ -1140,28 +1204,28 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {existingBundles.slice(0, 12).map(b => (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-4 gap-4 sm:gap-5">
+                {existingBundles.slice(0, 16).map(b => (
                   <div
                     key={b.classId}
-                    className="p-3.5 bg-white border border-[#CBD5E1] rounded-xl shadow-2xs hover:border-[#1565D8] transition-colors flex flex-col justify-between"
+                    className="p-5 bg-white border border-[#CBD5E1] rounded-2xl shadow-xs hover:border-[#1565D8] hover:shadow-md transition-all duration-200 flex flex-col justify-between hover:-translate-y-0.5"
                   >
                     <div>
-                      <div className="flex items-center justify-between text-[10px] font-bold text-[#64748B] uppercase">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-[#64748B] uppercase">
                         <span>CLASS / SH ID</span>
-                        <span className="text-[#1565D8] font-mono">{b.expectedCount} Expected</span>
+                        <span className="text-[#1565D8] font-mono font-bold bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">{b.expectedCount} Expected</span>
                       </div>
-                      <div className="font-mono font-black text-base text-[#172033] mt-0.5">
+                      <div className="font-mono font-black text-xl text-[#172033] mt-1.5">
                         {b.classId}
                       </div>
-                      <div className="text-xs text-[#64748B] mt-1 flex items-center gap-2">
-                        <span>Scanned: <strong className="text-[#16A34A]">{b.savedCount}</strong></span>
+                      <div className="text-xs text-[#64748B] mt-2 flex items-center gap-2">
+                        <span>Scanned: <strong className="text-[#16A34A] font-tabular">{b.savedCount}</strong></span>
                         <span>•</span>
-                        <span>Pending: <strong className="text-[#D97706]">{b.pendingCount}</strong></span>
+                        <span>Pending: <strong className="text-[#D97706] font-tabular">{b.pendingCount}</strong></span>
                       </div>
                     </div>
 
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -1171,7 +1235,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                             members: records.map(r => r.member_id),
                           });
                         }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#1565D8] hover:bg-blue-50 rounded-lg border border-[#BFDBFE] transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#1565D8] hover:bg-blue-50 rounded-xl border border-[#BFDBFE] transition-colors cursor-pointer"
                         title="Preview unqid for this class"
                       >
                         <Eye className="h-3.5 w-3.5" />
@@ -1181,7 +1245,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                       <button
                         type="button"
                         onClick={() => setClassToDelete(b.classId)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg border border-red-200 transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl border border-red-200 transition-colors cursor-pointer"
                         title={`Delete Class / SH ID ${b.classId} and all its saved scans`}
                       >
                         <Trash2 className="h-3.5 w-3.5" />

@@ -1,6 +1,6 @@
 // ==============================================================================
 // ExamScan Desktop Sidebar Navigation (Responsive Desktop View)
-// Adapts the 5 primary mobile destinations + Module 1 Operational Controls
+// Streamlined Operations Focus, Wider layout, Enhanced Uniform Typography
 // ==============================================================================
 
 import React from 'react';
@@ -9,14 +9,9 @@ import {
   Package,
   Scan,
   BarChart2,
-  Users,
-  ShieldCheck,
   FileSpreadsheet,
-  CheckSquare,
-  User,
-  MoreHorizontal,
+  CheckCircle2,
 } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
 
 export type DesktopNavTarget =
   | 'home'
@@ -37,34 +32,26 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab }) => {
-  const { hasPermission, role } = useAuth();
-  const canReadAudit = hasPermission('audit:read') || role?.code === 'super_admin' || role?.code === 'admin' || role?.code === 'viewer';
-
+  // Focused Operational Navigation (Governance & Security items removed per user request)
   const primaryNav = [
-    { id: 'home' as const, label: 'Dashboard', icon: Home },
-    { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet },
-    { id: 'scan' as const, label: 'Scanning Dashboard', icon: Scan },
-    { id: 'sessions' as const, label: 'Manual Inward', icon: Package },
-    { id: 'reports' as const, label: 'Reports & Export', icon: BarChart2 },
-  ];
-
-  const adminNav = [
-    { id: 'users-directory' as const, label: 'Staff Registry', icon: Users },
-    { id: 'role-permissions' as const, label: 'Roles & Matrix', icon: ShieldCheck },
-    ...(canReadAudit ? [{ id: 'audit-logs' as const, label: 'Audit Trail', icon: FileSpreadsheet }] : []),
-    { id: 'test-suite' as const, label: 'Verification Suite', icon: CheckSquare },
-    { id: 'my-profile' as const, label: 'My Profile', icon: User },
+    { id: 'home' as const, label: 'Dashboard', icon: Home, badge: 'Overview' },
+    { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet, badge: 'Excel' },
+    { id: 'scan' as const, label: 'Scanning Dashboard', icon: Scan, badge: 'Live Gun' },
+    { id: 'sessions' as const, label: 'Manual Inward', icon: Package, badge: 'Manual' },
+    { id: 'reports' as const, label: 'Reports & Export', icon: BarChart2, badge: 'Audit' },
   ];
 
   return (
-    <aside className="hidden md:flex w-60 shrink-0 border-r border-[#E2E8F0] bg-white p-3 flex-col justify-between overflow-y-auto">
+    <aside className="hidden md:flex w-72 shrink-0 border-r border-slate-200 bg-white p-4 flex-col justify-between overflow-y-auto select-none">
       <div className="space-y-6">
-        {/* Core Operations (Modules 1 - 7) */}
+        {/* Core Operations Section */}
         <div>
-          <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-            Operations
+          <div className="px-3 mb-3 flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-400">
+            <span>Operations Hub</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
           </div>
-          <nav className="space-y-1">
+
+          <nav className="space-y-1.5">
             {primaryNav.map(item => {
               const Icon = item.icon;
               const isActive = currentTab === item.id;
@@ -73,42 +60,24 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
                   key={item.id}
                   type="button"
                   onClick={() => onSelectTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-[14.5px] font-semibold transition-all duration-150 cursor-pointer ${
                     isActive
-                      ? 'bg-[#1565D8] text-white font-semibold shadow-xs'
-                      : 'text-[#172033] hover:bg-slate-50'
+                      ? 'bg-[#1565D8] text-white shadow-md shadow-blue-500/20 translate-x-0.5'
+                      : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:bg-slate-200/70'
                   }`}
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-        </div>
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <Icon className={`h-5 w-5 shrink-0 transition-transform ${isActive ? 'text-white' : 'text-slate-500'}`} />
+                    <span className="truncate">{item.label}</span>
+                  </div>
 
-        {/* Administration & Governance (Module 1 / 8) */}
-        <div>
-          <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-            Governance &amp; Security
-          </div>
-          <nav className="space-y-1">
-            {adminNav.map(item => {
-              const Icon = item.icon;
-              const isActive = currentTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => onSelectTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${
-                    isActive
-                      ? 'bg-[#1565D8] text-white font-semibold shadow-xs'
-                      : 'text-[#172033] hover:bg-slate-50'
-                  }`}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
+                  {isActive ? (
+                    <span className="h-2 w-2 rounded-full bg-white shrink-0 animate-pulse"></span>
+                  ) : (
+                    <span className="text-[11px] font-medium text-slate-400 shrink-0">
+                      {item.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -116,10 +85,20 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
         </div>
       </div>
 
-      {/* Footer System Info */}
-      <div className="pt-3 border-t border-[#E2E8F0] px-3 text-[11px] text-[#64748B]">
-        <div className="font-medium text-[#172033]">Inward Scan Enterprise</div>
-        <div className="text-[10px] text-[#94A3B8]">Production Light Theme • v1.0.0</div>
+      {/* Footer System Status & Telemetry */}
+      <div className="pt-4 border-t border-slate-200/80 px-2 space-y-2">
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-emerald-50 border border-emerald-100">
+          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-bold text-emerald-800 leading-tight">Inward Gun Interceptor</div>
+            <div className="text-[10px] text-emerald-600 font-medium">Station Armed & Online</div>
+          </div>
+        </div>
+
+        <div className="px-2 pt-1 text-[11px] text-slate-400 flex items-center justify-between">
+          <span className="font-semibold text-slate-600">Inward Scan Pro</span>
+          <span>v1.0.0</span>
+        </div>
       </div>
     </aside>
   );

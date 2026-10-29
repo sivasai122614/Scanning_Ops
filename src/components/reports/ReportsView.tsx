@@ -99,51 +99,98 @@ export const ReportsView: React.FC = () => {
   const bundles = importedService.getClassBundles();
 
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-24">
+    <div className="space-y-6 font-sans w-full pb-20">
+      {/* Embedded High-Performance Wave Animation Keyframes */}
+      <style>{`
+        @keyframes report-sine-1 {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        @keyframes report-sine-2 {
+          0% { transform: translateX(-50%); }
+          100% { transform: translateX(0); }
+        }
+        @keyframes report-wave-shift {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes report-pulse-ring {
+          0% { transform: scale(0.8); opacity: 0.85; }
+          100% { transform: scale(2.6); opacity: 0; }
+        }
+        .anim-report-sine-1 {
+          animation: report-sine-1 14s linear infinite;
+        }
+        .anim-report-sine-2 {
+          animation: report-sine-2 20s linear infinite;
+        }
+        .anim-report-liquid {
+          background-size: 250% 250%;
+          animation: report-wave-shift 4s ease infinite;
+        }
+        .anim-report-pulse {
+          animation: report-pulse-ring 2.4s cubic-bezier(0.15, 0.85, 0.35, 1) infinite;
+        }
+      `}</style>
+
       {/* Toast Notification */}
       {exportNotification && (
-        <div className="p-3 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-xs font-bold rounded-xl flex items-center justify-between shadow-xs animate-in fade-in">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0 text-[#16A34A]" />
-            <span>{exportNotification}</span>
+        <div className="p-4 bg-[#DCFCE7] border border-[#86EFAC] text-[#166534] text-xs font-bold rounded-2xl flex items-center justify-between shadow-xs animate-in fade-in">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-[#16A34A]" />
+            <span className="text-sm font-semibold">{exportNotification}</span>
           </div>
-          <span className="text-[10px] uppercase font-bold text-[#15803D] bg-white px-2 py-0.5 rounded border border-[#86EFAC]">
+          <span className="text-xs uppercase font-black text-[#15803D] bg-white px-3 py-1 rounded-xl border border-[#86EFAC] shadow-2xs">
             3 Sheets Generated
           </span>
         </div>
       )}
 
-      {/* SECTION 15: MANDATORY UNIVERSITY SELECTION & EXPORT TOOLBAR */}
-      <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center bg-[#1565D8]/10 text-[#1565D8] rounded-xl shrink-0">
-            <FileSpreadsheet className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
-              Institutional Reconciliation
-            </div>
-            <h1 className="text-base font-bold text-[#172033]">
-              AUDIT &amp; EXPORT REPORTS
-            </h1>
-          </div>
+      {/* SECTION 15: BREATHTAKING HERO SINE WAVE AUDIT & EXPORT BANNER */}
+      <div className="relative overflow-hidden rounded-2xl border border-[#CBD5E1] bg-gradient-to-r from-blue-900 via-[#1565D8] to-indigo-900 p-5 sm:p-7 text-white shadow-md">
+        {/* Animated Background Sine Wave Layers */}
+        <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden">
+          <svg className="absolute w-[200%] h-full anim-report-sine-1" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,40 C150,90 350,0 500,45 C650,90 850,10 1000,50 C1150,90 1200,40 1200,40 L1200,120 L0,120 Z"
+              fill="rgba(56, 189, 248, 0.4)"
+            />
+          </svg>
+          <svg className="absolute w-[200%] h-full anim-report-sine-2" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,60 C200,10 400,80 600,40 C800,0 1000,70 1200,50 L1200,120 L0,120 Z"
+              fill="rgba(129, 140, 248, 0.35)"
+            />
+          </svg>
         </div>
 
-        {/* SECTION 15: SELECT UNIVERSITY DROPDOWN & EXPORT BUTTON */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <label className="text-xs font-bold text-[#64748B] uppercase tracking-wider whitespace-nowrap">
-              SELECT UNIVERSITY:
-            </label>
-            <div className="relative">
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div className="space-y-1.5">
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-cyan-400/20 border border-cyan-300/40 text-cyan-200 text-[10px] font-black uppercase tracking-wider">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 animate-pulse" />
+              <span>INSTITUTIONAL AUDIT &amp; MULTI-SHEET RECONCILIATION</span>
+            </div>
+            <h1 className="text-xl sm:text-3xl font-black text-white tracking-tight drop-shadow-xs">
+              Audit &amp; Export Examination Reports
+            </h1>
+            <p className="text-xs sm:text-sm text-blue-100 max-w-2xl">
+              Comprehensive campus reconciliation report containing 3 distinct sheets: Scanned (Saved), Not Scanned (Missing), and Class-Wise intake progress.
+            </p>
+          </div>
+
+          {/* Controls: Select University & Export Excel */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 bg-white/10 backdrop-blur-md p-3.5 rounded-2xl border border-white/20 shadow-inner">
+            <div className="flex items-center gap-2">
+              <Building className="h-4 w-4 text-cyan-300 shrink-0" />
               <select
                 value={selectedUniversity}
                 onChange={e => {
                   setSelectedUniversity(e.target.value);
                   if (e.target.value) setSelectUniversityError(false);
                 }}
-                className={`h-9 pl-3 pr-8 text-xs font-bold rounded-lg border bg-white text-[#172033] focus:outline-hidden focus:border-[#1565D8] ${
-                  selectUniversityError ? 'border-[#EF4444] bg-red-50/20' : 'border-[#CBD5E1]'
+                className={`h-10 pl-3 pr-8 text-xs font-bold rounded-xl border bg-white text-[#172033] focus:outline-hidden focus:ring-2 focus:ring-cyan-300 shadow-sm ${
+                  selectUniversityError ? 'border-red-400 bg-red-50 text-red-900' : 'border-white/40'
                 }`}
               >
                 <option value="">-- Select College / University --</option>
@@ -154,16 +201,16 @@ export const ReportsView: React.FC = () => {
                 ))}
               </select>
             </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors shadow-xs cursor-pointer"
-          >
-            <Download className="h-4 w-4" />
-            <span>EXPORT EXCEL</span>
-          </button>
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer"
+            >
+              <Download className="h-4 w-4" />
+              <span>EXPORT 3-SHEET EXCEL</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -194,98 +241,128 @@ export const ReportsView: React.FC = () => {
         </div>
       )}
 
-      {/* Statistics Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
+      {/* Enlarged Statistics KPI Cards Grid (Generous Padding to Fill Screen) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 sm:gap-6 w-full">
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
             TOTAL CLASSES
           </div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">
             {stats.totalClasses}
           </div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">Classes in Scope</div>
+          <div className="text-xs text-[#64748B] mt-1.5 font-medium">Classes in Audit Scope</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
             EXPECTED BOOKLETS
           </div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">
             {stats.expectedBooklets}
           </div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">from import_inwarded_data</div>
+          <div className="text-xs text-[#64748B] mt-1.5 font-medium">From import_inwarded_data</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
-          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">
+        <div className="bg-white p-6 sm:p-7 border-2 border-blue-400/80 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 hover:-translate-y-0.5 relative overflow-hidden">
+          <div className="absolute top-3 right-3 flex h-3 w-3">
+            <span className="anim-report-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-[#1565D8]" />
+          </div>
+          <div className="text-xs font-bold text-[#1565D8] uppercase tracking-wider">
             SCANNED (SAVED)
           </div>
-          <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">
+          <div className="text-4xl sm:text-5xl font-black text-[#1565D8] font-tabular mt-2.5">
             {stats.scannedBooklets}
           </div>
-          <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">from saved_scanned_data</div>
+          <div className="text-xs text-[#1565D8] mt-1.5 font-semibold">Saved &amp; Finalized</div>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#DC2626] uppercase tracking-wider">
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#DC2626] uppercase tracking-wider">
             NOT SCANNED
           </div>
-          <div className="text-2xl font-black text-[#DC2626] font-tabular mt-1">
+          <div className="text-4xl sm:text-5xl font-black text-[#DC2626] font-tabular mt-2.5">
             {stats.notScannedBooklets}
           </div>
-          <div className="text-[11px] text-[#DC2626] mt-0.5 font-medium">Expected - Saved</div>
+          <div className="text-xs text-[#DC2626] mt-1.5 font-medium">Expected - Saved</div>
+        </div>
+      </div>
+
+      {/* Today's Overall Progress Card with Liquid Wave */}
+      <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-sm transition-all duration-200 w-full">
+        <div className="flex items-center justify-between">
+          <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#172033]">
+            Campus Inward Completion Rate
+          </span>
+          <span className="text-lg sm:text-xl font-black font-tabular text-[#16A34A]">{stats.completionPercentage}%</span>
+        </div>
+
+        <div className="mt-3.5 h-4 sm:h-5 w-full bg-slate-100 overflow-hidden rounded-full border border-slate-200 relative p-0.5 shadow-inner">
+          <div
+            className="h-full bg-gradient-to-r from-blue-600 via-cyan-400 via-blue-500 to-emerald-500 anim-report-liquid transition-all duration-500 ease-out rounded-full shadow-xs"
+            style={{ width: `${Math.max(stats.completionPercentage > 0 ? 4 : 0, Math.min(100, stats.completionPercentage))}%` }}
+          />
+        </div>
+
+        <div className="mt-3 text-xs font-tabular text-[#64748B] flex flex-wrap items-center justify-between gap-2">
+          <span>
+            <strong className="text-[#172033] font-black text-sm">{stats.scannedBooklets}</strong> / {stats.expectedBooklets} total scripts inwarded
+          </span>
+          <span className="text-xs font-bold text-[#1565D8]">
+            {stats.totalClasses} classes registered for {stats.universityName || 'campus'}
+          </span>
         </div>
       </div>
 
       {/* SECTION 16: THREE-SHEET ARCHITECTURE SPECIFICATION BANNER */}
-      <div className="bg-white border border-[#CBD5E1] rounded-xl p-4 shadow-xs space-y-2">
-        <div className="text-xs font-bold uppercase tracking-wider text-[#172033] flex items-center gap-2">
-          <Check className="h-4 w-4 text-[#16A34A]" />
-          <span>Excel Export Specification (3 Distinct Sheets):</span>
+      <div className="bg-white border border-[#CBD5E1] rounded-2xl p-5 sm:p-6 shadow-xs space-y-3">
+        <div className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-2">
+          <Check className="h-4 w-4 text-[#16A34A] stroke-[3]" />
+          <span>Excel Export Specification (3 Distinct Institutional Sheets):</span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-          <div className="p-2.5 bg-[#F0FDF4] border border-[#BBF7D0] rounded-lg">
-            <div className="font-bold text-[#166534]">Sheet 1: Scanned Data</div>
-            <div className="text-[11px] text-[#15803D] mt-0.5">
-              Successfully saved scanned records with Class ID, Member ID, Scanned By, Scanned Time, Saved By, Saved Time.
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div className="p-3.5 bg-[#F0FDF4] border border-[#BBF7D0] rounded-xl">
+            <div className="font-bold text-[#166534] text-xs">Sheet 1: Scanned Data</div>
+            <div className="text-xs text-[#15803D] mt-1 leading-relaxed">
+              Successfully saved and verified inward records with Class ID, Member ID, Scanned By, Scanned Time, Saved By, Saved Time.
             </div>
           </div>
-          <div className="p-2.5 bg-[#FEF2F2] border border-[#FECACA] rounded-lg">
-            <div className="font-bold text-[#991B1B]">Sheet 2: Not Scanned Data</div>
-            <div className="text-[11px] text-[#B91C1C] mt-0.5">
-              Imported expected records that have NOT been saved. Status: NOT SCANNED.
+          <div className="p-3.5 bg-[#FEF2F2] border border-[#FECACA] rounded-xl">
+            <div className="font-bold text-[#991B1B] text-xs">Sheet 2: Not Scanned Data</div>
+            <div className="text-xs text-[#B91C1C] mt-1 leading-relaxed">
+              Imported baseline records that have NOT been saved during scanning sessions. Status: NOT SCANNED.
             </div>
           </div>
-          <div className="p-2.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg">
-            <div className="font-bold text-[#1E40AF]">Sheet 3: Class Wise Data</div>
-            <div className="text-[11px] text-[#3B82F6] mt-0.5">
-              One row per Class ID with Expected, Scanned, Not Scanned, Progress %, and Status.
+          <div className="p-3.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl">
+            <div className="font-bold text-[#1E40AF] text-xs">Sheet 3: Class Wise Data</div>
+            <div className="text-xs text-[#3B82F6] mt-1 leading-relaxed">
+              Consolidated per-class intake totals with Expected, Scanned, Not Scanned, Progress %, and Completion Status.
             </div>
           </div>
         </div>
       </div>
 
       {/* Class Wise Live Summary Table (Matches Sheet 3) */}
-      <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-        <div className="p-3.5 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between">
-          <h2 className="text-xs font-black uppercase tracking-wider text-[#172033]">
-            CLASS-WISE BREAKDOWN — {selectedUniversity || 'All Imported'}
+      <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
+        <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-50 to-blue-50/40 border-b border-[#E2E8F0] flex items-center justify-between">
+          <h2 className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#172033]">
+            CLASS-WISE RECONCILIATION BREAKDOWN — {selectedUniversity || 'All Imported Sessions'}
           </h2>
-          <span className="text-[10px] text-[#64748B] font-medium">
-            Calculated from database records
+          <span className="text-xs text-[#64748B] font-semibold">
+            Live Synchronized Data ({bundles.length} Classes)
           </span>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-tabular">
-            <thead className="bg-slate-50 border-b border-slate-200 text-[#64748B] uppercase text-[10px] font-bold">
+            <thead className="bg-slate-50 border-b border-slate-200 text-[#64748B] uppercase text-[11px] font-bold">
               <tr>
-                <th className="py-2.5 px-4">Class ID</th>
-                <th className="py-2.5 px-4 text-center">Expected</th>
-                <th className="py-2.5 px-4 text-center">Scanned (Saved)</th>
-                <th className="py-2.5 px-4 text-center">Not Scanned</th>
-                <th className="py-2.5 px-4 text-center">Progress</th>
-                <th className="py-2.5 px-4 text-right">Status</th>
+                <th className="py-3 px-5">Class ID</th>
+                <th className="py-3 px-5 text-center">Expected</th>
+                <th className="py-3 px-5 text-center">Scanned (Saved)</th>
+                <th className="py-3 px-5 text-center">Not Scanned</th>
+                <th className="py-3 px-5 text-center">Progress</th>
+                <th className="py-3 px-5 text-right">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">

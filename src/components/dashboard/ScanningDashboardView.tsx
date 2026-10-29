@@ -31,6 +31,7 @@ import {
   FileSpreadsheet,
   LayoutGrid,
   List,
+  Zap,
 } from 'lucide-react';
 import {
   importedService,
@@ -51,6 +52,8 @@ import {
 import { ScannerTopToast, ScannerToastData } from '../scanner/ScannerTopToast';
 import { useIsMobile } from '../../utils/useIsMobile';
 import { MobileScanningView } from '../scanner/MobileScanningView';
+import { DesktopInwardStation } from './DesktopInwardStation';
+import { useBarcodeGunListener } from '../../utils/useBarcodeGunListener';
 
 interface ScanningDashboardViewProps {
   onNavigateToImport?: () => void;
@@ -59,10 +62,14 @@ interface ScanningDashboardViewProps {
 
 const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   onNavigateToImport,
+  onNavigateToSessions,
 }) => {
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [hasImportedData, setHasImportedData] = useState<boolean>(false);
+
+  // Desktop Scanner Mode: USB Gun Station (Default & Recommended) vs Webcam
+  const [desktopMode, setDesktopMode] = useState<'gun_station' | 'webcam'>('gun_station');
 
   // Active Class Bundle (when set, immediately renders BUNDLE SCAN for that class)
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
@@ -124,9 +131,9 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   });
 
   // Camera Lifecycle:
-  // ONLY start camera if hasImportedData IS TRUE and NOT in bundle view! (Requirement 1 & 2)
+  // ONLY start camera if hasImportedData IS TRUE, desktopMode is 'webcam', and NOT in bundle view!
   useEffect(() => {
-    if (hasImportedData && !activeClassId) {
+    if (hasImportedData && !activeClassId && desktopMode === 'webcam') {
       startCamera();
     } else {
       stopCamera();
@@ -134,7 +141,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     return () => {
       stopCamera();
     };
-  }, [hasImportedData, activeClassId, selectedDeviceId]);
+  }, [hasImportedData, activeClassId, selectedDeviceId, desktopMode]);
 
   const stopCamera = () => {
     try {
@@ -405,6 +412,14 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
     }
   };
 
+  // Hardware USB Barcode Gun Listener in webcam mode as well
+  useBarcodeGunListener({
+    enabled: desktopMode === 'webcam',
+    onScan: (event) => {
+      handleBarcodeScan(event.barcode);
+    },
+  });
+
   // If operator is inside BUNDLE SCAN, render dedicated BUNDLE SCAN screen
   if (activeClassId) {
     return (
@@ -416,6 +431,48 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
         }}
         onSwitchClass={newCid => setActiveClassId(newCid)}
       />
+    );
+  }
+
+  // ==============================================================================
+  // PRIMARY DESKTOP STATION: DEDICATED USB BARCODE GUN WORKSTATION (ZERO-CLICK)
+  // ==============================================================================
+  if (desktopMode === 'gun_station') {
+    return (
+      <div className="space-y-3 w-full">
+        {/* Mode Switcher Banner */}
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-[#CBD5E1] p-2.5 rounded-2xl shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider pl-2">
+              Scanner Engine:
+            </span>
+            <button
+              type="button"
+              onClick={() => setDesktopMode('gun_station')}
+              className="px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider bg-[#1565D8] text-white shadow-xs flex items-center gap-1.5 cursor-pointer"
+            >
+              <Zap className="h-3.5 w-3.5 fill-current" />
+              <span>🔫 USB Barcode Gun Station (Zero-Click)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDesktopMode('webcam')}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <CameraOff className="h-3.5 w-3.5 text-slate-500" />
+              <span>📷 Switch to Webcam Mode</span>
+            </button>
+          </div>
+          <div className="text-[11px] font-semibold text-emerald-600 pr-2 hidden sm:block">
+            ✓ Hardware Gun Interceptor Active
+          </div>
+        </div>
+
+        <DesktopInwardStation
+          onNavigateToImport={onNavigateToImport}
+          onNavigateToSessions={onNavigateToSessions}
+        />
+      </div>
     );
   }
 
@@ -499,7 +556,7 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
   // ACTIVE SCAN SCREEN (When Excel Data is Imported)
   // ==============================================================================
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-24 relative">
+    <div className="space-y-4 font-sans w-full pb-24 relative">
       {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
       <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={1800} />
 
@@ -518,8 +575,18 @@ const DesktopScanningDashboardView: React.FC<ScanningDashboardViewProps> = ({
           ) : null}
         </div>
 
-        {/* Global Toolbar Actions: Import Data & Export Excel */}
+        {/* Global Toolbar Actions: Switch to Gun Station, Import Data & Export Excel */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setDesktopMode('gun_station')}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wider rounded-lg transition-colors shadow-xs cursor-pointer"
+            title="Switch to USB Barcode Gun Station"
+          >
+            <Zap className="h-3.5 w-3.5 fill-current" />
+            <span>🔫 USB Gun Station</span>
+          </button>
+
           {onNavigateToImport && (
             <button
               type="button"

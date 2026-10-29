@@ -25,6 +25,8 @@ import { ScenarioTestingConsole } from './components/testing/ScenarioTestingCons
 import { UserProfileView } from './components/profile/UserProfileView';
 import { CreateUserModal } from './components/users/CreateUserModal';
 import { MobileScanningView } from './components/scanner/MobileScanningView';
+import { DesktopInwardStation } from './components/dashboard/DesktopInwardStation';
+import { useIsMobile } from './utils/useIsMobile';
 import { PageContainer } from './components/ui/Elements';
 import { ScanLine, LogOut, ShieldAlert } from 'lucide-react';
 
@@ -99,6 +101,7 @@ const VIEW_TO_PATH_MAP: Record<ActiveView, string> = {
 const InwardScannerApp: React.FC = () => {
   const { user, logout } = useAuth();
   const [deniedToast, setDeniedToast] = useState<string | null>(null);
+  const isMobile = useIsMobile(768);
 
   // Enforce /inward/scan route guard and deny admin URL manipulation
   useEffect(() => {
@@ -122,7 +125,9 @@ const InwardScannerApp: React.FC = () => {
     <div className="min-h-screen bg-[#F5F7FA] text-[#172033] flex flex-col font-sans">
       {/* Dedicated Inward Header with Logout */}
       <header className="sticky top-0 z-40 w-full bg-[#1565D8] text-white shadow-sm">
-        <div className="max-w-md mx-auto px-4 h-14 flex items-center justify-between gap-3">
+        <div className={`mx-auto h-14 flex items-center justify-between gap-3 ${
+          isMobile ? 'max-w-md px-4' : 'w-full px-4 sm:px-6'
+        }`}>
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-md bg-white text-[#1565D8] shadow-xs">
               <ScanLine className="h-5 w-5 stroke-[2.5]" />
@@ -156,7 +161,7 @@ const InwardScannerApp: React.FC = () => {
 
       {/* Access Denied Warning Toast if user attempted to type an Admin URL */}
       {deniedToast && (
-        <div className="max-w-md mx-auto px-4 mt-2 w-full animate-in fade-in duration-200">
+        <div className={`mx-auto px-4 mt-2 w-full animate-in fade-in duration-200 ${isMobile ? 'max-w-md' : 'max-w-5xl'}`}>
           <div className="p-3 bg-red-100 border border-red-300 rounded-xl text-xs text-red-800 flex items-center gap-2 shadow-xs">
             <ShieldAlert className="h-4 w-4 text-red-600 shrink-0" />
             <span className="font-semibold">{deniedToast}</span>
@@ -164,9 +169,17 @@ const InwardScannerApp: React.FC = () => {
         </div>
       )}
 
-      {/* Inward Restricted Scanning Viewport */}
-      <main className="flex-1 overflow-y-auto">
-        <MobileScanningView isRestrictedInward={true} />
+      {/* Responsive Inward Operational Viewport */}
+      <main className="flex-1 overflow-y-auto bg-[#F5F7FA]">
+        {isMobile ? (
+          // On Mobile: Camera viewfinder mobile UI (exact previous UI)
+          <MobileScanningView isRestrictedInward={true} />
+        ) : (
+          // On Desktop: Dedicated USB Barcode Gun Station (fluid full-width, zero-click)
+          <div className="w-full p-4 sm:p-6">
+            <DesktopInwardStation isRestrictedInward={true} />
+          </div>
+        )}
       </main>
     </div>
   );

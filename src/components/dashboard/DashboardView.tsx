@@ -280,16 +280,60 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const isDateFiltered = Boolean(filterStartDate || filterEndDate);
 
   return (
-    <div className="space-y-4 font-sans max-w-5xl mx-auto pb-16">
-      {/* 1. Header Toolbar (Requirement 8 & 9: Cleaned of Duplicate Import buttons) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
+    <div className="space-y-6 font-sans w-full pb-16">
+      {/* Embedded High-Performance Wave Animation Keyframes */}
+      <style>{`
+        @keyframes dashboard-wave {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes pulse-ring {
+          0% { transform: scale(0.8); opacity: 0.85; }
+          100% { transform: scale(2.6); opacity: 0; }
+        }
+        @keyframes sine-flow-1 {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        @keyframes sine-flow-2 {
+          0% { transform: translateX(-50%); }
+          100% { transform: translateX(0); }
+        }
+        @keyframes eq-bar {
+          0%, 100% { transform: scaleY(0.2); }
+          50% { transform: scaleY(1); }
+        }
+        .anim-wave-liquid {
+          background-size: 250% 250%;
+          animation: dashboard-wave 4s ease infinite;
+        }
+        .anim-radar-wave {
+          animation: pulse-ring 2.4s cubic-bezier(0.15, 0.85, 0.35, 1) infinite;
+        }
+        .anim-sine-1 {
+          animation: sine-flow-1 12s linear infinite;
+        }
+        .anim-sine-2 {
+          animation: sine-flow-2 18s linear infinite;
+        }
+        .anim-eq-1 { animation: eq-bar 1.1s ease-in-out infinite 0.1s; transform-origin: bottom; }
+        .anim-eq-2 { animation: eq-bar 1.3s ease-in-out infinite 0.3s; transform-origin: bottom; }
+        .anim-eq-3 { animation: eq-bar 0.9s ease-in-out infinite 0.5s; transform-origin: bottom; }
+        .anim-eq-4 { animation: eq-bar 1.4s ease-in-out infinite 0.2s; transform-origin: bottom; }
+        .anim-eq-5 { animation: eq-bar 1.2s ease-in-out infinite 0.4s; transform-origin: bottom; }
+        .anim-eq-6 { animation: eq-bar 1.0s ease-in-out infinite 0.6s; transform-origin: bottom; }
+      `}</style>
+
+      {/* 1. Header Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 border border-[#CBD5E1] rounded-2xl shadow-xs">
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Interactive Date Range Filter Button (Requirement 10: X to Y Date Sorting) */}
+          {/* Interactive Date Range Filter Button */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowDatePicker(prev => !prev)}
-              className={`flex items-center gap-2 h-9 px-3 border rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+              className={`flex items-center gap-2 h-9 px-3.5 border rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
                 isDateFiltered
                   ? 'bg-[#EFF6FF] border-[#93C5FD] text-[#1565D8]'
                   : 'bg-[#F8FAFC] border-[#E2E8F0] text-[#172033] hover:bg-slate-100'
@@ -407,73 +451,134 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
 
         {/* Realtime Live Analysis Badge & Monitoring Indicator */}
-        <div className="flex items-center gap-2">
-          {/* Requirement 4: Real-time Live Indicator */}
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] font-bold uppercase tracking-wider">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+        <div className="flex items-center gap-2.5">
+          <span className="relative inline-flex items-center gap-2 px-3.5 py-1.5 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-black uppercase tracking-wider shadow-2xs overflow-hidden">
+            <span className="relative flex h-3 w-3">
+              <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
+            </span>
             <span>Realtime Live</span>
           </span>
 
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#F1F5F9] border border-[#CBD5E1] rounded-lg text-[#475569] text-xs font-bold uppercase tracking-wider">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] border border-[#CBD5E1] rounded-xl text-[#475569] text-xs font-bold uppercase tracking-wider shadow-2xs">
             <Activity className="h-3.5 w-3.5 text-[#1565D8]" />
             <span>Monitoring Overview</span>
           </span>
         </div>
       </div>
 
-      {/* 2. Statistics KPI Cards Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES / SH IDs</div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalClasses}</div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">Imported Sessions</div>
+      {/* 2. BREATHTAKING HERO SINE WAVE LIVE MONITORING BANNER */}
+      <div className="relative overflow-hidden rounded-2xl border border-[#CBD5E1] bg-gradient-to-r from-blue-900 via-[#1565D8] to-indigo-900 p-5 sm:p-6 text-white shadow-md">
+        {/* Animated Background Sine Wave Layers */}
+        <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden">
+          <svg className="absolute w-[200%] h-full anim-sine-1" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,40 C150,90 350,0 500,45 C650,90 850,10 1000,50 C1150,90 1200,40 1200,40 L1200,120 L0,120 Z"
+              fill="rgba(56, 189, 248, 0.4)"
+            />
+          </svg>
+          <svg className="absolute w-[200%] h-full anim-sine-2" preserveAspectRatio="none" viewBox="0 0 1200 120">
+            <path
+              d="M0,60 C200,10 400,80 600,40 C800,0 1000,70 1200,50 L1200,120 L0,120 Z"
+              fill="rgba(129, 140, 248, 0.35)"
+            />
+          </svg>
         </div>
 
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalExpected}</div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">Source from Excel</div>
-        </div>
+        {/* Content over Wave */}
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-cyan-400/20 border border-cyan-300/40 text-cyan-200 text-[10px] font-black uppercase tracking-wider">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 animate-pulse" />
+              <span>LIVE VALUATION CAMP WAVE TELEMETRY</span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+              Campus Script Intake &amp; Inward Operations
+            </h2>
+            <p className="text-xs text-blue-100 max-w-xl">
+              Continuous live intake stream synchronized with valuation centers. Zero-click hardware barcode gun ready.
+            </p>
+          </div>
 
-        <div className="bg-white p-3.5 border border-[#BFDBFE] rounded-xl shadow-xs bg-[#F8FAFC]">
-          <div className="text-[11px] font-bold text-[#1565D8] uppercase tracking-wider">RECEIVED BOOKLETS</div>
-          <div className="text-2xl font-black text-[#1565D8] font-tabular mt-1">{totalReceived}</div>
-          <div className="text-[11px] text-[#1565D8] mt-0.5 font-medium">Inwarded / Verified</div>
-        </div>
-
-        <div className="bg-white p-3.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
-          <div className="text-2xl font-black text-[#172033] font-tabular mt-1">{totalPending}</div>
-          <div className="text-[11px] text-[#64748B] mt-0.5 font-medium">Expected - Received</div>
+          {/* Right Equalizer Frequency Visualizer Wave */}
+          <div className="flex items-center gap-4 bg-white/10 backdrop-blur-md px-4 py-3 rounded-xl border border-white/20 self-start md:self-auto shadow-inner">
+            <div className="flex items-end gap-1 h-7">
+              <div className="w-1.5 h-6 bg-cyan-300 rounded-full anim-eq-1" />
+              <div className="w-1.5 h-6 bg-cyan-400 rounded-full anim-eq-2" />
+              <div className="w-1.5 h-6 bg-blue-300 rounded-full anim-eq-3" />
+              <div className="w-1.5 h-6 bg-emerald-300 rounded-full anim-eq-4" />
+              <div className="w-1.5 h-6 bg-cyan-300 rounded-full anim-eq-5" />
+              <div className="w-1.5 h-6 bg-indigo-300 rounded-full anim-eq-6" />
+              <div className="w-1.5 h-6 bg-cyan-400 rounded-full anim-eq-2" />
+              <div className="w-1.5 h-6 bg-emerald-400 rounded-full anim-eq-4" />
+            </div>
+            <div className="text-right border-l border-white/20 pl-3">
+              <div className="text-xs font-black uppercase text-cyan-200">System Flow</div>
+              <div className="text-sm font-black font-tabular text-white">{completionRate}% Synced</div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* 3. Today's Progress Card */}
-      <div className="bg-white p-4 border border-[#CBD5E1] rounded-xl shadow-xs">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-[#172033]">Today's Progress</span>
-          <span className="text-sm font-black font-tabular text-[#16A34A]">{completionRate}%</span>
+      {/* 3. Enlarged Statistics KPI Cards Grid (Generous Padding & Big Numbers to Fill Space) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 sm:gap-6 w-full">
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES / SH IDs</div>
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">{totalClasses}</div>
+          <div className="text-xs text-[#64748B] mt-1.5 font-medium">Imported Examination Sessions</div>
         </div>
 
-        <div className="mt-2 h-2.5 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">{totalExpected}</div>
+          <div className="text-xs text-[#64748B] mt-1.5 font-medium">Source Baseline from Excel</div>
+        </div>
+
+        <div className="bg-white p-6 sm:p-7 border-2 border-blue-400/80 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 hover:-translate-y-0.5 relative overflow-hidden">
+          <div className="absolute top-3 right-3 flex h-3 w-3">
+            <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-[#1565D8]" />
+          </div>
+          <div className="text-xs font-bold text-[#1565D8] uppercase tracking-wider">RECEIVED BOOKLETS</div>
+          <div className="text-4xl sm:text-5xl font-black text-[#1565D8] font-tabular mt-2.5">{totalReceived}</div>
+          <div className="text-xs text-[#1565D8] mt-1.5 font-semibold">Verified &amp; Inwarded</div>
+        </div>
+
+        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
+          <div className="text-4xl sm:text-5xl font-black text-[#DC2626] font-tabular mt-2.5">{totalPending}</div>
+          <div className="text-xs text-[#DC2626] mt-1.5 font-medium">Remaining Intake Required</div>
+        </div>
+      </div>
+
+      {/* 4. Today's Progress Card with Vivid Liquid Ocean Wave */}
+      <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-sm transition-all duration-200 w-full">
+        <div className="flex items-center justify-between">
+          <span className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#172033]">
+            Today's Overall Inward Progress
+          </span>
+          <span className="text-lg sm:text-xl font-black font-tabular text-[#16A34A]">{completionRate}%</span>
+        </div>
+
+        <div className="mt-3.5 h-4 sm:h-5 w-full bg-slate-100 overflow-hidden rounded-full border border-slate-200 relative p-0.5 shadow-inner">
           <div
-            className="h-full bg-[#16A34A] transition-all duration-300 rounded-full"
-            style={{ width: `${Math.min(100, completionRate)}%` }}
+            className="h-full bg-gradient-to-r from-blue-600 via-cyan-400 via-blue-500 to-emerald-500 anim-wave-liquid transition-all duration-500 ease-out rounded-full shadow-xs"
+            style={{ width: `${Math.max(completionRate > 0 ? 4 : 0, Math.min(100, completionRate))}%` }}
           />
         </div>
 
-        <div className="mt-2 text-xs font-tabular text-[#64748B] flex items-center justify-between">
+        <div className="mt-3 text-xs font-tabular text-[#64748B] flex flex-wrap items-center justify-between gap-2">
           <span>
-            <strong className="text-[#172033] font-black">{totalReceived}</strong> / {totalExpected} scanned
+            <strong className="text-[#172033] font-black text-sm">{totalReceived}</strong> / {totalExpected} booklets inwarded
           </span>
-          <span className="text-[11px] font-semibold text-[#64748B]">
-            {completedCount} of {totalClasses} completed
+          <span className="text-xs font-bold text-[#1565D8]">
+            {completedCount} of {totalClasses} classes completed ({sessionSummary?.partialClasses || 0} in progress)
           </span>
         </div>
       </div>
 
-      {/* 4. TODAY'S MANUAL PROGRESS CARD (Requirement 5, 6 & 7) */}
-      <div className="bg-white p-4 border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl shadow-xs transition-colors">
+      {/* 5. TODAY'S MANUAL PROGRESS CARD */}
+      <div className="bg-white p-5 sm:p-6 border border-[#CBD5E1] hover:border-[#1565D8] rounded-2xl shadow-xs transition-colors">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -493,7 +598,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           <button
             type="button"
             onClick={() => setIsManualModalOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-all shadow-xs cursor-pointer self-start sm:self-auto"
+            className="flex items-center gap-2 px-3.5 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-xs cursor-pointer self-start sm:self-auto active:scale-95"
             title="Open Dedicated Manual Inward Table"
           >
             <FileSpreadsheet className="h-4 w-4" />
@@ -502,7 +607,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
 
         {/* Progress Bar for Manual Entries vs Total Inwards */}
-        <div className="mt-3 h-2 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
+        <div className="mt-3.5 h-2.5 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
           <div
             className="h-full bg-[#1565D8] transition-all duration-300 rounded-full"
             style={{ width: `${Math.min(100, manualPercentage)}%` }}
