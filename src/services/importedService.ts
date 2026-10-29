@@ -408,6 +408,7 @@ class ImportedService {
   private backendExpectedCount: number = 0;
   private backendReceivedCount: number = 0;
   private backendPendingCount: number = 0;
+  private isAutoFlushing: boolean = false;
   private backendManualCount: number = 0;
 
   private activeUniversity: string = '';
@@ -1247,6 +1248,24 @@ class ImportedService {
         this.backendPendingCount = this.yetToBeInward.length;
       } else if (this.backendPendingCount === 0 && this.backendExpectedCount > 0) {
         this.backendPendingCount = Math.max(0, this.backendExpectedCount - this.backendReceivedCount);
+      }
+
+      // Auto-flush any pending staged scans into Supabase saved_scanned_data
+      const pendingItems = this.scanItems.filter(i => i.status === 'PENDING_SAVE');
+      if (pendingItems.length > 0 && isSupabaseConfigured && !this.isAutoFlushing) {
+        this.isAutoFlushing = true;
+        const pendingClassIds = Array.from(new Set(
+          pendingItems.map(i => normalizeIdentifier(i.class_id)).filter(Boolean)
+        ));
+        for (const cid of pendingClassIds) {
+          try {
+            console.log(`[ImportedService] Auto-committing pending scans for Class ${cid} into Supabase...`);
+            await this.saveActiveBundle(cid);
+          } catch (autoSaveErr) {
+            console.warn(`[ImportedService] Auto-commit note for ${cid}:`, autoSaveErr);
+          }
+        }
+        this.isAutoFlushing = false;
       }
 
       // Reconcile inward records with authoritative imported reference dataset

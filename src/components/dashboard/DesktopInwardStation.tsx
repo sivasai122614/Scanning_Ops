@@ -46,6 +46,8 @@ import {
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { useBarcodeGunListener, BarcodeGunScanEvent } from '../../utils/useBarcodeGunListener';
 import { ScannerTopToast, ScannerToastData } from '../scanner/ScannerTopToast';
+import { useAuth } from '../../context/AuthContext';
+import { normalizeIdentifier } from '../../utils/normalize';
 
 export interface DesktopInwardStationProps {
   onNavigateToImport?: () => void;
@@ -57,6 +59,9 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   onNavigateToImport,
   isRestrictedInward = false,
 }) => {
+  const { user } = useAuth();
+  const currentOperator = user?.username || user?.full_name || user?.email?.split('@')[0] || 'Operator';
+
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
@@ -203,26 +208,78 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     console.log(`[DESKTOP GUN STATION] Processing ${source} scan: ${barcode}`);
 
     try {
-      // 1. Process against selected class if one is active, otherwise process across all classes
-      let result: ScanResult;
-      if (selectedClassId) {
-        result = await importedService.processBundleScan(selectedClassId, barcode);
-      } else {
-        result = await importedService.processScanningDashboardScan(barcode);
-        if (result.class_id) {
-          setSelectedClassId(result.class_id);
-        }
+      // 1. Resolve Target Class ID or Class ID Switch
+      let targetClassId = selectedClassId;
+
+      // Check if scanned barcode directly represents a known Class ID (e.g. scanning a Class barcode)
+      const cleanBar = normalizeIdentifier(barcode).toLowerCase();
+      const directClass = bundles.find(b => normalizeIdentifier(b.classId).toLowerCase() === cleanBar);
+      if (directClass) {
+        setSelectedClassId(directClass.classId);
+        if (soundEnabled) playScanSuccessSound();
+        triggerHudFlash({
+          type: 'success',
+          title: '✓ CLASS BUNDLE OPENED',
+          subtitle: `Class ID: ${directClass.classId} (${directClass.expectedCount} booklets expected)`,
+          barcode,
+          classId: directClass.classId,
+          timestamp: Date.now(),
+        }, 2200);
+        return;
       }
 
-      // 2. Handle Case: Duplicate Inward
+      // Check lookup in imported records
+      const lookup = await importedService.lookupImportedRecord(barcode, targetClassId);
+      if (lookup?.isClassOnly && lookup.classId) {
+        setSelectedClassId(lookup.classId);
+        if (soundEnabled) playScanSuccessSound();
+        triggerHudFlash({
+          type: 'success',
+          title: '✓ CLASS BUNDLE OPENED',
+          subtitle: `Class ID: ${lookup.classId}`,
+          barcode,
+          classId: lookup.classId,
+          timestamp: Date.now(),
+        }, 2200);
+        return;
+      }
+
+      if (!targetClassId && lookup?.record?.class_id) {
+        targetClassId = lookup.record.class_id;
+        setSelectedClassId(targetClassId);
+      }
+
+      if (!targetClassId) {
+        if (soundEnabled) playScanWarningSound();
+        triggerHudFlash({
+          type: 'not_found',
+          title: 'SELECT CLASS FIRST',
+          subtitle: 'Please select a Class ID from the left list before scanning booklets.',
+          barcode,
+          timestamp: Date.now(),
+        }, 2800);
+        return;
+      }
+
+      // 2. Authoritative Real-Time Inward: EXACT SAME ENGINE AS MOBILE VIEW
+      // Persists directly into Supabase saved_scanned_data
+      // Deletes from Supabase yet_to_be_inward
+      // Updates imported_inward_data scan_status = 'completed'
+      const result: ScanResult = await importedService.processMobileMemberBarcodeScan(
+        targetClassId,
+        barcode,
+        currentOperator
+      );
+
+      // 3. Handle Case: Duplicate Inward
       if (result.isDuplicate) {
         if (soundEnabled) playScanWarningSound();
         triggerHudFlash({
           type: 'duplicate',
           title: 'ALREADY INWARDED',
-          subtitle: `Booklet ${result.member_id || barcode} was already scanned.`,
+          subtitle: `Booklet ${result.member_id || barcode} was already inwarded for Class ${targetClassId}.`,
           barcode,
-          classId: selectedClassId || result.class_id,
+          classId: targetClassId,
           memberId: result.member_id,
           timestamp: Date.now(),
         }, 3200);
@@ -232,25 +289,25 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             id: String(Date.now()),
             barcode,
             memberId: result.member_id || barcode,
-            classId: selectedClassId || result.class_id || '—',
+            classId: targetClassId,
             timestamp: new Date(),
             status: 'duplicate',
-            message: 'Duplicate inward detected',
+            message: 'Duplicate inward (Already saved in backend)',
           },
           ...prev.slice(0, 19),
         ]);
         return;
       }
 
-      // 3. Handle Case: Class Mismatch
+      // 4. Handle Case: Class Mismatch
       if (result.isWrongClass) {
         if (soundEnabled) playScanWarningSound();
         triggerHudFlash({
           type: 'wrong_class',
           title: 'CLASS ID MISMATCH',
-          subtitle: `Belongs to Class ${result.detectedClassId || 'UNKNOWN'}, not active Class ${selectedClassId}!`,
+          subtitle: `Belongs to Class ${result.detectedClassId || 'UNKNOWN'}, not active Class ${targetClassId}!`,
           barcode,
-          classId: selectedClassId,
+          classId: targetClassId,
           timestamp: Date.now(),
         }, 3500);
 
@@ -269,15 +326,15 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         return;
       }
 
-      // 4. Handle Case: Member ID Not Found
-      if (result.isUnknownMember) {
+      // 5. Handle Case: Member ID Not Found / Not Imported
+      if (result.isUnknownMember || result.isNotImported) {
         if (soundEnabled) playScanWarningSound();
         triggerHudFlash({
           type: 'not_found',
           title: 'MEMBER ID NOT FOUND',
-          subtitle: `Barcode "${barcode}" not in imported list for this class.`,
+          subtitle: `Barcode "${barcode}" not in imported list for Class ${targetClassId}.`,
           barcode,
-          classId: selectedClassId,
+          classId: targetClassId,
           timestamp: Date.now(),
         }, 3500);
 
@@ -286,7 +343,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             id: String(Date.now()),
             barcode,
             memberId: barcode,
-            classId: selectedClassId || '—',
+            classId: targetClassId,
             timestamp: new Date(),
             status: 'not_found',
             message: 'Member not found in imported dataset',
@@ -296,19 +353,19 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         return;
       }
 
-      // 5. Handle Case: Valid Inward (Pending Save)
+      // 6. Handle Case: Valid Inward (Saved Real-time to Database)
       if (result.success && result.member_id) {
         if (soundEnabled) playScanSuccessSound();
-        const activeBundle = importedService.getClassBundle(selectedClassId || result.class_id || '');
+        const activeBundle = importedService.getClassBundle(targetClassId);
         const currentScanned = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
         const expected = activeBundle?.expectedCount || 0;
 
         triggerHudFlash({
           type: 'success',
-          title: '✓ INWARD SUCCESS',
-          subtitle: `Member: ${result.member_id} | Class: ${result.class_id || selectedClassId} (${currentScanned} of ${expected})`,
+          title: '✓ INWARD SUCCESS (SAVED)',
+          subtitle: `Member: ${result.member_id} | Class: ${targetClassId} (${currentScanned} of ${expected})`,
           barcode,
-          classId: result.class_id || selectedClassId,
+          classId: targetClassId,
           memberId: result.member_id,
           timestamp: Date.now(),
         }, 2200);
@@ -318,10 +375,10 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             id: String(Date.now()),
             barcode,
             memberId: result.member_id!,
-            classId: result.class_id || selectedClassId,
+            classId: targetClassId,
             timestamp: new Date(),
             status: 'success',
-            message: 'Inwarded (Pending Save)',
+            message: 'Inwarded & Persisted to Supabase',
           },
           ...prev.slice(0, 19),
         ]);
