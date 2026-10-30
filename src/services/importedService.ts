@@ -1368,13 +1368,11 @@ class ImportedService {
       r => !uni || r.college_name.toLowerCase() === uni.toLowerCase()
     );
 
-    const expectedCount = Math.max(this.backendExpectedCount, expected.length);
-    const scannedCount = Math.max(this.backendReceivedCount, saved.length);
-    const notScannedCount = this.backendPendingCount > 0
-      ? this.backendPendingCount
-      : (this.yetToBeInward.length > 0 ? this.yetToBeInward.length : Math.max(0, expectedCount - scannedCount));
+    const expectedCount = expected.length > 0 ? expected.length : (this.backendExpectedCount || 0);
+    const scannedCount = saved.length > 0 ? saved.length : (this.backendReceivedCount || 0);
+    const notScannedCount = Math.max(0, expectedCount - scannedCount);
     const totalClasses = new Set(expected.map(r => r.class_id)).size;
-    const completionPercentage = expectedCount > 0 ? Math.round((scannedCount / expectedCount) * 100) : 0;
+    const completionPercentage = expectedCount > 0 ? Math.min(100, Math.round((scannedCount / expectedCount) * 100)) : 0;
 
     return {
       totalClasses,
@@ -1411,17 +1409,16 @@ class ImportedService {
       }
     }
 
-    const effectiveExpected = Math.max(this.backendExpectedCount, totalExpectedFromBundles, this.importInwarded.length);
-    const effectiveSaved = Math.max(this.backendReceivedCount, totalSavedFromBundles, this.savedScanned.length);
-    const effectivePending = this.backendPendingCount > 0
-      ? this.backendPendingCount
-      : (this.yetToBeInward.length > 0
-        ? this.yetToBeInward.length
-        : Math.max(0, effectiveExpected - effectiveSaved));
-
+    const effectiveExpected = totalExpectedFromBundles > 0
+      ? totalExpectedFromBundles
+      : (this.importInwarded.length > 0 ? this.importInwarded.length : (this.backendExpectedCount || 0));
+    const effectiveSaved = totalSavedFromBundles > 0
+      ? totalSavedFromBundles
+      : (this.savedScanned.length > 0 ? this.savedScanned.length : (this.backendReceivedCount || 0));
     const totalReceived = effectiveSaved + totalPendingFromBundles;
+    const effectivePending = Math.max(0, effectiveExpected - totalReceived);
     const totalMissing = effectivePending;
-    const overallCompletion = effectiveExpected > 0 ? Math.round((effectiveSaved / effectiveExpected) * 100) : 0;
+    const overallCompletion = effectiveExpected > 0 ? Math.min(100, Math.round((totalReceived / effectiveExpected) * 100)) : 0;
 
     return {
       universityName: uni,
@@ -1775,6 +1772,18 @@ class ImportedService {
     });
 
     return views;
+  }
+
+  /**
+   * Return all saved scanned records from saved_scanned_data
+   * Optional classId filter to get only records for a specific class
+   */
+  public getSavedScannedRecords(classId?: string): SavedScannedRecord[] {
+    if (classId) {
+      const clean = normalizeIdentifier(classId).toLowerCase();
+      return this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === clean);
+    }
+    return [...this.savedScanned];
   }
 
   // ==============================================================================
@@ -4301,68 +4310,74 @@ class ImportedService {
     };
     this.scanItems.push(pendingItem);
 
-    // 3. Immediately persist to Supabase in REAL TIME
+    // 3. Immediately persist to Supabase in REAL TIME (Concurrent async execution for speed)
     if (isSupabaseConfigured) {
-      try {
-        let validSessionId: string | null = null;
-        if (session && session.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id)) {
-          validSessionId = session.id;
-        }
-
-        const insertPayload: any = {
-          id: recordId,
-          scan_session_id: validSessionId,
-          import_session_id: importedRow.import_session_id || this.activeSessionId || null,
-          college_name: uni,
-          class_id: cleanActiveCid,
-          member_id: resolvedMemberId,
-          barcode: resolvedBarcode || normalized,
-          scanned_by: operatorName,
-          scanned_at: now,
-          saved_by: operatorName,
-          saved_at: now,
-          status: 'SAVED',
-        };
-
-        let { error: insErr } = await supabase.from('saved_scanned_data').insert(insertPayload);
-
-        // If scan_session_id caused a foreign key violation (23503), retry safely with null
-        if (insErr && insErr.code === '23503') {
-          insertPayload.scan_session_id = null;
-          const retryRes = await supabase.from('saved_scanned_data').insert(insertPayload);
-          insErr = retryRes.error;
-        }
-
-        if (insErr) {
-          console.error('[REALTIME INWARD] saved_scanned_data insert error:', insErr);
-        } else {
-          console.log('[REALTIME INWARD] ✓ Successfully persisted to saved_scanned_data in Supabase:', resolvedMemberId);
-        }
-
-        // Update imported_inward_data scan_status to 'completed' (check constraint allows 'not_started' | 'completed')
-        const { error: updErr } = await supabase
-          .from('imported_inward_data')
-          .update({ scan_status: 'completed', scanned_at: now })
-          .eq('class_id', cleanActiveCid)
-          .eq('member_id', resolvedMemberId);
-
-        if (updErr) {
-          console.warn('[REALTIME INWARD] imported_inward_data scan_status update note:', updErr);
-        }
-
-        // Delete from yet_to_be_inward table (3-Table Architecture)
+      (async () => {
         try {
-          await supabase
+          let validSessionId: string | null = null;
+          if (session && session.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id)) {
+            validSessionId = session.id;
+          }
+
+          const insertPayload: any = {
+            id: recordId,
+            scan_session_id: validSessionId,
+            import_session_id: importedRow.import_session_id || this.activeSessionId || null,
+            college_name: uni,
+            class_id: cleanActiveCid,
+            member_id: resolvedMemberId,
+            barcode: resolvedBarcode || normalized,
+            scanned_by: operatorName,
+            scanned_at: now,
+            saved_by: operatorName,
+            saved_at: now,
+            status: 'SAVED',
+          };
+
+          // Run Insert into saved_scanned_data, Status Update, and Delete from yet_to_be_inward concurrently
+          const insertPromise = supabase.from('saved_scanned_data').insert(insertPayload).then(async (res) => {
+            if (res.error && res.error.code === '23503') {
+              insertPayload.scan_session_id = null;
+              return supabase.from('saved_scanned_data').insert(insertPayload);
+            }
+            return res;
+          });
+
+          const updateStatusPromise = supabase
+            .from('imported_inward_data')
+            .update({ scan_status: 'completed', scanned_at: now })
+            .eq('class_id', cleanActiveCid)
+            .eq('member_id', resolvedMemberId);
+
+          const deletePendingPromise = supabase
             .from('yet_to_be_inward')
             .delete()
             .eq('class_id', cleanActiveCid)
             .eq('member_id', resolvedMemberId);
-        } catch (yDelErr) {
-          console.warn('[REALTIME INWARD] yet_to_be_inward delete note:', yDelErr);
+
+          const [insRes, updRes, delRes] = await Promise.allSettled([
+            insertPromise,
+            updateStatusPromise,
+            deletePendingPromise,
+          ]);
+
+          if (insRes.status === 'fulfilled' && insRes.value.error) {
+            console.error('[REALTIME INWARD] saved_scanned_data insert error:', insRes.value.error);
+          } else {
+            console.log('[REALTIME INWARD] ✓ Successfully persisted to saved_scanned_data in Supabase:', resolvedMemberId);
+          }
+
+          if (updRes.status === 'fulfilled' && updRes.value.error) {
+            console.warn('[REALTIME INWARD] imported_inward_data update note:', updRes.value.error);
+          }
+
+          if (delRes.status === 'fulfilled' && delRes.value.error) {
+            console.warn('[REALTIME INWARD] yet_to_be_inward delete note:', delRes.value.error);
+          }
+        } catch (dbErr) {
+          console.warn('[MEMBER SCAN] Supabase realtime persistence note:', dbErr);
         }
-      } catch (dbErr) {
-        console.warn('[MEMBER SCAN] Supabase realtime persistence note:', dbErr);
-      }
+      })();
     }
 
     // Update yet_to_be_inward in memory and counts

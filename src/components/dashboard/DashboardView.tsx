@@ -523,7 +523,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       {/* 3. Enlarged Statistics KPI Cards Grid (Generous Padding & Big Numbers to Fill Space) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 sm:gap-6 w-full">
         <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASSES / SH IDs</div>
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASS IDs</div>
           <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">{totalClasses}</div>
           <div className="text-xs text-[#64748B] mt-1.5 font-medium">Imported Examination Sessions</div>
         </div>
@@ -572,7 +572,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             <strong className="text-[#172033] font-black text-sm">{totalReceived}</strong> / {totalExpected} booklets inwarded
           </span>
           <span className="text-xs font-bold text-[#1565D8]">
-            {completedCount} of {totalClasses} classes completed ({sessionSummary?.partialClasses || 0} in progress)
+            {completedCount} of {totalClasses} Class IDs completed ({sessionSummary?.partialClasses || 0} in progress)
           </span>
         </div>
       </div>
@@ -903,17 +903,17 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         {/* Content View: Grid vs List */}
         {bundles.length === 0 ? (
           <div className="p-8 text-center text-[#64748B] text-xs">
-            No classes or SH IDs imported yet. Import examination data to view live monitoring.
+            No Class IDs imported yet. Import examination data to view live monitoring.
           </div>
         ) : filteredAndSortedBundles.length === 0 ? (
           <div className="p-8 text-center text-[#64748B] text-xs space-y-2">
-            <div>No classes match status filter <strong>"{statusFilter}"</strong> {searchQuery && `or search "${searchQuery}"`}.</div>
+            <div>No Class IDs match status filter <strong>"{statusFilter}"</strong> {searchQuery && `or search "${searchQuery}"`}.</div>
             <button
               type="button"
               onClick={() => { setStatusFilter('ALL'); setSearchQuery(''); }}
               className="px-3 py-1 bg-[#1565D8] text-white font-bold text-xs rounded-lg cursor-pointer hover:bg-[#0D47A1]"
             >
-              Show All Classes
+              Show All Class IDs
             </button>
           </div>
         ) : viewMode === 'grid' ? (
@@ -937,7 +937,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   className="bg-white border border-[#CBD5E1] hover:border-[#1565D8] rounded-xl p-3.5 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
                 >
                   <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0]">
-                    <span className="font-mono font-black text-sm text-[#172033]">CLASS / SH ID {b.classId}</span>
+                    <span className="font-mono font-black text-sm text-[#172033]">CLASS ID: {b.classId}</span>
                     <div className="flex items-center gap-1.5">
                       <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
                         {b.status}
@@ -946,7 +946,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                         type="button"
                         onClick={() => setClassToDelete(b.classId)}
                         className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                        title={`Delete Class / SH ID ${b.classId} and saved scan data`}
+                        title={`Delete Class ID ${b.classId} and saved scan data`}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>

@@ -41,12 +41,21 @@ interface ParsedRow {
   unqid: string;
   status: 'valid' | 'duplicate' | 'invalid';
   reason?: string;
+  fileOrigin?: string;
 }
 
 interface ClassGroupPreview {
   classId: string;
   members: string[];
   count: number;
+}
+
+interface FileSummary {
+  name: string;
+  size: number;
+  totalRows: number;
+  validRows: number;
+  classesCount: number;
 }
 
 interface ImportDataViewProps {
@@ -57,7 +66,8 @@ interface ImportDataViewProps {
 
 export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan }) => {
   const [universityName, setUniversityName] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [fileSummaries, setFileSummaries] = useState<FileSummary[]>([]);
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [universityRequiredError, setUniversityRequiredError] = useState<boolean>(false);
@@ -127,8 +137,8 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
   const [showClearAllModal, setShowClearAllModal] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
-  // Option to replace existing data or append
-  const [replaceExistingData, setReplaceExistingData] = useState<boolean>(true);
+  // Option to replace existing data or append: DEFAULT IS FALSE (Append / accumulate bulk excels)
+  const [replaceExistingData, setReplaceExistingData] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -149,11 +159,191 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     };
   }, []);
 
-  // Parse Excel file and extract Class ID and Member ID
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Parse a single Excel file into rows
+  const parseSingleExcelFile = (file: File): Promise<{ fileName: string; fileSize: number; rows: ParsedRow[] }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = evt => {
+        try {
+          const bstr = evt.target?.result;
+          const workbook = XLSX.read(bstr, { type: 'binary', cellText: true });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          // raw: false ensures strings with leading zeros like "0031" are preserved as pure strings
+          const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
 
+          if (!rawJson || rawJson.length < 2) {
+            throw new Error(`File "${file.name}" is empty or does not contain data rows.`);
+          }
+
+          const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
+
+          // Header Detection for Class ID / SH ID:
+          let classColIdx = headerRow.findIndex(
+            (h: string) => {
+              const clean = h.replace(/[^a-z0-9]/g, '');
+              return (
+                h.includes('class') ||
+                h.includes('batch') ||
+                h.includes('cls') ||
+                h.includes('bundle') ||
+                clean === 'sh' ||
+                clean === 'shid' ||
+                clean === 'clsid' ||
+                clean === 'schoolid' ||
+                clean === 'scheduleid' ||
+                clean === 'schedule' ||
+                h.includes('schedule') ||
+                h.includes('sh id') ||
+                h.includes('sh_id') ||
+                h.includes('school id')
+              );
+            }
+          );
+
+          let barcodeColIdx = headerRow.findIndex(
+            (h: string, idx: number) =>
+              idx !== classColIdx &&
+              (h.includes('barcode') ||
+               h.includes('bar_code') ||
+               h.includes('bar code') ||
+               h.includes('barcode value') ||
+               h.includes('barcode_value') ||
+               h.includes('qr') ||
+               h.includes('code'))
+          );
+
+          let memberColIdx = headerRow.findIndex(
+            (h: string, idx: number) =>
+              idx !== classColIdx &&
+              idx !== barcodeColIdx &&
+              (h.includes('unqid') ||
+               h.includes('unq') ||
+               h.includes('member') ||
+               h.includes('student') ||
+               h.includes('roll') ||
+               (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh')))
+          );
+
+          if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 2) {
+            classColIdx = 0;
+            memberColIdx = 1;
+            if (headerRow.length >= 3) {
+              barcodeColIdx = 2;
+            }
+          } else if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx >= 0) {
+            // Barcode only column: Class and Member will be extracted from hyphenated values
+          } else if (classColIdx === -1 && memberColIdx !== -1) {
+            classColIdx = memberColIdx === 0 ? 1 : 0;
+          } else if (memberColIdx === -1 && classColIdx !== -1) {
+            memberColIdx = classColIdx === 0 ? 1 : 0;
+          }
+
+          const fileRows: ParsedRow[] = [];
+          const seenInThisFile = new Set<string>();
+
+          for (let i = 1; i < rawJson.length; i++) {
+            const rowData = rawJson[i];
+            if (!rowData || rowData.length === 0) continue;
+
+            // Pure string extraction to preserve leading zeros e.g. 0020
+            let rawClass = classColIdx >= 0 ? String(rowData[classColIdx] ?? '').trim() : '';
+            let rawMember = memberColIdx >= 0 ? String(rowData[memberColIdx] ?? '').trim() : '';
+            let rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
+
+            // Rule: Split hyphenated barcodes if needed
+            if (rawBarcode && rawBarcode.includes('-')) {
+              const dashIdx = rawBarcode.indexOf('-');
+              const partLeft = rawBarcode.substring(0, dashIdx).trim();
+              const partRight = rawBarcode.substring(dashIdx + 1).trim();
+              if (!rawClass && partLeft) rawClass = partLeft;
+              if (!rawMember && partRight) rawMember = partRight;
+            }
+
+            if (!rawClass && rawMember && rawMember.includes('-')) {
+              const dashIdx = rawMember.indexOf('-');
+              const partLeft = rawMember.substring(0, dashIdx).trim();
+              const partRight = rawMember.substring(dashIdx + 1).trim();
+              if (partLeft && partRight) {
+                if (!rawBarcode) rawBarcode = rawMember;
+                rawClass = partLeft;
+                rawMember = partRight;
+              }
+            }
+
+            if (rawClass && !rawMember && rawClass.includes('-')) {
+              const dashIdx = rawClass.indexOf('-');
+              const partLeft = rawClass.substring(0, dashIdx).trim();
+              const partRight = rawClass.substring(dashIdx + 1).trim();
+              if (partLeft && partRight) {
+                if (!rawBarcode) rawBarcode = rawClass;
+                rawClass = partLeft;
+                rawMember = partRight;
+              }
+            }
+
+            const finalBarcode = rawBarcode || (rawClass && rawMember ? `${rawClass}-${rawMember}` : rawMember);
+
+            if (!rawClass && !rawMember) continue;
+
+            if (!rawClass || !rawMember) {
+              fileRows.push({
+                rowNumber: i + 1,
+                classId: rawClass || 'MISSING',
+                memberId: rawMember || 'MISSING',
+                barcode: finalBarcode || undefined,
+                unqid: rawMember || 'MISSING',
+                status: 'invalid',
+                reason: !rawClass ? 'Class ID / SH ID is blank' : 'Member ID / unqid is blank',
+                fileOrigin: file.name,
+              });
+              continue;
+            }
+
+            const uniqueKey = `${rawClass.toLowerCase()}::${rawMember.toLowerCase()}`;
+            if (seenInThisFile.has(uniqueKey)) {
+              fileRows.push({
+                rowNumber: i + 1,
+                classId: rawClass,
+                memberId: rawMember,
+                barcode: finalBarcode,
+                unqid: rawMember,
+                status: 'duplicate',
+                reason: `Duplicate in ${file.name}`,
+                fileOrigin: file.name,
+              });
+              continue;
+            }
+
+            seenInThisFile.add(uniqueKey);
+            fileRows.push({
+              rowNumber: i + 1,
+              classId: rawClass,
+              memberId: rawMember,
+              barcode: finalBarcode,
+              unqid: rawMember,
+              status: 'valid',
+              fileOrigin: file.name,
+            });
+          }
+
+          resolve({
+            fileName: file.name,
+            fileSize: file.size,
+            rows: fileRows,
+          });
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      reader.onerror = () => reject(new Error(`Failed to read "${file.name}".`));
+      reader.readAsBinaryString(file);
+    });
+  };
+
+  // Process multiple Excel files simultaneously or append to existing list
+  const processExcelFiles = async (files: File[], appendToExisting: boolean = false) => {
     // SECTION 13: COLLEGE / UNIVERSITY REQUIRED CHECK BEFORE PARSING/IMPORTING
     if (!universityName.trim()) {
       setUniversityRequiredError(true);
@@ -162,215 +352,112 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     }
 
     setUniversityRequiredError(false);
-    processExcelFile(file);
-  };
-
-  const processExcelFile = (file: File) => {
     setParseError(null);
-    setSelectedFile(file);
     setIsParsing(true);
 
-    const reader = new FileReader();
-    reader.onload = evt => {
-      try {
-        const bstr = evt.target?.result;
-        const workbook = XLSX.read(bstr, { type: 'binary', cellText: true });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        // raw: false ensures strings with leading zeros like "0031" are preserved as pure strings
-        const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
+    try {
+      const targetFiles = appendToExisting ? [...selectedFiles, ...files] : files;
+      // Deduplicate file objects by name + size
+      const uniqueFiles = targetFiles.filter(
+        (f, idx, arr) => arr.findIndex(x => x.name === f.name && x.size === f.size) === idx
+      );
 
-        if (!rawJson || rawJson.length < 2) {
-          throw new Error('The selected Excel file is empty or does not contain data rows.');
-        }
+      const parsedResults = await Promise.all(uniqueFiles.map(f => parseSingleExcelFile(f)));
 
-        const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
+      const combinedRows: ParsedRow[] = [];
+      const summaries: FileSummary[] = [];
+      const globalSeen = new Set<string>();
+      const groupMap = new Map<string, string[]>();
+      let runningRowIndex = 1;
 
-        // Header Detection for Class ID / SH ID:
-        let classColIdx = headerRow.findIndex(
-          (h: string) => {
-            const clean = h.replace(/[^a-z0-9]/g, '');
-            return (
-              h.includes('class') ||
-              h.includes('batch') ||
-              h.includes('cls') ||
-              h.includes('bundle') ||
-              clean === 'sh' ||
-              clean === 'shid' ||
-              clean === 'clsid' ||
-              clean === 'schoolid' ||
-              clean === 'scheduleid' ||
-              clean === 'schedule' ||
-              h.includes('schedule') ||
-              h.includes('sh id') ||
-              h.includes('sh_id') ||
-              h.includes('school id')
-            );
-          }
-        );
+      for (const res of parsedResults) {
+        let fileValidCount = 0;
+        const fileClassSet = new Set<string>();
 
-        let barcodeColIdx = headerRow.findIndex(
-          (h: string, idx: number) =>
-            idx !== classColIdx &&
-            (h.includes('barcode') ||
-             h.includes('bar_code') ||
-             h.includes('bar code') ||
-             h.includes('barcode value') ||
-             h.includes('barcode_value') ||
-             h.includes('qr') ||
-             h.includes('code'))
-        );
+        for (const r of res.rows) {
+          const uniqueKey = `${r.classId.toLowerCase()}::${r.memberId.toLowerCase()}`;
+          const isDup = globalSeen.has(uniqueKey);
 
-        let memberColIdx = headerRow.findIndex(
-          (h: string, idx: number) =>
-            idx !== classColIdx &&
-            idx !== barcodeColIdx &&
-            (h.includes('unqid') ||
-             h.includes('unq') ||
-             h.includes('member') ||
-             h.includes('student') ||
-             h.includes('roll') ||
-             (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh')))
-        );
-
-        if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 2) {
-          classColIdx = 0;
-          memberColIdx = 1;
-          if (headerRow.length >= 3) {
-            barcodeColIdx = 2;
-          }
-        } else if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx >= 0) {
-          // Barcode only column: Class and Member will be extracted from hyphenated values
-        } else if (classColIdx === -1 && memberColIdx !== -1) {
-          classColIdx = memberColIdx === 0 ? 1 : 0;
-        } else if (memberColIdx === -1 && classColIdx !== -1) {
-          memberColIdx = classColIdx === 0 ? 1 : 0;
-        }
-
-        const rows: ParsedRow[] = [];
-        const seenKeysInFile = new Set<string>();
-        const groupMap = new Map<string, string[]>();
-
-        for (let i = 1; i < rawJson.length; i++) {
-          const rowData = rawJson[i];
-          if (!rowData || rowData.length === 0) continue;
-
-          // Pure string extraction to preserve leading zeros e.g. 0020
-          let rawClass = classColIdx >= 0 ? String(rowData[classColIdx] ?? '').trim() : '';
-          let rawMember = memberColIdx >= 0 ? String(rowData[memberColIdx] ?? '').trim() : '';
-          let rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
-
-          // Rule 4: If barcode value is present (or rawMember contains hyphen when class is missing),
-          // split by hyphen: Left = Class ID / SH ID, Right = Member ID
-          if (rawBarcode && rawBarcode.includes('-')) {
-            const dashIdx = rawBarcode.indexOf('-');
-            const partLeft = rawBarcode.substring(0, dashIdx).trim();
-            const partRight = rawBarcode.substring(dashIdx + 1).trim();
-            if (!rawClass && partLeft) rawClass = partLeft;
-            if (!rawMember && partRight) rawMember = partRight;
-          }
-
-          if (!rawClass && rawMember && rawMember.includes('-')) {
-            const dashIdx = rawMember.indexOf('-');
-            const partLeft = rawMember.substring(0, dashIdx).trim();
-            const partRight = rawMember.substring(dashIdx + 1).trim();
-            if (partLeft && partRight) {
-              if (!rawBarcode) rawBarcode = rawMember;
-              rawClass = partLeft;
-              rawMember = partRight;
+          if (!isDup && r.status === 'valid') {
+            globalSeen.add(uniqueKey);
+            fileValidCount++;
+            fileClassSet.add(r.classId);
+            if (!groupMap.has(r.classId)) {
+              groupMap.set(r.classId, []);
             }
-          }
+            groupMap.get(r.classId)!.push(r.memberId);
 
-          if (rawClass && !rawMember && rawClass.includes('-')) {
-            const dashIdx = rawClass.indexOf('-');
-            const partLeft = rawClass.substring(0, dashIdx).trim();
-            const partRight = rawClass.substring(dashIdx + 1).trim();
-            if (partLeft && partRight) {
-              if (!rawBarcode) rawBarcode = rawClass;
-              rawClass = partLeft;
-              rawMember = partRight;
-            }
-          }
-
-          const finalBarcode = rawBarcode || (rawClass && rawMember ? `${rawClass}-${rawMember}` : rawMember);
-
-          if (!rawClass && !rawMember) continue;
-
-          if (!rawClass || !rawMember) {
-            rows.push({
-              rowNumber: i + 1,
-              classId: rawClass || 'MISSING',
-              memberId: rawMember || 'MISSING',
-              barcode: finalBarcode || undefined,
-              unqid: rawMember || 'MISSING',
-              status: 'invalid',
-              reason: !rawClass ? 'Class ID / SH ID is blank' : 'Member ID / unqid is blank',
+            combinedRows.push({
+              ...r,
+              rowNumber: runningRowIndex++,
+              fileOrigin: res.fileName,
             });
-            continue;
-          }
-
-          // Uniqueness identity: CLASS/SH ID + MEMBER ID
-          const uniqueKey = `${rawClass.toLowerCase()}::${rawMember.toLowerCase()}`;
-          if (seenKeysInFile.has(uniqueKey)) {
-            rows.push({
-              rowNumber: i + 1,
-              classId: rawClass,
-              memberId: rawMember,
-              barcode: finalBarcode,
-              unqid: rawMember,
+          } else if (isDup && r.status === 'valid') {
+            combinedRows.push({
+              ...r,
+              rowNumber: runningRowIndex++,
+              fileOrigin: res.fileName,
               status: 'duplicate',
-              reason: 'Duplicate entry in same file',
+              reason: `Already present from earlier row/file in batch`,
             });
-            continue;
+          } else {
+            combinedRows.push({
+              ...r,
+              rowNumber: runningRowIndex++,
+              fileOrigin: res.fileName,
+            });
           }
-
-          seenKeysInFile.add(uniqueKey);
-          rows.push({
-            rowNumber: i + 1,
-            classId: rawClass,
-            memberId: rawMember,
-            barcode: finalBarcode,
-            unqid: rawMember,
-            status: 'valid',
-          });
-
-          if (!groupMap.has(rawClass)) {
-            groupMap.set(rawClass, []);
-          }
-          groupMap.get(rawClass)!.push(rawMember);
         }
 
-        if (rows.length === 0) {
-          throw new Error('No records could be extracted from the file.');
-        }
-
-        const validRows = rows.filter(r => r.status === 'valid');
-        if (validRows.length === 0) {
-          throw new Error('No valid records found. Please check that Class ID / SH ID and Member ID are populated.');
-        }
-
-        const groups: ClassGroupPreview[] = [];
-        groupMap.forEach((members, classId) => {
-          groups.push({ classId, members, count: members.length });
+        summaries.push({
+          name: res.fileName,
+          size: res.fileSize,
+          totalRows: res.rows.length,
+          validRows: fileValidCount,
+          classesCount: fileClassSet.size,
         });
-        groups.sort((a, b) => a.classId.localeCompare(b.classId));
-
-        setParsedRows(rows);
-        setClassGroups(groups);
-        setIsParsing(false);
-      } catch (err: any) {
-        console.warn('Excel parse error:', err);
-        setParseError(err?.message || 'Failed to parse Excel file.');
-        setIsParsing(false);
       }
-    };
 
-    reader.onerror = () => {
-      setParseError('Failed to read the file.');
+      if (combinedRows.length === 0) {
+        throw new Error('No records could be extracted from the selected Excel files.');
+      }
+
+      const groups: ClassGroupPreview[] = [];
+      groupMap.forEach((members, classId) => {
+        groups.push({ classId, members, count: members.length });
+      });
+      groups.sort((a, b) => a.classId.localeCompare(b.classId, undefined, { numeric: true, sensitivity: 'base' }));
+
+      setSelectedFiles(uniqueFiles);
+      setFileSummaries(summaries);
+      setParsedRows(combinedRows);
+      setClassGroups(groups);
       setIsParsing(false);
-    };
+    } catch (err: any) {
+      console.warn('Excel parse error:', err);
+      setParseError(err?.message || 'Failed to parse Excel file(s).');
+      setIsParsing(false);
+    }
+  };
 
-    reader.readAsBinaryString(file);
+  const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesList = e.target.files;
+    if (!filesList || filesList.length === 0) return;
+    const files = Array.from(filesList);
+    processExcelFiles(files, true);
+  };
+
+  const removeSelectedFile = (indexToRemove: number) => {
+    const updated = selectedFiles.filter((_, idx) => idx !== indexToRemove);
+    if (updated.length === 0) {
+      setSelectedFiles([]);
+      setFileSummaries([]);
+      setParsedRows([]);
+      setClassGroups([]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    } else {
+      processExcelFiles(updated, false);
+    }
   };
 
   /**
@@ -394,16 +481,19 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       member_id: r.memberId,
       barcode: r.barcode || r.memberId,
     }));
-    const dupCheck = importedService.checkDuplicates(items);
 
-    if (dupCheck.hasDuplicates) {
-      setDuplicateModalData({
-        total: items.length,
-        newItems: dupCheck.newItems,
-        duplicateItems: dupCheck.duplicateItems,
-        allDuplicates: dupCheck.allDuplicates,
-      });
-      return;
+    // If append mode, check against database to notify if some already exist
+    if (!replaceExistingData) {
+      const dupCheck = importedService.checkDuplicates(items);
+      if (dupCheck.hasDuplicates) {
+        setDuplicateModalData({
+          total: items.length,
+          newItems: dupCheck.newItems,
+          duplicateItems: dupCheck.duplicateItems,
+          allDuplicates: dupCheck.allDuplicates,
+        });
+        return;
+      }
     }
 
     executeImport(items);
@@ -439,17 +529,18 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     setIsProcessing(true);
 
     try {
-      setProcessingStep('IMPORTING DATA...');
-      await new Promise(r => setTimeout(r, 400));
+      const fileNamesList = selectedFiles.map(f => f.name).join(', ') || 'bulk_import.xlsx';
+      setProcessingStep(`IMPORTING ${itemsToInsert.length} CANDIDATES FROM ${selectedFiles.length || 1} EXCEL FILE(S)...`);
+      await new Promise(r => setTimeout(r, 350));
 
-      setProcessingStep('VALIDATING RECORDS...');
-      await new Promise(r => setTimeout(r, 400));
+      setProcessingStep('VALIDATING CLASS IDs & MEMBER BOOKLETS...');
+      await new Promise(r => setTimeout(r, 350));
 
-      setProcessingStep('SAVING TO DATABASE & CALCULATING CLASS COUNTS...');
+      setProcessingStep('SAVING TO DATABASE & CALCULATING CLASS ID COUNTS...');
       const res = await importedService.bulkInsert(
         itemsToInsert,
         universityName.trim(),
-        selectedFile?.name || 'inward_import.xlsx',
+        fileNamesList,
         undefined,
         replaceExistingData
       );
@@ -458,9 +549,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         throw new Error(res.error || 'Failed to save imported records.');
       }
 
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 350));
       setProcessingStep('OPENING SCANNING DASHBOARD...');
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 350));
 
       // Automatically navigate to Scan screen!
       onNavigateToScan();
@@ -657,7 +748,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             )}
           </div>
 
-          {/* Upload Drop Zone */}
+          {/* Upload Drop Zone (Supports multiple bulk Excel files) */}
           <div
             onClick={() => {
               if (!universityName.trim()) {
@@ -672,22 +763,56 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               ref={fileInputRef}
               type="file"
               accept=".xlsx,.xls,.csv"
+              multiple
               className="hidden"
-              onChange={handleFileChange}
+              onChange={handleFilesChange}
             />
 
             <Upload className="h-8 w-8 text-[#1565D8] mx-auto mb-2" />
             <div className="text-xs font-bold text-[#172033]">
-              {selectedFile ? selectedFile.name : 'Select or drop your Inward Excel file here'}
+              {selectedFiles.length > 0
+                ? `${selectedFiles.length} Excel file(s) selected — Click or drop more to append`
+                : 'Select or drop your Inward Excel file(s) here (Supports multiple bulk Excels at once)'}
             </div>
             <div className="text-[11px] text-[#64748B] mt-1">
-              Supports .xlsx, .xls, and .csv formats
+              Supports .xlsx, .xls, and .csv formats • Select single or multiple files together
             </div>
 
-            {selectedFile && (
-              <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-[#CBD5E1] rounded-lg text-xs font-mono text-[#1565D8]">
-                <FileCheck className="h-4 w-4 text-[#16A34A]" />
-                <span>{selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+            {/* List of uploaded files with individual badges */}
+            {fileSummaries.length > 0 && (
+              <div className="mt-4 pt-3 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2">
+                {fileSummaries.map((f, idx) => (
+                  <div
+                    key={f.name + idx}
+                    onClick={e => e.stopPropagation()}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-[#CBD5E1] rounded-xl text-xs text-[#1565D8] shadow-2xs"
+                  >
+                    <FileCheck className="h-4 w-4 text-[#16A34A] shrink-0" />
+                    <span className="font-mono font-bold">{f.name}</span>
+                    <span className="text-[10px] text-slate-500 font-tabular">
+                      ({(f.size / 1024).toFixed(1)} KB • {f.validRows} records • {f.classesCount} Class IDs)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeSelectedFile(idx)}
+                      className="p-0.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition-colors cursor-pointer"
+                      title={`Remove ${f.name}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#1565D8] border border-blue-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <span>+ Add More Excels</span>
+                </button>
               </div>
             )}
           </div>
@@ -704,14 +829,18 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           {isParsing && (
             <div className="p-4 text-center text-xs text-[#64748B]">
               <div className="h-6 w-6 border-2 border-[#1565D8] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-              <span>Parsing and validating Excel columns...</span>
+              <span>Parsing and validating Excel columns across files...</span>
             </div>
           )}
 
-          {/* 3. CLASS-WISE IMPORT CARDS */}
+          {/* 3. CLASS ID WISE IMPORT CARDS */}
           {classGroups.length > 0 && !isParsing && (
             <div className="space-y-4 pt-2 border-t border-[#E2E8F0]">
-              <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div className="text-[10px] font-bold text-[#64748B] uppercase">Total Files</div>
+                  <div className="text-base font-bold text-[#172033] mt-0.5">{selectedFiles.length}</div>
+                </div>
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
                   <div className="text-[10px] font-bold text-[#64748B] uppercase">Total Records</div>
                   <div className="text-base font-bold text-[#172033] mt-0.5">{parsedRows.length}</div>
@@ -720,13 +849,13 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   <div className="text-[10px] font-bold text-[#166534] uppercase">Valid Records</div>
                   <div className="text-base font-bold text-[#16A34A] mt-0.5">{validCount}</div>
                 </div>
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
-                  <div className="text-[10px] font-bold text-[#64748B] uppercase">Unique Classes</div>
+                <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="text-[10px] font-bold text-[#1565D8] uppercase">Unique Class IDs</div>
                   <div className="text-base font-bold text-[#1565D8] mt-0.5">{classGroups.length}</div>
                 </div>
               </div>
 
-              {/* View Section Switcher Tabs: Class-Wise Bundles vs Records Preview (unqid) */}
+              {/* View Section Switcher Tabs: Class ID Bundles vs Records Preview (unqid) */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E2E8F0] pb-3">
                 <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
                   <button
@@ -739,7 +868,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                     }`}
                   >
                     <Layers className="h-3.5 w-3.5" />
-                    <span>Class-Wise Bundles ({classGroups.length})</span>
+                    <span>Class ID Bundles ({classGroups.length})</span>
                   </button>
                   <button
                     type="button"
@@ -761,15 +890,15 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               </div>
 
-              {/* TAB 1: CLASS-WISE BUNDLES */}
+              {/* TAB 1: CLASS ID BUNDLES */}
               {activeTab === 'classes' && (
                 <div>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3">
                     <div className="text-xs font-bold uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
                       <Layers className="h-4 w-4 text-[#1565D8]" />
-                      <span>Class-Wise Import Records:</span>
+                      <span>Class ID Wise Import Records:</span>
                       <span className="px-2 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded-full font-mono text-[10px]">
-                        {classGroups.length} Classes
+                        {classGroups.length} Class IDs
                       </span>
                     </div>
 
@@ -1131,30 +1260,32 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               )}
 
-              {/* Import Mode Options */}
-              <div className="pt-2.5 pb-1 border-t border-[#E2E8F0] flex flex-col gap-1.5">
-                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#172033]">
-                  <input
-                    type="checkbox"
-                    checked={replaceExistingData}
-                    onChange={e => setReplaceExistingData(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-[#1565D8] focus:ring-[#1565D8]"
-                  />
-                  <span>
-                    Replace existing classes &amp; reset previous scan records (Fresh Inward Import)
-                  </span>
-                </label>
-                <div className="text-[11px] text-[#64748B] pl-6">
-                  {replaceExistingData
-                    ? 'Recommended: Cleans up old batches and previous saved scans to start fresh with this Excel file.'
-                    : 'Appends new records and merges with existing classes without deleting previous scans.'}
+              {/* Import Mode Options (Append is default, allows bulk multi-excel accumulation) */}
+              <div className="pt-3 pb-2 border-t border-[#E2E8F0] space-y-2">
+                <div className="p-3.5 rounded-xl border transition-colors bg-slate-50 border-slate-200">
+                  <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-[#172033]">
+                    <input
+                      type="checkbox"
+                      checked={replaceExistingData}
+                      onChange={e => setReplaceExistingData(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[#1565D8] focus:ring-[#1565D8]"
+                    />
+                    <div>
+                      <span>Fresh Start: Wipe previous Class IDs &amp; reset scan records</span>
+                      <p className="text-[11px] text-slate-500 font-normal mt-0.5 leading-relaxed">
+                        {replaceExistingData
+                          ? '⚠️ Overwrite Mode: Will wipe existing Class IDs and scans to start fresh with this import.'
+                          : '✓ Append & Merge Mode (Default): Combines these Excel files with all previously imported Class IDs without deleting earlier batches or scans. Yenni Excels import chesina automatic ga accumulate aipothayi.'}
+                      </p>
+                    </div>
+                  </label>
                 </div>
               </div>
 
               {/* Action Button: Import & Save to Database */}
               <div className="pt-3 border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3">
                 <div className="text-xs text-[#64748B]">
-                  Ready to ingest <strong className="text-[#172033]">{validCount}</strong> expected records for <strong className="text-[#1565D8]">{universityName}</strong>.
+                  Ready to ingest <strong className="text-[#172033]">{validCount}</strong> expected records across <strong className="text-[#1565D8]">{classGroups.length} Class IDs</strong> from <strong className="text-[#1565D8]">{selectedFiles.length || 1} Excel file(s)</strong> for <strong className="text-[#1565D8]">{universityName}</strong>.
                 </div>
                 <button
                   type="button"
@@ -1162,7 +1293,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   className="w-full sm:w-auto px-6 py-2.5 bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-black uppercase tracking-wider rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Check className="h-4 w-4 stroke-[3]" />
-                  <span>Import &amp; Open Scanning Dashboard</span>
+                  <span>Import {classGroups.length} Class IDs &amp; Open Scanner</span>
                 </button>
               </div>
             </div>
@@ -1175,10 +1306,10 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 <div>
                   <div className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
                     <Building className="h-4 w-4 text-[#1565D8]" />
-                    <span>Active Inward System Data ({existingBundles.length} Classes):</span>
+                    <span>Active Inward System Data ({existingBundles.length} Class IDs):</span>
                   </div>
                   <div className="text-[11px] text-[#64748B] mt-0.5">
-                    Deleting a class strictly purges its imported records AND saved scan data.
+                    Deleting a Class ID strictly purges its imported records AND saved scan data.
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">

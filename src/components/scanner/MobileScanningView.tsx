@@ -982,32 +982,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const bundleExpected = activeBundle?.expectedCount || 0;
   const bundleInwarded = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
 
-  // Helper to check if a record belongs to the current inward operator
-  const isOperatorScan = (r: BundleRecordView) => {
-    if (!isRestrictedInward) return true;
-    if (!currentOperator) return true;
-    const sBy = (r.scanned_by || '').toLowerCase();
-    const vBy = (r.saved_by || '').toLowerCase();
-    const cOp = currentOperator.toLowerCase();
-    return (
-      !sBy ||
-      sBy === 'operator' ||
-      sBy === 'scanner operator' ||
-      sBy.includes(cOp) ||
-      cOp.includes(sBy) ||
-      vBy.includes(cOp) ||
-      cOp.includes(vBy)
-    );
-  };
-
-  // Operator-isolated records for active bundle (Requirement 5)
-  const operatorInwardedRecords = bundleRecords.filter(
-    r => (r.scan_status === 'saved' || r.scan_status === 'pending_save') && isOperatorScan(r)
-  );
-
-  const displayInwardedCount = isRestrictedInward
-    ? (operatorInwardedRecords.length > 0 ? operatorInwardedRecords.length : bundleInwarded)
-    : bundleInwarded;
+  // All inwarded records are visible to inward operators and admins alike (Requirement 7)
+  const displayInwardedCount = bundleInwarded;
   const displayNotInwardedCount = Math.max(0, bundleExpected - displayInwardedCount);
   const displayProgress = bundleExpected > 0 ? Math.round((displayInwardedCount / bundleExpected) * 100) : 0;
 
@@ -1027,22 +1003,15 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       if (!matchMid && !matchBar) return false;
     }
     if (memberTab === 'inwarded') {
-      const isInwarded = r.scan_status === 'saved' || r.scan_status === 'pending_save';
-      return isInwarded && isOperatorScan(r);
+      return r.scan_status === 'saved' || r.scan_status === 'pending_save';
     }
     if (memberTab === 'not_inwarded') {
       return r.scan_status === 'not_started';
     }
-    // 'all' tab: in inward role, show only operator's scans + unstarted items
-    if (isRestrictedInward && (r.scan_status === 'saved' || r.scan_status === 'pending_save')) {
-      return isOperatorScan(r);
-    }
     return true; // 'all'
   });
 
-  const inwardedListCount = isRestrictedInward
-    ? operatorInwardedRecords.length
-    : bundleRecords.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save').length;
+  const inwardedListCount = bundleRecords.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save').length;
   const notInwardedListCount = bundleRecords.filter(r => r.scan_status === 'not_started').length;
 
   // ==============================================================================
@@ -1504,44 +1473,36 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         </div>
       </div>
 
-      {/* 4. CONTENT AREA: CLASS LIST (CLASS_MODE) VS MEMBER LIST (MEMBER_MODE) */}
+      {/* 4. CONTENT AREA: CLASS LIST (STAGE 1) VS MEMBER LIST (STAGE 2) */}
       {scannerMode === 'CLASS_MODE' ? (
         /* STAGE 1: CLASS / SH ID BUNDLES */
-        isRestrictedInward ? (
-          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-5 text-center">
-            <div className="flex h-11 w-11 items-center justify-center bg-blue-50 text-[#1565D8] rounded-xl mx-auto mb-2.5 border border-blue-200">
-              <ScanIcon className="h-5 w-5" />
-            </div>
-            <h3 className="text-xs font-black text-[#172033] uppercase tracking-wide">
-              Scan Booklet or Enter Class / SH ID
-            </h3>
-            <p className="text-[11px] text-[#64748B] mt-1 max-w-xs mx-auto leading-relaxed">
-              Scan the barcode or QR code on the examination booklet or enter a Class / SH ID above to open its bundle for inwarding.
-            </p>
+        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
+          <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
+            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+              <Layers className="h-4 w-4 text-[#1565D8]" />
+              <span>IMPORTED CLASS ID BUNDLES</span>
+              <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
+                {bundles.length}
+              </span>
+            </h2>
+
+            {/* Quick Class Filter */}
+            <input
+              type="text"
+              value={classFilter}
+              onChange={e => setClassFilter(e.target.value)}
+              placeholder="Filter Class ID..."
+              className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
+            />
           </div>
-        ) : (
-          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
-              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
-                <Layers className="h-4 w-4 text-[#1565D8]" />
-                <span>CLASS / SH ID BUNDLES</span>
-                <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
-                  {bundles.length}
-                </span>
-              </h2>
 
-              {/* Quick Class Filter */}
-              <input
-                type="text"
-                value={classFilter}
-                onChange={e => setClassFilter(e.target.value)}
-                placeholder="Filter Class / SH ID..."
-                className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
-              />
-            </div>
-
-            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
-              {bundles
+          <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
+            {bundles.length === 0 ? (
+              <div className="p-6 text-center text-xs text-[#64748B]">
+                No imported Class IDs available.
+              </div>
+            ) : (
+              bundles
                 .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
                 .map(b => {
                   let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
@@ -1560,14 +1521,14 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-mono font-black text-sm text-[#172033]">
-                            CLASS / SH ID {b.classId}
+                            Class ID: {b.classId}
                           </span>
                           <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
                             {b.status}
                           </span>
                         </div>
                         <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
-                          <span>Exp: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
+                          <span>Expected: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
                           <span>•</span>
                           <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
                           <span>•</span>
@@ -1583,10 +1544,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                       </div>
                     </div>
                   );
-                })}
-            </div>
+                })
+            )}
           </div>
-        )
+        </div>
       ) : (
         /* STAGE 2: MEMBER TABS (INWARDED / NOT INWARDED) FOR ACTIVE CLASS */
         <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
@@ -1670,16 +1631,22 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                           Barcode: {r.barcode}
                         </div>
                       )}
+                      {isInwarded && (r.scanned_by || r.saved_by) && (
+                        <div className="text-[9px] text-slate-500 font-medium mt-0.5">
+                          By: <strong className="text-slate-700">{r.scanned_by || r.saved_by}</strong>
+                          {r.scanned_at && <span> • {new Date(r.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                        </div>
+                      )}
                     </div>
 
-                    <div>
+                    <div className="text-right">
                       {isInwarded ? (
-                        <span className="px-2 py-0.5 bg-[#DCFCE7] text-[#166534] border border-[#86EFAC] rounded-full text-[10px] font-bold uppercase">
-                          Inwarded
+                        <span className="px-2 py-0.5 bg-[#DCFCE7] text-[#166534] border border-[#86EFAC] rounded-full text-[10px] font-bold uppercase inline-block">
+                          ✓ Inwarded
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-300 rounded-full text-[10px] font-bold uppercase">
-                          Not Inwarded
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-300 rounded-full text-[10px] font-bold uppercase inline-block">
+                          Pending
                         </span>
                       )}
                     </div>
