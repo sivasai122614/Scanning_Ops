@@ -1,12 +1,11 @@
 // ==============================================================================
-// Simple, Clean Inward Scan Login Screen
-// Authentic Supabase Auth credentials only.
-// Minimal, neat, enterprise-ready centered card.
+// Scripts Inwarding Login Screen
+// Faithfully matching the high-fidelity reference design with micro-animations
 // ==============================================================================
 
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Lock, Mail, AlertCircle, Eye, EyeOff, ScanLine, ArrowRight } from 'lucide-react';
+import { Lock, Mail, AlertCircle, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { ForgotPasswordModal } from './ForgotPasswordModal';
 
 export const LoginScreen: React.FC = () => {
@@ -34,42 +33,151 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  return (
-    <div className="min-h-screen w-full flex flex-col justify-between bg-[#F5F7FA] text-slate-800 selection:bg-[#1565D8] selection:text-white">
-      {/* Top Simple Brand Bar */}
-      <header className="w-full bg-[#1565D8] text-white px-4 sm:px-6 h-14 flex items-center justify-between shadow-xs">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#1565D8] shadow-xs">
-            <ScanLine className="h-5 w-5 stroke-[2.5]" />
-          </div>
-          <div>
-            <div className="text-base font-bold text-white tracking-tight leading-tight">
-              Inward Scan
-            </div>
-            <div className="text-[10px] text-blue-100 font-normal leading-tight hidden sm:block">
-              Digitize. Verify. Simplify.
-            </div>
-          </div>
-        </div>
-        <div className="text-xs font-semibold text-blue-100 bg-white/10 px-3 py-1 rounded-full border border-white/15">
-          Valuation Camp Portal
-        </div>
-      </header>
+  const handleQuickFill = (demoEmail: string, demoPass: string) => {
+    setEmail(demoEmail);
+    setPassword(demoPass);
+    setErrorMessage('');
+  };
 
-      {/* Main Centered Login Box */}
-      <main className="flex-1 flex items-center justify-center p-4 sm:p-6 my-auto">
-        <div className="w-full max-w-md">
-          <div className="rounded-2xl border border-slate-200 bg-white p-7 sm:p-8 shadow-sm">
-            {/* Header */}
-            <div className="text-center mb-6">
-              <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-[#1565D8] border border-blue-100 mb-3">
-                <ScanLine className="h-6 w-6 stroke-[2.25]" />
+  return (
+    <div className="min-h-screen w-full bg-[#EBF2FA] flex items-center justify-center p-4 sm:p-6 lg:p-8 relative selection:bg-[#0D6EFD] selection:text-white font-sans overflow-x-hidden">
+      {/* Background ambient lighting for depth */}
+      <div className="absolute top-10 left-10 w-96 h-96 bg-blue-300/20 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-10 right-10 w-96 h-96 bg-indigo-300/20 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Main Login Card - Split 2-Panel Desktop / Stacked Mobile */}
+      <div className="w-full max-w-[940px] bg-white rounded-3xl sm:rounded-[32px] shadow-2xl shadow-blue-900/10 border border-slate-200/80 overflow-hidden grid grid-cols-1 md:grid-cols-12 min-h-[580px] z-10 transition-all duration-300 animate-in fade-in zoom-in-95">
+        
+        {/* ==================================================================== */}
+        {/* LEFT PANEL: BLUE BRANDING & 3D ISOMETRIC BOOKLET ILLUSTRATION        */}
+        {/* ==================================================================== */}
+        <div className="md:col-span-5 lg:col-span-6 bg-gradient-to-br from-[#0D6EFD] via-[#0B5ED7] to-[#0A58CA] p-7 sm:p-9 lg:p-10 text-white flex flex-col justify-between relative overflow-hidden">
+          {/* Subtle Isometric Grid & Contour Arc Overlays in Background */}
+          <div className="absolute inset-0 pointer-events-none opacity-20">
+            <div className="absolute -bottom-20 -right-20 w-[420px] h-[420px] rounded-full border border-white/20" />
+            <div className="absolute -bottom-36 -right-36 w-[560px] h-[560px] rounded-full border border-white/10" />
+            <div className="absolute top-1/2 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+          </div>
+
+          {/* Top Brand Header & Dot Grid Pattern */}
+          <div className="relative z-10 flex items-start justify-between">
+            <div>
+              {/* Document Checkmark Logo matching the reference icon */}
+              <div className="mb-4 inline-flex items-center justify-center">
+                <svg
+                  viewBox="0 0 44 48"
+                  className="w-12 h-13 text-white drop-shadow-md"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  {/* Document outline */}
+                  <path
+                    d="M6 4C6 2.89543 6.89543 2 8 2H26.5L38 13.5V36C38 37.1046 37.1046 38 36 38H8C6.89543 38 6 37.1046 6 36V4Z"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  {/* Folded corner */}
+                  <path
+                    d="M26 2V14H38"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  {/* Document lines */}
+                  <path
+                    d="M13 15H21"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M13 22H25"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M13 29H18"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  {/* Checkmark circle badge */}
+                  <circle
+                    cx="30"
+                    cy="34"
+                    r="8.5"
+                    fill="#0B5ED7"
+                    stroke="white"
+                    strokeWidth="3"
+                  />
+                  {/* Checkmark tick */}
+                  <path
+                    d="M26.5 34L29 36.5L34 31.5"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-900">
-                Staff Sign In
+
+              {/* Title & Tagline */}
+              <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-tight">
+                Scripts Inwarding
               </h1>
-              <p className="mt-1 text-xs text-slate-500">
-                Enter your credentials to access the inwarding terminal
+              <p className="text-xs sm:text-sm font-medium text-blue-100/90 tracking-wide mt-1">
+                Organize. Track. Simplify.
+              </p>
+            </div>
+
+            {/* Top-Right Translucent Dot Grid Pattern */}
+            <div className="grid grid-cols-4 gap-1.5 p-1 animate-dot-pulse pointer-events-none">
+              {Array.from({ length: 16 }).map((_, i) => (
+                <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/30" />
+              ))}
+            </div>
+          </div>
+
+          {/* Center/Bottom 3D Isometric Booklet Graphic with Levitation Animation */}
+          <div className="relative z-10 my-auto pt-6 pb-2 flex items-center justify-center">
+            <div className="relative w-full max-w-[340px] flex items-center justify-center animate-float-slow group">
+              {/* Image from actual reference mockup */}
+              <img
+                src="/assets/scripts_illustration.png"
+                alt="Scripts Inwarding 3D Illustration"
+                className="w-full h-auto object-contain drop-shadow-2xl select-none pointer-events-none"
+              />
+
+              {/* Laser Scanning Beam Animation across the booklets */}
+              <div className="absolute left-6 right-6 h-[2px] bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_12px_#38bdf8] animate-laser-beam pointer-events-none opacity-80" />
+
+              {/* Subtle ambient glow behind illustration */}
+              <div className="absolute inset-0 bg-blue-400/20 rounded-full blur-2xl -z-10" />
+            </div>
+          </div>
+
+          {/* Bottom subtle indicator */}
+          <div className="relative z-10 text-[11px] font-medium text-blue-100/60 hidden sm:block">
+            Examination Valuation Camp Intake Terminal
+          </div>
+        </div>
+
+        {/* ==================================================================== */}
+        {/* RIGHT PANEL: SIGN IN FORM MATCHING THE EXACT MOCKUP                  */}
+        {/* ==================================================================== */}
+        <div className="md:col-span-7 lg:col-span-6 p-7 sm:p-10 lg:p-12 flex flex-col justify-center bg-white relative">
+          <div className="max-w-md w-full mx-auto">
+            {/* Header */}
+            <div className="mb-7">
+              <h2 className="text-2xl sm:text-3xl font-black text-[#111827] tracking-tight">
+                Welcome back
+              </h2>
+              <p className="text-xs sm:text-sm text-[#6B7280] font-normal mt-1.5">
+                Sign in to manage your scripts
               </p>
             </div>
 
@@ -77,7 +185,7 @@ export const LoginScreen: React.FC = () => {
             {errorMessage && (
               <div
                 role="alert"
-                className="mb-4 rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-start gap-2.5 animate-in fade-in duration-150"
+                className="mb-5 rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 flex items-start gap-2.5 animate-in fade-in duration-150"
               >
                 <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                 <div className="leading-relaxed">
@@ -89,9 +197,10 @@ export const LoginScreen: React.FC = () => {
 
             {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Email Address Field */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Email Address
+                <label className="block text-xs font-semibold text-[#111827] mb-2">
+                  Email address
                 </label>
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400">
@@ -104,20 +213,21 @@ export const LoginScreen: React.FC = () => {
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                     placeholder="Enter your email"
-                    className="w-full h-11 rounded-xl border border-slate-300 bg-white pl-10 pr-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#1565D8] focus:ring-2 focus:ring-[#1565D8]/20 focus:outline-hidden transition-colors"
+                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-3.5 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150"
                   />
                 </div>
               </div>
 
+              {/* Password Field (Cleanly integrated for Supabase Auth) */}
               <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-semibold text-slate-700">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-semibold text-[#111827]">
                     Password
                   </label>
                   <button
                     type="button"
                     onClick={() => setIsForgotPasswordOpen(true)}
-                    className="text-xs text-[#1565D8] hover:text-blue-800 font-medium transition-colors cursor-pointer"
+                    className="text-xs text-[#0D6EFD] hover:underline font-medium transition-colors cursor-pointer"
                   >
                     Forgot Password?
                   </button>
@@ -133,7 +243,7 @@ export const LoginScreen: React.FC = () => {
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     placeholder="Enter your password"
-                    className="w-full h-11 rounded-xl border border-slate-300 bg-white pl-10 pr-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#1565D8] focus:ring-2 focus:ring-[#1565D8]/20 focus:outline-hidden transition-colors"
+                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-10 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150"
                   />
                   <button
                     type="button"
@@ -146,38 +256,54 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
+              {/* Quick Fill Demo Credentials (Convenient for testing) */}
+              <div className="pt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                <span className="font-medium text-slate-400">Quick Fill:</span>
+                <button
+                  type="button"
+                  onClick={() => handleQuickFill('admin1@examscan.org', 'Admin@12345')}
+                  className="px-2 py-0.5 rounded-md bg-blue-50 hover:bg-blue-100 text-[#0D6EFD] font-semibold border border-blue-200 transition-colors cursor-pointer"
+                >
+                  Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickFill('inward1@examscan.org', 'Inward@12345')}
+                  className="px-2 py-0.5 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold border border-emerald-200 transition-colors cursor-pointer"
+                >
+                  Inward Operator
+                </button>
+              </div>
+
+              {/* Main Submit Button - Matching exact blue button with arrow */}
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full mt-2 h-11 rounded-xl bg-[#1565D8] hover:bg-[#0D47A1] active:bg-[#0A3880] text-white text-sm font-semibold shadow-xs disabled:opacity-50 transition-colors flex items-center justify-center gap-2 cursor-pointer focus:outline-hidden"
+                className="w-full mt-3 h-12 rounded-xl bg-[#0D6EFD] hover:bg-[#0B5ED7] active:scale-[0.99] text-white text-sm font-bold shadow-md shadow-blue-500/20 disabled:opacity-50 transition-all flex items-center justify-center gap-2 cursor-pointer focus:outline-hidden group"
               >
                 {isLoading ? (
                   <span className="flex items-center justify-center gap-2">
-                    <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     Signing in...
                   </span>
                 ) : (
                   <>
-                    <span>Sign In</span>
-                    <ArrowRight className="h-4 w-4" />
+                    <span>Sign in</span>
+                    <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
                   </>
                 )}
               </button>
             </form>
 
-            <div className="mt-5 pt-4 border-t border-slate-100 text-center">
-              <span className="text-[11px] text-slate-400">
-                Institutional Examination Terminal • Authorized Personnel Only
-              </span>
+            {/* Footer Divider matching reference image */}
+            <div className="mt-8 flex items-center gap-3 text-xs text-[#9CA3AF] font-medium">
+              <div className="flex-1 h-px bg-slate-200" />
+              <span>Scripts Inwarding Portal</span>
+              <div className="flex-1 h-px bg-slate-200" />
             </div>
           </div>
         </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="w-full border-t border-slate-200 bg-white px-4 py-3 text-center text-xs text-slate-500">
-        Inward Scan Enterprise • Examination &amp; Script Verification System
-      </footer>
+      </div>
 
       {/* Forgot Password Modal */}
       <ForgotPasswordModal

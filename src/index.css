@@ -196,3 +196,51 @@
   animation: smooth-glow 3.5s ease-in-out infinite;
 }
 
+/* Login Page Micro-Animations */
+@keyframes float-slow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes dot-pulse {
+  0%, 100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+@keyframes laser-beam-scan {
+  0% {
+    top: 20%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    top: 85%;
+    opacity: 0;
+  }
+}
+
+.animate-float-slow {
+  animation: float-slow 4.5s ease-in-out infinite;
+}
+
+.animate-dot-pulse {
+  animation: dot-pulse 3s ease-in-out infinite;
+}
+
+.animate-laser-beam {
+  animation: laser-beam-scan 3.5s ease-in-out infinite;
+}
+

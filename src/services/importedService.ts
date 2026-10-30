@@ -229,6 +229,65 @@ export interface ScanResult {
   isAllScanned?: boolean;
 }
 
+export interface UserClassInwardSummary {
+  classId: string;
+  expectedCount: number;
+  inwardedCount: number;
+  lastScannedAt: string | null;
+  status: 'COMPLETED' | 'IN PROGRESS';
+  progressPercentage: number;
+  records: SavedScannedRecord[];
+}
+
+/**
+ * Validates whether an inwarded/saved record was scanned by the currently logged-in user.
+ * Supports exact match, numeric equivalence (e.g. operator "001" equals user "1"), and username token matching.
+ */
+export function isRecordInwardedByUser(
+  record: { scanned_by?: string | null; saved_by?: string | null; inwarded_by?: string | null },
+  user: any
+): boolean {
+  if (!user) return false;
+  const op = (record.scanned_by || record.saved_by || record.inwarded_by || '').trim();
+  if (!op) return false;
+  const opLower = op.toLowerCase();
+
+  const userTokens: string[] = [
+    user.username,
+    user.full_name,
+    user.email?.split('@')[0],
+    user.email,
+    user.id,
+    user.badge_number,
+  ]
+    .filter((t): t is string => Boolean(t && String(t).trim()))
+    .map(t => String(t).trim().toLowerCase());
+
+  // 1. Direct match (case-insensitive)
+  if (userTokens.includes(opLower)) return true;
+
+  // 2. Numeric equivalence (e.g. operator "001" equals user "1", or "01" equals "1")
+  const opDigits = opLower.replace(/\D/g, '');
+  if (opDigits) {
+    const opNum = parseInt(opDigits, 10);
+    for (const token of userTokens) {
+      const tokenDigits = token.replace(/\D/g, '');
+      if (tokenDigits && parseInt(tokenDigits, 10) === opNum) {
+        return true;
+      }
+    }
+  }
+
+  // 3. Substring matching (e.g. "Operator 1" or "inward1" matching user "1")
+  for (const token of userTokens) {
+    if (token.length >= 2 && (opLower.includes(token) || token.includes(opLower))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Helper to get authenticated user details for audit trail
 export function getCurrentUser(): { id: string; name: string; email: string } {
   try {
@@ -1784,6 +1843,95 @@ class ImportedService {
       return this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === clean);
     }
     return [...this.savedScanned];
+  }
+
+  /**
+   * Return only saved scanned records that were inwarded by the specific logged-in user.
+   * Ensures inward operators cannot see other operators' records.
+   */
+  public getUserSavedScannedRecords(user: any): SavedScannedRecord[] {
+    if (!user) return [];
+    return this.savedScanned.filter(r => isRecordInwardedByUser(r, user));
+  }
+
+  /**
+   * Generates Class ID-wise inward summaries exclusively for the specified user.
+   * Groups inwarded scripts by Class ID and computes inwarded vs expected counts (e.g. 35/35 inwarded).
+   */
+  public getUserClassInwardSummaries(user: any): UserClassInwardSummary[] {
+    if (!user) return [];
+    const userRecords = this.getUserSavedScannedRecords(user);
+    if (userRecords.length === 0) return [];
+
+    const classMap = new Map<string, SavedScannedRecord[]>();
+    for (const r of userRecords) {
+      const cid = normalizeIdentifier(r.class_id);
+      if (!cid) continue;
+      const key = cid.toLowerCase();
+      if (!classMap.has(key)) {
+        classMap.set(key, []);
+      }
+      classMap.get(key)!.push(r);
+    }
+
+    const summaries: UserClassInwardSummary[] = [];
+
+    for (const [, recs] of classMap.entries()) {
+      const classId = recs[0].class_id;
+      const cleanCid = normalizeIdentifier(classId).toLowerCase();
+
+      // Find expected count for this class from bundles or importInwarded
+      const bundle = this.getClassBundle(classId);
+      let expectedCount = bundle?.expectedCount || 0;
+      if (expectedCount === 0) {
+        expectedCount = this.importInwarded.filter(
+          i => normalizeIdentifier(i.class_id).toLowerCase() === cleanCid
+        ).length;
+      }
+      if (expectedCount === 0) {
+        expectedCount = recs.length;
+      }
+
+      // Count unique inwarded members by this user
+      const uniqueMembers = new Set(recs.map(r => normalizeIdentifier(r.member_id).toLowerCase()));
+      const inwardedCount = uniqueMembers.size;
+
+      // Find latest scan timestamp
+      let latestTime: string | null = null;
+      let latestTimeMs = 0;
+      for (const r of recs) {
+        const tStr = r.scanned_at || r.saved_at;
+        if (tStr) {
+          const tMs = new Date(tStr).getTime();
+          if (!isNaN(tMs) && tMs > latestTimeMs) {
+            latestTimeMs = tMs;
+            latestTime = tStr;
+          }
+        }
+      }
+
+      const isCompleted = expectedCount > 0 && inwardedCount >= expectedCount;
+      const progressPercentage = expectedCount > 0 ? Math.min(100, Math.round((inwardedCount / expectedCount) * 100)) : 100;
+
+      summaries.push({
+        classId,
+        expectedCount,
+        inwardedCount,
+        lastScannedAt: latestTime,
+        status: isCompleted ? 'COMPLETED' : 'IN PROGRESS',
+        progressPercentage,
+        records: recs,
+      });
+    }
+
+    // Sort: most recently scanned class first
+    summaries.sort((a, b) => {
+      const tA = a.lastScannedAt ? new Date(a.lastScannedAt).getTime() : 0;
+      const tB = b.lastScannedAt ? new Date(b.lastScannedAt).getTime() : 0;
+      return tB - tA;
+    });
+
+    return summaries;
   }
 
   // ==============================================================================

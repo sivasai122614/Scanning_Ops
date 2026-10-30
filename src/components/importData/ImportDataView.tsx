@@ -696,15 +696,6 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               <h1 className="text-base sm:text-lg font-bold">UPLOAD INWARD EXCEL FILE</h1>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleDownloadSample}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors cursor-pointer"
-            title="Download sample Excel file with Class ID and Member ID"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Sample Template</span>
-          </button>
         </div>
 
         <div className="p-6 sm:p-8 space-y-5">

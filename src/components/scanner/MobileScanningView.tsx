@@ -43,6 +43,8 @@ import {
   BundleRecordView,
   sanitizeBarcode,
   ScanResult,
+  UserClassInwardSummary,
+  isRecordInwardedByUser,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound, triggerHapticFeedback, primeHapticAndAudio } from '../../utils/scannerSound';
 import { normalizeIdentifier } from '../../utils/normalize';
@@ -96,6 +98,21 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [hasImportedData, setHasImportedData] = useState<boolean>(false);
   const [bundleRecords, setBundleRecords] = useState<BundleRecordView[]>([]);
+  const [savedScannedRecords, setSavedScannedRecords] = useState<any[]>([]);
+
+  // Class ID wise inward summaries exclusively for logged-in user
+  const myClassSummaries: UserClassInwardSummary[] = React.useMemo(() => {
+    return importedService.getUserClassInwardSummaries(user);
+  }, [user, savedScannedRecords, bundles]);
+
+  const myTotalInwardedCount = React.useMemo(() => {
+    return myClassSummaries.reduce((sum, c) => sum + c.inwardedCount, 0);
+  }, [myClassSummaries]);
+
+  const [expandedClassIds, setExpandedClassIds] = useState<Record<string, boolean>>({});
+  const toggleExpandClass = (cid: string) => {
+    setExpandedClassIds(prev => ({ ...prev, [cid]: !prev[cid] }));
+  };
 
   // Member mode tabs: 'inwarded' | 'not_inwarded' | 'all'
   const [memberTab, setMemberTab] = useState<'inwarded' | 'not_inwarded' | 'all'>('inwarded');
@@ -186,8 +203,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setHasImportedData(hasData);
     const bList = importedService.getClassBundles();
     const sum = importedService.getSessionSummary();
+    const allSaved = importedService.getSavedScannedRecords();
     setBundles(bList);
     setSessionSummary(sum);
+    setSavedScannedRecords(allSaved);
 
     const curCid = selectedClassIdRef.current || selectedClassId;
     if (curCid) {
@@ -747,27 +766,29 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
           duration: 2000,
         });
 
-        // Check if all scripts for this class are now inwarded (notInwardedCount === 0) -> Auto Save
+        // Check if all scripts for this class are now inwarded -> Auto Save
         const updatedBundle = importedService.getClassBundle(activeCid);
         const notInwardRemaining = updatedBundle ? (updatedBundle.notInwardedCount ?? updatedBundle.missingCount) : 1;
+        const expectedCount = updatedBundle?.expectedCount || 0;
+        const currentInwarded = updatedBundle ? ((updatedBundle.savedCount || 0) + (updatedBundle.pendingCount || 0)) : 0;
+        const isComplete = expectedCount > 0 && (notInwardRemaining === 0 || currentInwarded >= expectedCount);
+
         if (
-          updatedBundle &&
-          updatedBundle.expectedCount > 0 &&
-          notInwardRemaining === 0 &&
+          isComplete &&
           !isAutoSavingRef.current
         ) {
           isAutoSavingRef.current = true;
-          console.log('[AUTO-SAVE] All scripts inwarded via camera barcode (Not Inward = 0). Auto-saving bundle.');
+          console.log('[AUTO-SAVE] All scripts inwarded via camera barcode. Auto-saving bundle.');
           showToast({
             type: 'success',
             title: '✓ All Scripts Inwarded!',
-            subtitle: `Class ID: ${activeCid} — Auto-saving bundle...`,
+            subtitle: `Class ID: ${activeCid} — Auto-saving & opening Stage 1...`,
             duration: 2500,
           });
           playScanSuccessSound();
           setTimeout(() => {
             handleSaveClassInward(true);
-          }, 800);
+          }, 600);
         }
 
         return true;
@@ -1475,79 +1496,196 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
       {/* 4. CONTENT AREA: CLASS LIST (STAGE 1) VS MEMBER LIST (STAGE 2) */}
       {scannerMode === 'CLASS_MODE' ? (
-        /* STAGE 1: CLASS / SH ID BUNDLES */
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-          <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
-            <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
-              <Layers className="h-4 w-4 text-[#1565D8]" />
-              <span>IMPORTED CLASS ID BUNDLES</span>
-              <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
-                {bundles.length}
+        /* STAGE 1: INWARD ROLE SEES VERIFIED INWARDED BOOKLETS; ADMIN SEES IMPORTED BUNDLES */
+        isRestrictedInward ? (
+          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
+            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
+              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                <span>MY INWARDED CLASSES</span>
+                <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-mono text-[10px]">
+                  {myClassSummaries.length}
+                </span>
+              </h2>
+
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded font-tabular">
+                {myTotalInwardedCount} Scripts
               </span>
-            </h2>
+            </div>
 
-            {/* Quick Class Filter */}
-            <input
-              type="text"
-              value={classFilter}
-              onChange={e => setClassFilter(e.target.value)}
-              placeholder="Filter Class ID..."
-              className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
-            />
-          </div>
-
-          <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
-            {bundles.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[#64748B]">
-                No imported Class IDs available.
-              </div>
-            ) : (
-              bundles
-                .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
-                .map(b => {
-                  let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-                  if (b.status === 'COMPLETED') {
-                    badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-                  } else if (b.status === 'IN PROGRESS') {
-                    badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-                  }
+            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto p-2 space-y-2">
+              {myClassSummaries.length === 0 ? (
+                <div className="p-8 text-center text-xs text-[#64748B]">
+                  <ScanIcon className="h-6 w-6 text-slate-300 mx-auto mb-1" />
+                  <div className="font-semibold text-slate-600">No inwarded classes recorded yet by you.</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">Scan a Class ID barcode above using camera to open a bundle.</div>
+                </div>
+              ) : (
+                myClassSummaries.map(summary => {
+                  const isExpanded = Boolean(expandedClassIds[summary.classId]);
+                  const isComplete = summary.status === 'COMPLETED';
 
                   return (
                     <div
-                      key={b.classId}
-                      onClick={() => openClassBundle(b.classId)}
-                      className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                      key={summary.classId}
+                      className={`p-3.5 rounded-xl border transition-all ${
+                        isComplete
+                          ? 'bg-emerald-50/40 border-emerald-200'
+                          : 'bg-white border-slate-200'
+                      }`}
                     >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-black text-sm text-[#172033]">
-                            Class ID: {b.classId}
-                          </span>
-                          <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
-                            {b.status}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
-                          <span>Expected: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
-                          <span>•</span>
-                          <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
-                          <span>•</span>
-                          <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
-                        </div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-mono font-black text-sm text-[#172033]">
+                          Class ID: <strong className="text-[#1565D8]">{summary.classId}</strong>
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded border ${
+                            isComplete
+                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                              : 'bg-blue-100 text-blue-800 border-blue-300'
+                          }`}
+                        >
+                          {summary.status}
+                        </span>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-xs text-[#16A34A]">
-                          {b.progressPercentage}%
+                      {/* e.g. "0020 scripts 35/35 inwarded" */}
+                      <div className="flex items-baseline justify-between text-xs font-mono font-bold text-[#172033] mb-1.5 font-tabular">
+                        <div>
+                          <span className={isComplete ? 'text-emerald-700' : 'text-[#1565D8]'}>
+                            {summary.inwardedCount}
+                          </span>
+                          <span className="text-slate-400"> / </span>
+                          <span>{summary.expectedCount}</span>
+                          <span className="text-[11px] font-sans font-medium text-slate-500 ml-1.5 lowercase">
+                            inwarded
+                          </span>
+                        </div>
+                        <span className="text-slate-500 font-tabular text-[11px]">
+                          {summary.progressPercentage}%
                         </span>
-                        <ArrowRight className="h-4 w-4 text-[#1565D8]" />
                       </div>
+
+                      {/* Progress Bar */}
+                      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden mb-2.5">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            isComplete ? 'bg-emerald-600' : 'bg-blue-600'
+                          }`}
+                          style={{ width: `${Math.min(100, Math.max(summary.progressPercentage > 0 ? 5 : 0, summary.progressPercentage))}%` }}
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => openClassBundle(summary.classId)}
+                          className="flex-1 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors text-center cursor-pointer shadow-xs"
+                        >
+                          Open Class {summary.classId}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleExpandClass(summary.classId)}
+                          className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-100 cursor-pointer"
+                        >
+                          {isExpanded ? 'Hide ▲' : `${summary.inwardedCount} Scripts ▼`}
+                        </button>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="mt-2 pt-2 border-t border-dashed border-slate-200 max-h-[140px] overflow-y-auto divide-y divide-slate-100 text-[10px] font-mono">
+                          {summary.records.map((rec, idx) => (
+                            <div key={rec.id || idx} className="py-1.5 flex items-center justify-between">
+                              <span className="font-bold text-[#172033]">{rec.member_id}</span>
+                              <span className="text-slate-400">
+                                {rec.scanned_at ? new Date(rec.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Saved'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          /* Admin View: Full Imported Class Bundles Directory */
+          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
+            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
+              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
+                <Layers className="h-4 w-4 text-[#1565D8]" />
+                <span>IMPORTED CLASS ID BUNDLES</span>
+                <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
+                  {bundles.length}
+                </span>
+              </h2>
+
+              {/* Quick Class Filter */}
+              <input
+                type="text"
+                value={classFilter}
+                onChange={e => setClassFilter(e.target.value)}
+                placeholder="Filter Class ID..."
+                className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
+              />
+            </div>
+
+            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
+              {bundles.length === 0 ? (
+                <div className="p-6 text-center text-xs text-[#64748B]">
+                  No imported Class IDs available.
+                </div>
+              ) : (
+                bundles
+                  .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
+                  .map(b => {
+                    let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                    if (b.status === 'COMPLETED') {
+                      badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                    } else if (b.status === 'IN PROGRESS') {
+                      badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                    }
+
+                    return (
+                      <div
+                        key={b.classId}
+                        onClick={() => openClassBundle(b.classId)}
+                        className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-black text-sm text-[#172033]">
+                              Class ID: {b.classId}
+                            </span>
+                            <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
+                              {b.status}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
+                            <span>Expected: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
+                            <span>•</span>
+                            <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
+                            <span>•</span>
+                            <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-xs text-[#16A34A]">
+                            {b.progressPercentage}%
+                          </span>
+                          <ArrowRight className="h-4 w-4 text-[#1565D8]" />
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+          </div>
+        )
       ) : (
         /* STAGE 2: MEMBER TABS (INWARDED / NOT INWARDED) FOR ACTIVE CLASS */
         <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
@@ -1565,29 +1703,33 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               Inwarded ({inwardedListCount})
             </button>
 
-            <button
-              type="button"
-              onClick={() => setMemberTab('not_inwarded')}
-              className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
-                memberTab === 'not_inwarded'
-                  ? 'border-[#DC2626] text-[#DC2626] bg-white'
-                  : 'border-transparent text-[#64748B]'
-              }`}
-            >
-              Not Inwarded ({notInwardedListCount})
-            </button>
+            {!isRestrictedInward && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMemberTab('not_inwarded')}
+                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
+                    memberTab === 'not_inwarded'
+                      ? 'border-[#DC2626] text-[#DC2626] bg-white'
+                      : 'border-transparent text-[#64748B]'
+                  }`}
+                >
+                  Not Inwarded ({notInwardedListCount})
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setMemberTab('all')}
-              className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
-                memberTab === 'all'
-                  ? 'border-[#1565D8] text-[#1565D8] bg-white'
-                  : 'border-transparent text-[#64748B]'
-              }`}
-            >
-              All ({bundleRecords.length})
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setMemberTab('all')}
+                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
+                    memberTab === 'all'
+                      ? 'border-[#1565D8] text-[#1565D8] bg-white'
+                      : 'border-transparent text-[#64748B]'
+                  }`}
+                >
+                  All ({bundleRecords.length})
+                </button>
+              </>
+            )}
           </div>
 
           {/* Search bar inside tab */}
