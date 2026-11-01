@@ -44,6 +44,8 @@ import {
   ScanResult,
   UserClassInwardSummary,
   isRecordInwardedByUser,
+  formatExamDate,
+  normalizeExamDate,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { useBarcodeGunListener, BarcodeGunScanEvent } from '../../utils/useBarcodeGunListener';
@@ -156,12 +158,12 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   const [manualInput, setManualInput] = useState<string>('');
   const manualInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Load imported datasets and bundles
+  // Load imported datasets and bundles across all dates (date-free inwarding)
   const loadData = useCallback(() => {
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const bList = importedService.getClassBundles();
-    const sum = importedService.getSessionSummary();
+    const bList = importedService.getClassBundles(null);
+    const sum = importedService.getSessionSummary(null);
     const allSaved = importedService.getSavedScannedRecords();
     setBundles(bList);
     setSessionSummary(sum);
@@ -351,7 +353,192 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         return;
       }
 
-      // Real-Time Member Inwarding: EXACT SAME ENGINE AS MOBILE VIEW
+      // Real-Time Member Inwarding:
+      // If manual entry (typed/pasted on Desktop): Strictly insert into public.manual_inward_data + mirror to saved_scanned_data
+      if (source === 'manual') {
+        const cleanMid = normalizeIdentifier(barcode);
+        const cleanCid = normalizeIdentifier(targetClassId);
+
+        // 1. Validation check against imported_inward_data
+        const validation = await importedService.validateMemberForClass(cleanCid, cleanMid);
+
+        if (validation.status === 'WRONG_CLASS') {
+          if (soundEnabled) playScanWarningSound();
+          triggerHudFlash({
+            type: 'wrong_class',
+            title: 'CLASS ID MISMATCH',
+            subtitle: `Belongs to Class ${validation.actualClassId || 'UNKNOWN'}, not active Class ${targetClassId}!`,
+            barcode,
+            classId: targetClassId,
+            timestamp: Date.now(),
+          }, 3500);
+
+          setRecentScans(prev => [
+            {
+              id: String(Date.now()),
+              barcode,
+              memberId: cleanMid,
+              classId: validation.actualClassId || 'UNKNOWN',
+              timestamp: new Date(),
+              status: 'wrong_class',
+              message: `Class Mismatch (Belongs to ${validation.actualClassId})`,
+            },
+            ...prev.slice(0, 19),
+          ]);
+          return;
+        }
+
+        if (validation.status === 'NOT_FOUND') {
+          if (soundEnabled) playScanWarningSound();
+          triggerHudFlash({
+            type: 'not_found',
+            title: 'MEMBER ID NOT FOUND',
+            subtitle: `Member / Barcode "${barcode}" not in imported list for Class ${targetClassId}.`,
+            barcode,
+            classId: targetClassId,
+            timestamp: Date.now(),
+          }, 3500);
+
+          setRecentScans(prev => [
+            {
+              id: String(Date.now()),
+              barcode,
+              memberId: barcode,
+              classId: targetClassId,
+              timestamp: new Date(),
+              status: 'not_found',
+              message: 'Member not found in imported dataset',
+            },
+            ...prev.slice(0, 19),
+          ]);
+          return;
+        }
+
+        const canonicalMemberId = validation.record
+          ? normalizeIdentifier(validation.record.member_id)
+          : cleanMid;
+
+        // 2. Duplicate Check
+        if (importedService.isMemberAlreadyInwarded(cleanCid, canonicalMemberId)) {
+          if (soundEnabled) playScanWarningSound();
+          triggerHudFlash({
+            type: 'duplicate',
+            title: 'ALREADY INWARDED',
+            subtitle: `Booklet ${canonicalMemberId} was already inwarded for Class ${targetClassId}.`,
+            barcode,
+            classId: targetClassId,
+            memberId: canonicalMemberId,
+            timestamp: Date.now(),
+          }, 3200);
+
+          setRecentScans(prev => [
+            {
+              id: String(Date.now()),
+              barcode,
+              memberId: canonicalMemberId,
+              classId: targetClassId,
+              timestamp: new Date(),
+              status: 'duplicate',
+              message: 'Duplicate manual inward (Already saved in database)',
+            },
+            ...prev.slice(0, 19),
+          ]);
+          return;
+        }
+
+        // 3. Insert strictly into public.manual_inward_data in Supabase + Mirror to saved_scanned_data
+        const manRes = await importedService.recordManualInward(cleanCid, canonicalMemberId, {
+          notes: 'Desktop Manual Inward',
+          bookletBarcode: validation.record?.barcode || barcode,
+          inwardedBy: currentOperator,
+        });
+
+        if (!manRes.success) {
+          if (soundEnabled) playScanWarningSound();
+          triggerHudFlash({
+            type: 'duplicate',
+            title: manRes.code === 'ALREADY_INWARDED' ? 'ALREADY INWARDED' : 'INWARD FAILED',
+            subtitle: manRes.error || 'Failed to save manual inward record.',
+            barcode,
+            classId: targetClassId,
+            memberId: canonicalMemberId,
+            timestamp: Date.now(),
+          }, 3200);
+          return;
+        }
+
+        // 4. Success handling
+        if (soundEnabled) playScanSuccessSound();
+        loadData();
+
+        const activeBundle = importedService.getClassBundle(targetClassId);
+        const currentScanned = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
+        const expected = activeBundle?.expectedCount || 0;
+        const isBundleCompleted = expected > 0 && currentScanned >= expected;
+
+        if (isBundleCompleted) {
+          triggerHudFlash({
+            type: 'success',
+            title: '✓ BUNDLE COMPLETE & AUTO-SAVED!',
+            subtitle: `Class ID ${targetClassId}: All ${expected} of ${expected} booklets inwarded! Auto-saved into Supabase. Ready for next Class ID!`,
+            barcode,
+            classId: targetClassId,
+            memberId: canonicalMemberId,
+            timestamp: Date.now(),
+          }, 3500);
+
+          setRecentScans(prev => [
+            {
+              id: String(Date.now()),
+              barcode,
+              memberId: canonicalMemberId,
+              classId: targetClassId,
+              timestamp: new Date(),
+              status: 'success',
+              message: `Bundle Complete (${currentScanned}/${expected}) — Auto-Saved to Supabase!`,
+            },
+            ...prev.slice(0, 19),
+          ]);
+
+          try {
+            await importedService.saveActiveBundle(targetClassId);
+            loadData();
+          } catch (autoSaveErr) {
+            console.error('[AUTO-SAVE] Error auto-saving completed bundle:', autoSaveErr);
+          }
+
+          setTimeout(() => {
+            backToStage1();
+          }, 1800);
+          return;
+        }
+
+        triggerHudFlash({
+          type: 'success',
+          title: '✓ MANUAL INWARD SAVED',
+          subtitle: `${canonicalMemberId} saved to manual table & database. (${currentScanned} / ${expected || '?'})`,
+          barcode,
+          classId: targetClassId,
+          memberId: canonicalMemberId,
+          timestamp: Date.now(),
+        }, 2200);
+
+        setRecentScans(prev => [
+          {
+            id: String(Date.now()),
+            barcode,
+            memberId: canonicalMemberId,
+            classId: targetClassId,
+            timestamp: new Date(),
+            status: 'success',
+            message: `Manual Inward Saved (${currentScanned}/${expected || '?'})`,
+          },
+          ...prev.slice(0, 19),
+        ]);
+        return;
+      }
+
+      // Barcode Gun Scanning (source === 'gun'):
       // Persists directly into Supabase saved_scanned_data
       // Deletes from Supabase yet_to_be_inward
       // Updates imported_inward_data scan_status = 'completed'
@@ -389,8 +576,47 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         return;
       }
 
-      // Handle Case: Class Mismatch
+      // Handle Case: Class Mismatch - Auto-switch to detected class and inward!
       if (result.isWrongClass) {
+        if (result.detectedClassId) {
+          const nextClassId = result.detectedClassId;
+          openClassBundle(nextClassId);
+
+          const autoInwardRes = await importedService.processMobileMemberBarcodeScan(
+            nextClassId,
+            barcode,
+            currentOperator
+          );
+
+          if (autoInwardRes.success) {
+            if (soundEnabled) playScanSuccessSound();
+            loadData();
+            triggerHudFlash({
+              type: 'success',
+              title: `✓ SWITCHED TO CLASS ${nextClassId}`,
+              subtitle: `Inwarded ${autoInwardRes.member_id || barcode} for Class ${nextClassId}!`,
+              barcode,
+              classId: nextClassId,
+              memberId: autoInwardRes.member_id,
+              timestamp: Date.now(),
+            }, 3000);
+
+            setRecentScans(prev => [
+              {
+                id: String(Date.now()),
+                barcode,
+                memberId: autoInwardRes.member_id || barcode,
+                classId: nextClassId,
+                timestamp: new Date(),
+                status: 'success',
+                message: `Switched to Class ${nextClassId} & Inwarded`,
+              },
+              ...prev.slice(0, 19),
+            ]);
+            return;
+          }
+        }
+
         if (soundEnabled) playScanWarningSound();
         triggerHudFlash({
           type: 'wrong_class',
@@ -766,8 +992,10 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             </span>
           </div>
 
-          <div className="hidden md:flex items-center gap-2 text-xs font-semibold text-slate-600">
-            <Calendar className="h-4 w-4 text-[#1565D8]" />
+
+
+          <div className="hidden lg:flex items-center gap-2 text-xs font-semibold text-slate-600">
+            <span className="text-slate-300">•</span>
             <span>{todayStr}</span>
             {universityName && (
               <>

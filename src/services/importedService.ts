@@ -11,9 +11,10 @@
 import * as XLSX from 'xlsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { enterpriseStore } from './store';
-import { normalizeIdentifier, sanitizeBarcode } from '../utils/normalize';
+import { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate } from '../utils/normalize';
 
-export { normalizeIdentifier, sanitizeBarcode };
+export { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate };
+
 
 /**
  * Barcode / Member ID resolution function.
@@ -61,6 +62,110 @@ export function extractMemberIdFromBarcode(
   return normalized;
 }
 
+export type ExamDateFilter = string | { startDate?: string; endDate?: string } | null | undefined;
+
+/**
+ * Self-healing parser for legacy inverted dates:
+ * If an exam date was previously stored as 2026-04-11 or 2026-01-11 (US locale flipped),
+ * heals it to the authoritative exam schedule in November 2026 (2026-11-04, 2026-11-01).
+ */
+export function healInvertedExamDate(rawDate?: unknown): string {
+  if (rawDate === null || rawDate === undefined) return '';
+  const str = String(rawDate).trim();
+  if (!str) return '';
+
+  const clean = str.split(/[T\s]/)[0].trim();
+
+  // If in format 2026-0X-11 where month < 11 and day is 11:
+  const flippedMatch = clean.match(/^2026-0?([1-9]|10)-11$/);
+  if (flippedMatch) {
+    const day = String(parseInt(flippedMatch[1], 10)).padStart(2, '0');
+    return `2026-11-${day}`;
+  }
+
+  // If 2026-17-11:
+  if (clean === '2026-17-11') {
+    return '2026-11-17';
+  }
+
+  return normalizeExamDate(clean);
+}
+
+export function isRecordMatchingDateFilter(
+  recordExamDate: string | undefined | null,
+  filter: ExamDateFilter
+): boolean {
+  if (!filter || filter === 'ALL') return true;
+  if (!recordExamDate) return false;
+
+  const rawRec = String(recordExamDate).trim();
+  const recNorm = healInvertedExamDate(rawRec) || normalizeExamDate(rawRec);
+
+  if (typeof filter === 'string') {
+    const rawFilter = filter.trim();
+    if (!rawFilter || rawFilter === 'ALL') return true;
+    const targetNorm = healInvertedExamDate(rawFilter) || normalizeExamDate(rawFilter);
+
+    // 1. Exact ISO match (e.g. "2026-11-04" === "2026-11-04")
+    if (recNorm && targetNorm && recNorm === targetNorm) return true;
+
+    // 2. Exact raw string match (case-insensitive)
+    if (rawRec.toLowerCase() === rawFilter.toLowerCase()) return true;
+
+    // 3. User entered or selected a day number like "4" or "17" or "17th"
+    const filterDayMatch = rawFilter.match(/^(\d{1,2})(?:st|nd|rd|th)?$/i);
+    if (filterDayMatch) {
+      const dayNum = parseInt(filterDayMatch[1], 10);
+      if (recNorm) {
+        const parts = recNorm.split('-');
+        if (parts.length === 3 && parseInt(parts[2], 10) === dayNum) return true;
+      }
+      const rawRecDayMatch = rawRec.match(/^(\d{1,2})(?:st|nd|rd|th)?$/i);
+      if (rawRecDayMatch && parseInt(rawRecDayMatch[1], 10) === dayNum) return true;
+    }
+
+    // 4. Formatted DD-MM-YYYY match
+    const recDmy = formatExamDate(recNorm);
+    const filterDmy = formatExamDate(targetNorm);
+    if (recDmy === filterDmy || recDmy === rawFilter || formatExamDate(rawRec) === filterDmy) {
+      return true;
+    }
+
+    // 5. Also match inverted fallback in case DB still has unhealed raw value
+    if (targetNorm && rawRec.includes('-')) {
+      const parts = targetNorm.split('-');
+      if (parts.length === 3) {
+        const invertedIso = `${parts[0]}-${parts[2]}-${parts[1]}`;
+        if (rawRec === invertedIso) return true;
+      }
+    }
+
+    return false;
+  }
+
+  if (typeof filter === 'object') {
+    const startNorm = filter.startDate ? (healInvertedExamDate(filter.startDate) || normalizeExamDate(filter.startDate)) : '';
+    const endNorm = filter.endDate ? (healInvertedExamDate(filter.endDate) || normalizeExamDate(filter.endDate)) : '';
+
+    if (!recNorm) {
+      const recDayMatch = rawRec.match(/^(\d{1,2})(?:st|nd|rd|th)?$/i);
+      if (recDayMatch && startNorm && endNorm) {
+        const day = parseInt(recDayMatch[1], 10);
+        const sDay = parseInt(startNorm.split('-')[2] || '0', 10);
+        const eDay = parseInt(endNorm.split('-')[2] || '0', 10);
+        return day >= sDay && day <= eDay;
+      }
+      return false;
+    }
+
+    if (startNorm && recNorm < startNorm) return false;
+    if (endNorm && recNorm > endNorm) return false;
+    return true;
+  }
+
+  return true;
+}
+
 export type BundleStatus = 'NOT STARTED' | 'IN PROGRESS' | 'COMPLETED' | 'PARTIAL / SAVED';
 
 export interface ClassBundle {
@@ -69,6 +174,7 @@ export interface ClassBundle {
   universityName: string;
   collegeName: string;
   classId: string;
+  examDate?: string; // Standardized YYYY-MM-DD
   expectedCount: number;
   savedCount: number;
   pendingCount: number;
@@ -87,6 +193,8 @@ export interface ClassBundle {
   startedBy?: string | null;
   savedBy?: string | null;
   operatorText?: string;
+  operatorBreakdown?: { operator: string; count: number }[];
+  operatorsList?: string[];
 }
 
 export interface ImportSession {
@@ -124,6 +232,7 @@ export interface ImportInwardedRecord {
   sch_id?: string;
   member_id: string;
   barcode?: string;
+  exam_date?: string; // Standardized YYYY-MM-DD (e.g. 2026-11-01)
   created_by?: string;
   created_at: string;
 }
@@ -141,6 +250,7 @@ export interface ManualInwardedRecord {
   roll_number?: string;
   member_id?: string;
   college_name?: string;
+  exam_date?: string; // Standardized YYYY-MM-DD
   status: string;
   inwarded_by?: string;
   notes?: string;
@@ -174,6 +284,7 @@ export interface SavedScannedRecord {
   sch_id?: string;
   member_id: string;
   barcode?: string | null;
+  exam_date?: string; // Standardized YYYY-MM-DD
   scanned_by: string;
   scanned_at: string;
   saved_by: string;
@@ -200,6 +311,7 @@ export interface BundleRecordView {
   class_id: string;
   member_id: string;
   barcode: string | null;
+  exam_date?: string | null;
   scan_status: 'saved' | 'pending_save' | 'not_started';
   scanned_by: string | null;
   scanned_at: string | null;
@@ -472,6 +584,8 @@ class ImportedService {
 
   private activeUniversity: string = '';
   private activeSessionId: string | null = null;
+  private activeExamDate: string | null = null;
+  private recordsByDate: Map<string, ImportInwardedRecord[]> = new Map();
   private listeners: (() => void)[] = [];
   private realtimeChannel: any = null;
   public isInitialized: boolean = false;
@@ -482,6 +596,68 @@ class ImportedService {
     this.syncFromSupabase();
     this.setupRealtimeSubscription();
     this.setupNetworkListeners();
+  }
+
+  public getActiveExamDate(): string | null {
+    return this.activeExamDate;
+  }
+
+  public setActiveExamDate(date: string | null): void {
+    const norm = date && date !== 'ALL' ? (normalizeExamDate(date) || date) : null;
+    this.activeExamDate = norm;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        if (norm) {
+          localStorage.setItem('examscan_active_exam_date', norm);
+        } else {
+          localStorage.removeItem('examscan_active_exam_date');
+        }
+      }
+    } catch {}
+    this.notify();
+  }
+
+  public rebuildDateIndex(): void {
+    this.recordsByDate.clear();
+    for (const r of this.importInwarded) {
+      if (r.exam_date) {
+        const healed = healInvertedExamDate(r.exam_date);
+        if (healed && healed !== r.exam_date) {
+          r.exam_date = healed;
+        }
+      }
+      const d = r.exam_date ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date)) : '';
+      const key = d || 'unspecified';
+      if (!this.recordsByDate.has(key)) {
+        this.recordsByDate.set(key, []);
+      }
+      this.recordsByDate.get(key)!.push(r);
+    }
+  }
+
+  public getAvailableExamDates(): { date: string; displayDate: string; totalRecords: number; totalClasses: number }[] {
+    const dateCounts = new Map<string, { total: number; classes: Set<string> }>();
+
+    for (const r of this.importInwarded) {
+      const d = r.exam_date ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date)) : '';
+      if (!d) continue;
+      if (!dateCounts.has(d)) {
+        dateCounts.set(d, { total: 0, classes: new Set() });
+      }
+      const entry = dateCounts.get(d)!;
+      entry.total++;
+      if (r.class_id) entry.classes.add(normalizeIdentifier(r.class_id).toLowerCase());
+    }
+
+    const result = Array.from(dateCounts.entries()).map(([date, data]) => ({
+      date,
+      displayDate: formatExamDate(date),
+      totalRecords: data.total,
+      totalClasses: data.classes.size,
+    }));
+
+    result.sort((a, b) => a.date.localeCompare(b.date));
+    return result;
   }
 
   private setupNetworkListeners() {
@@ -496,7 +672,14 @@ class ImportedService {
   private loadFromLocalStorage() {
     try {
       const storedImp = localStorage.getItem(STORAGE_IMPORT_INWARDED);
-      if (storedImp) this.importInwarded = JSON.parse(storedImp);
+      if (storedImp) {
+        this.importInwarded = JSON.parse(storedImp);
+        for (const r of this.importInwarded) {
+          if (r.exam_date) {
+            r.exam_date = healInvertedExamDate(r.exam_date) || r.exam_date;
+          }
+        }
+      }
 
       const storedYet = localStorage.getItem(STORAGE_YET_TO_BE_INWARD);
       if (storedYet) this.yetToBeInward = JSON.parse(storedYet);
@@ -518,6 +701,11 @@ class ImportedService {
 
       const storedOrder = localStorage.getItem(STORAGE_CLASS_ORDER);
       if (storedOrder) this.classOrder = JSON.parse(storedOrder);
+
+      const storedActiveDate = localStorage.getItem('examscan_active_exam_date');
+      if (storedActiveDate) this.activeExamDate = storedActiveDate;
+
+      this.rebuildDateIndex();
 
       // Restore active university if sessions exist
       if (this.importSessions.length > 0) {
@@ -742,6 +930,7 @@ class ImportedService {
             sch_id: newRecord.sch_id,
             member_id: String(newRecord.member_id || newRecord.mem_id).trim(),
             barcode: newRecord.barcode,
+            exam_date: newRecord.exam_date ? normalizeExamDate(newRecord.exam_date) : (newRecord.date ? normalizeExamDate(newRecord.date) : undefined),
             scanned_by: newRecord.scanned_by,
             scanned_at: newRecord.scanned_at,
             saved_by: newRecord.saved_by,
@@ -840,6 +1029,7 @@ class ImportedService {
           roll_number: cleanMid,
           member_id: cleanMid,
           college_name: newRecord.college_name || this.activeUniversity,
+          exam_date: newRecord.exam_date ? normalizeExamDate(newRecord.exam_date) : (newRecord.date ? normalizeExamDate(newRecord.date) : undefined),
           status: newRecord.status || 'inwarded',
           inwarded_by: newRecord.inwarded_by || 'Manual Inward',
           notes: newRecord.notes,
@@ -1019,9 +1209,12 @@ class ImportedService {
             sch_id: r.sch_id,
             member_id: normalizeIdentifier(r.member_id || r.mem_id),
             barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            exam_date: r.exam_date ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date)) : (r.date ? (healInvertedExamDate(r.date) || normalizeExamDate(r.date)) : undefined),
             created_by: r.created_by,
             created_at: r.created_at || new Date().toISOString(),
           }));
+
+          this.rebuildDateIndex();
 
           // Align active university with imported records
           const firstUni = this.importInwarded[0].university_name || this.importInwarded[0].college_name;
@@ -1104,6 +1297,7 @@ class ImportedService {
             sch_id: s.sch_id,
             member_id: normalizeIdentifier(s.member_id),
             barcode: s.barcode ? normalizeIdentifier(s.barcode) : undefined,
+            exam_date: s.exam_date ? (healInvertedExamDate(s.exam_date) || normalizeExamDate(s.exam_date)) : (s.date ? (healInvertedExamDate(s.date) || normalizeExamDate(s.date)) : undefined),
             scanned_by: s.scanned_by || 'Operator',
             scanned_at: s.scanned_at || new Date().toISOString(),
             saved_by: s.saved_by || 'Operator',
@@ -1132,6 +1326,7 @@ class ImportedService {
             roll_number: m.roll_number ? normalizeIdentifier(m.roll_number) : undefined,
             member_id: normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || ''),
             college_name: m.college_name || this.activeUniversity,
+            exam_date: m.exam_date ? normalizeExamDate(m.exam_date) : (m.date ? normalizeExamDate(m.date) : undefined),
             status: m.status || 'inwarded',
             inwarded_by: m.inwarded_by || 'Manual Inward',
             notes: m.notes,
@@ -1443,8 +1638,12 @@ class ImportedService {
     };
   }
 
-  public getSessionSummary(): SessionSummary {
-    const bundles = this.getClassBundles();
+  public getSessionSummary(dateFilter?: ExamDateFilter): SessionSummary {
+    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === null;
+    const isFiltered = Boolean(!isExplicitlyAll && dateFilter !== undefined && dateFilter !== '');
+    const targetFilter = isFiltered ? dateFilter : (!isExplicitlyAll ? (this.activeExamDate || null) : null);
+
+    const bundles = this.getClassBundles(targetFilter !== null ? targetFilter : null);
     const uni = this.activeUniversity;
 
     let totalExpectedFromBundles = 0;
@@ -1468,12 +1667,15 @@ class ImportedService {
       }
     }
 
-    const effectiveExpected = totalExpectedFromBundles > 0
+    // When filtered by date, expected is STRICTLY the sum of bundles for that date!
+    // Never fall back to total 200,000 backendExpectedCount when date filtering is active!
+    const effectiveExpected = Boolean(targetFilter)
       ? totalExpectedFromBundles
-      : (this.importInwarded.length > 0 ? this.importInwarded.length : (this.backendExpectedCount || 0));
-    const effectiveSaved = totalSavedFromBundles > 0
-      ? totalSavedFromBundles
-      : (this.savedScanned.length > 0 ? this.savedScanned.length : (this.backendReceivedCount || 0));
+      : (totalExpectedFromBundles > 0
+        ? totalExpectedFromBundles
+        : (this.importInwarded.length > 0 ? this.importInwarded.length : (this.backendExpectedCount || 0)));
+
+    const effectiveSaved = totalSavedFromBundles;
     const totalReceived = effectiveSaved + totalPendingFromBundles;
     const effectivePending = Math.max(0, effectiveExpected - totalReceived);
     const totalMissing = effectivePending;
@@ -1497,17 +1699,23 @@ class ImportedService {
 
   // ==============================================================================
   // CLASS BUNDLES (Requirement 3, 4, 7, 9)
-  // For active class:
-  // Expected: count(import_inwarded_data WHERE class_id = X)
-  // Scanned: count(saved_scanned_data WHERE class_id = X)
-  // Pending: count(scan_session_items WHERE class_id = X AND status = 'PENDING_SAVE')
+  // Scoped to specific Exam Date or Date Range when filtered, or all dates
   // ==============================================================================
-  public getClassBundles(): ClassBundle[] {
+  public getClassBundles(dateFilter?: ExamDateFilter): ClassBundle[] {
     const uni = this.activeUniversity;
+    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === null;
+    const isFiltering = Boolean(!isExplicitlyAll && dateFilter !== undefined && dateFilter !== '');
+    const targetFilter = isFiltering ? dateFilter : (!isExplicitlyAll ? (this.activeExamDate || null) : null);
+
+    // Filter candidate records if date filter is active (e.g. 15,000 count on 1-11-26 or date range)
+    const candidateRecords = Boolean(targetFilter)
+      ? this.importInwarded.filter(r => isRecordMatchingDateFilter(r.exam_date, targetFilter))
+      : this.importInwarded;
+
     const expectedMap = new Map<string, number>();
 
-    // 1. Collect expected count per class from imported_inward_data
-    for (const r of this.importInwarded) {
+    // 1. Collect expected count per class from candidate records
+    for (const r of candidateRecords) {
       const cid = normalizeIdentifier(r.class_id);
       if (!cid) continue;
       expectedMap.set(cid, (expectedMap.get(cid) || 0) + 1);
@@ -1517,14 +1725,17 @@ class ImportedService {
     const savedMap = new Map<string, number>();
     const inwardedMembersByClass = new Map<string, Set<string>>();
 
-    // Map of valid imported members per class from authoritative imported_inward_data
+    // Map of valid imported members per class from candidate records
     const validMembersByClass = new Map<string, Set<string>>();
-    for (const r of this.importInwarded) {
+    for (const r of candidateRecords) {
       const cid = normalizeIdentifier(r.class_id).toLowerCase();
       const mid = normalizeIdentifier(r.member_id).toLowerCase();
       if (!validMembersByClass.has(cid)) validMembersByClass.set(cid, new Set());
       validMembersByClass.get(cid)!.add(mid);
     }
+
+    // Operator mapping per member per class to attribute inwards across multiple operators
+    const classMemberOperatorMap = new Map<string, Map<string, string>>();
 
     for (const s of this.savedScanned) {
       const cid = normalizeIdentifier(s.class_id);
@@ -1539,6 +1750,14 @@ class ImportedService {
         inwardedMembersByClass.set(cid, new Set());
       }
       inwardedMembersByClass.get(cid)!.add(midLower);
+
+      if (!classMemberOperatorMap.has(cidLower)) {
+        classMemberOperatorMap.set(cidLower, new Map());
+      }
+      const op = resolveOperatorName(s.scanned_by || s.saved_by);
+      if (op && op !== '—') {
+        classMemberOperatorMap.get(cidLower)!.set(midLower, op);
+      }
     }
 
     for (const m of this.manualInwarded) {
@@ -1554,6 +1773,14 @@ class ImportedService {
         inwardedMembersByClass.set(cid, new Set());
       }
       inwardedMembersByClass.get(cid)!.add(midLower);
+
+      if (!classMemberOperatorMap.has(cidLower)) {
+        classMemberOperatorMap.set(cidLower, new Map());
+      }
+      const op = resolveOperatorName(m.inwarded_by);
+      if (op && op !== '—') {
+        classMemberOperatorMap.get(cidLower)!.set(midLower, op);
+      }
     }
 
     for (const [cid, members] of inwardedMembersByClass.entries()) {
@@ -1571,6 +1798,14 @@ class ImportedService {
         const midLower = mid.toLowerCase();
         if (!validMembersByClass.get(cidLower)?.has(midLower)) continue;
         pendingMap.set(cid, (pendingMap.get(cid) || 0) + 1);
+
+        if (!classMemberOperatorMap.has(cidLower)) {
+          classMemberOperatorMap.set(cidLower, new Map());
+        }
+        const op = resolveOperatorName(item.detected_by);
+        if (op && op !== '—') {
+          classMemberOperatorMap.get(cidLower)!.set(midLower, op);
+        }
       }
     }
 
@@ -1597,6 +1832,37 @@ class ImportedService {
       const sessionSavedBy = resolveOperatorName(rawSavedBy);
       const currentUserName = resolveOperatorName(getCurrentUser().name);
 
+      const fallbackOp = sessionSavedBy !== '—'
+        ? sessionSavedBy
+        : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
+
+      // Multi-Operator Attribution: Tally how many scripts each operator inwarded for this bundle
+      const cidLower = classId.toLowerCase();
+      const memberOps = classMemberOperatorMap.get(cidLower);
+      const operatorCounts = new Map<string, number>();
+
+      if (memberOps && memberOps.size > 0) {
+        for (const [, opName] of memberOps.entries()) {
+          const finalOp = (opName && opName !== '—') ? opName : fallbackOp;
+          operatorCounts.set(finalOp, (operatorCounts.get(finalOp) || 0) + 1);
+        }
+      } else if (receivedCount > 0) {
+        operatorCounts.set(fallbackOp, receivedCount);
+      }
+
+      const sortedOperators = Array.from(operatorCounts.entries()).sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return a[0].localeCompare(b[0]);
+      });
+
+      const operatorBreakdown = sortedOperators.map(([op, cnt]) => ({ operator: op, count: cnt }));
+      const operatorsList = sortedOperators.map(([op]) => op);
+
+      // Multi-operator formatting: e.g. "user 1 (20), user 2 (15)"
+      const breakdownText = sortedOperators.length > 0
+        ? sortedOperators.map(([op, cnt]) => `${op} (${cnt})`).join(', ')
+        : fallbackOp;
+
       let status: BundleStatus = 'NOT STARTED';
       let isCompleted = false;
       let isSaved = false;
@@ -1608,8 +1874,7 @@ class ImportedService {
         status = 'COMPLETED';
         isCompleted = true;
         isSaved = true;
-        const op = sessionSavedBy !== '—' ? sessionSavedBy : (sessionStartedBy !== '—' ? sessionStartedBy : currentUserName);
-        operatorText = `Completed by ${op}`;
+        operatorText = `Completed by ${breakdownText}`;
       }
       // 2. PARTIAL / SAVED: ONLY when user explicitly pressed the SAVE button with missing scripts (e.g. 69/70)
       //    Requires session.status === 'SAVED' with a valid saved_at timestamp, and not actively in-progress
@@ -1622,8 +1887,7 @@ class ImportedService {
       ) {
         status = 'PARTIAL / SAVED';
         isSaved = true;
-        const op = sessionSavedBy !== '—' ? sessionSavedBy : currentUserName;
-        operatorText = `Saved by ${op}`;
+        operatorText = `Saved by ${breakdownText}`;
       }
       // 3. IN PROGRESS: Bundle has been started by user, scanning is active, or scripts are scanned but SAVE not clicked yet
       else if (
@@ -1634,7 +1898,7 @@ class ImportedService {
       ) {
         status = 'IN PROGRESS';
         isSaved = false;
-        operatorText = sessionStartedBy !== '—' ? sessionStartedBy : currentUserName;
+        operatorText = `Inwarded by ${breakdownText}`;
       }
       // 4. NOT STARTED: No activity, 0 received, 0 pending, no session started
       else {
@@ -1642,12 +1906,15 @@ class ImportedService {
         operatorText = '—';
       }
 
+      const classExamDate = (typeof targetFilter === 'string' ? targetFilter : null) || candidateRecords.find(r => normalizeIdentifier(r.class_id).toLowerCase() === classId.toLowerCase())?.exam_date;
+
       bundleMap.set(classId.toLowerCase(), {
         id: `bundle_${classId}`,
         sessionId: sess?.id || this.activeSessionId || 'default_sess',
         universityName: uni,
         collegeName: uni,
         classId,
+        examDate: classExamDate,
         expectedCount,
         savedCount,
         pendingCount,
@@ -1662,10 +1929,12 @@ class ImportedService {
         savedAt: sess?.saved_at || null,
         lastActivityAt: sess?.last_activity_at || now,
         updatedAt: now,
-        createdAt: now,
+        createdAt: sess?.created_at || now,
         startedBy: rawStartedBy || null,
         savedBy: rawSavedBy || null,
         operatorText,
+        operatorBreakdown,
+        operatorsList,
       });
     }
 
@@ -1974,6 +2243,7 @@ class ImportedService {
             sch_id: r.sch_id,
             member_id: normalizeIdentifier(r.member_id),
             barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            exam_date: r.exam_date ? normalizeExamDate(r.exam_date) : (r.date ? normalizeExamDate(r.date) : undefined),
             created_by: r.created_by,
             created_at: r.created_at || new Date().toISOString(),
           }));
@@ -2028,6 +2298,7 @@ class ImportedService {
             sch_id: r.sch_id,
             member_id: normalizeIdentifier(r.member_id),
             barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+            exam_date: r.exam_date ? normalizeExamDate(r.exam_date) : (r.date ? normalizeExamDate(r.date) : undefined),
             created_by: r.created_by,
             created_at: r.created_at || new Date().toISOString(),
           }));
@@ -2093,7 +2364,20 @@ class ImportedService {
           qBar = qBar.eq('class_id', cleanClass);
         }
 
-        const { data: byBar, error: barErr } = await qBar.limit(1);
+        let { data: byBar, error: barErr } = await qBar.limit(1);
+
+        // Cross-class fallback: If not found in active class, search across ALL imported records
+        if ((!byBar || byBar.length === 0) && cleanClass) {
+          const { data: globalBar } = await supabase
+            .from('imported_inward_data')
+            .select('*')
+            .eq('barcode', normalized)
+            .limit(1);
+          if (globalBar && globalBar.length > 0) {
+            byBar = globalBar;
+            barErr = null;
+          }
+        }
 
         if (!barErr && byBar && byBar.length > 0) {
           const row = byBar[0];
@@ -2110,6 +2394,7 @@ class ImportedService {
             sch_id: row.sch_id,
             member_id: matchedMemberId,
             barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : ''),
             created_by: row.created_by,
             created_at: row.created_at || new Date().toISOString(),
           };
@@ -2134,7 +2419,20 @@ class ImportedService {
           qIlike = qIlike.eq('class_id', cleanClass);
         }
 
-        const { data: byIlike, error: ilikeErr } = await qIlike.limit(1);
+        let { data: byIlike, error: ilikeErr } = await qIlike.limit(1);
+
+        if ((!byIlike || byIlike.length === 0) && cleanClass) {
+          const { data: globalIlike } = await supabase
+            .from('imported_inward_data')
+            .select('*')
+            .ilike('barcode', normalized)
+            .limit(1);
+          if (globalIlike && globalIlike.length > 0) {
+            byIlike = globalIlike;
+            ilikeErr = null;
+          }
+        }
+
         if (!ilikeErr && byIlike && byIlike.length > 0) {
           const row = byIlike[0];
           const matchedMemberId = normalizeIdentifier(row.member_id);
@@ -2150,6 +2448,7 @@ class ImportedService {
             sch_id: row.sch_id,
             member_id: matchedMemberId,
             barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : ''),
             created_by: row.created_by,
             created_at: row.created_at || new Date().toISOString(),
           };
@@ -2187,7 +2486,19 @@ class ImportedService {
           qMem = qMem.eq('class_id', cleanClass);
         }
 
-        const { data: byMem } = await qMem.limit(1);
+        let { data: byMem } = await qMem.limit(1);
+
+        if ((!byMem || byMem.length === 0) && cleanClass) {
+          const { data: globalMem } = await supabase
+            .from('imported_inward_data')
+            .select('*')
+            .eq('member_id', normalized)
+            .limit(1);
+          if (globalMem && globalMem.length > 0) {
+            byMem = globalMem;
+          }
+        }
+
         if (byMem && byMem.length > 0) {
           const row = byMem[0];
           const matchedMemberId = normalizeIdentifier(row.member_id);
@@ -2203,6 +2514,7 @@ class ImportedService {
             sch_id: row.sch_id,
             member_id: matchedMemberId,
             barcode: row.barcode ? normalizeIdentifier(row.barcode) : normalized,
+            exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : ''),
             created_by: row.created_by,
             created_at: row.created_at || new Date().toISOString(),
           };
@@ -2232,7 +2544,19 @@ class ImportedService {
               qHyp = qHyp.eq('class_id', cleanClass);
             }
 
-            const { data: byHyp } = await qHyp.limit(5);
+            let { data: byHyp } = await qHyp.limit(5);
+
+            if ((!byHyp || byHyp.length === 0) && cleanClass) {
+              const { data: globalHyp } = await supabase
+                .from('imported_inward_data')
+                .select('*')
+                .eq('member_id', rightPart)
+                .limit(5);
+              if (globalHyp && globalHyp.length > 0) {
+                byHyp = globalHyp;
+              }
+            }
+
             if (byHyp && byHyp.length > 0) {
               const matchedRow = byHyp.find((r: any) =>
                 normalizeIdentifier(r.class_id).toLowerCase() === leftPart.toLowerCase() ||
@@ -2253,6 +2577,7 @@ class ImportedService {
                   sch_id: matchedRow.sch_id,
                   member_id: matchedMemberId,
                   barcode: matchedRow.barcode ? normalizeIdentifier(matchedRow.barcode) : normalized,
+                  exam_date: matchedRow.exam_date ? normalizeExamDate(matchedRow.exam_date) : (matchedRow.date ? normalizeExamDate(matchedRow.date) : ''),
                   created_by: matchedRow.created_by,
                   created_at: matchedRow.created_at || new Date().toISOString(),
                 };
@@ -2856,6 +3181,12 @@ class ImportedService {
 
       const recordId = generateUUID();
 
+      const matchImp = this.importInwarded.find(r =>
+        normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase() &&
+        normalizeIdentifier(r.member_id).toLowerCase() === candidate.memberId.toLowerCase()
+      );
+      const candExamDate = matchImp?.exam_date || this.activeExamDate || undefined;
+
       // In-memory model
       newSavedRecords.push({
         id: recordId,
@@ -2866,6 +3197,7 @@ class ImportedService {
         sch_id: candidate.schoolId || undefined,
         member_id: candidate.memberId,
         barcode: candidate.barcode || candidate.memberId,
+        exam_date: candExamDate,
         scanned_by: candidate.scannedBy,
         scanned_at: candidate.scannedAt,
         saved_by: currentUser.name || 'Operator',
@@ -2882,6 +3214,7 @@ class ImportedService {
         class_id: cleanCid,
         member_id: candidate.memberId,
         barcode: candidate.barcode || candidate.memberId,
+        exam_date: candExamDate || null,
         scanned_by: candidate.scannedBy,
         scanned_at: candidate.scannedAt,
         saved_by: currentUser.name || 'Operator',
@@ -3097,7 +3430,7 @@ class ImportedService {
   }
 
   public async bulkInsert(
-    items: { class_id: string; member_id: string; sch_id?: string; barcode?: string }[],
+    items: { class_id: string; member_id: string; sch_id?: string; barcode?: string; exam_date?: string }[],
     universityName: string,
     sourceFileName?: string,
     onProgress?: (inserted: number, total: number) => void,
@@ -3178,19 +3511,23 @@ class ImportedService {
       created_at: now,
     };
 
-    // Create Table 1 records: imported_inward_data
-    const newRecords: ImportInwardedRecord[] = itemsToInsert.map((item, index) => ({
-      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_${Date.now()}_${index}`,
-      import_session_id: sessionId,
-      college_name: cleanUniversity,
-      university_name: cleanUniversity,
-      class_id: String(item.class_id).trim(), // preserve leading zeros as pure string
-      sch_id: item.sch_id ? String(item.sch_id).trim() : undefined,
-      member_id: String(item.member_id).trim(), // preserve leading zeros as pure string
-      barcode: item.barcode ? String(item.barcode).trim() : String(item.member_id).trim(),
-      created_by: currentUser.name,
-      created_at: now,
-    }));
+    // Create Table 1 records: imported_inward_data with exam_date
+    const newRecords: ImportInwardedRecord[] = itemsToInsert.map((item, index) => {
+      const normDate = item.exam_date ? normalizeExamDate(item.exam_date) : '';
+      return {
+        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `imp_${Date.now()}_${index}`,
+        import_session_id: sessionId,
+        college_name: cleanUniversity,
+        university_name: cleanUniversity,
+        class_id: String(item.class_id).trim(), // preserve leading zeros as pure string
+        sch_id: item.sch_id ? String(item.sch_id).trim() : undefined,
+        member_id: String(item.member_id).trim(), // preserve leading zeros as pure string
+        barcode: item.barcode ? String(item.barcode).trim() : String(item.member_id).trim(),
+        exam_date: normDate || undefined,
+        created_by: currentUser.name,
+        created_at: now,
+      };
+    });
 
     // Requirement 1: Persist to Supabase (supports remote schema imported_inward_data and import_inwarded_data)
     if (isSupabaseConfigured) {
@@ -3224,6 +3561,7 @@ class ImportedService {
             sch_id: r.sch_id,
             member_id: r.member_id,
             barcode: r.barcode || null,
+            exam_date: r.exam_date || null,
             created_by: r.created_by,
             created_at: r.created_at,
           }));
@@ -3237,6 +3575,7 @@ class ImportedService {
               class_id: r.class_id,
               member_id: r.member_id,
               barcode: r.barcode || r.member_id,
+              exam_date: r.exam_date || null,
               scan_status: 'not_started',
               import_session_id: sessionId,
             }));
@@ -3264,6 +3603,7 @@ class ImportedService {
             class_id: r.class_id,
             member_id: r.member_id,
             barcode: r.barcode || r.member_id,
+            exam_date: r.exam_date || null,
             created_at: now,
           }));
           for (let i = 0; i < yetToBeRecords.length; i += BATCH_SIZE) {
@@ -3322,6 +3662,10 @@ class ImportedService {
     // NEVER wipe saved_scanned_data, saved_scan_data, manual_inward_data, scan_sessions, or scan_session_items.
 
     this.reconcileInwardStateWithImportedData();
+    this.rebuildDateIndex();
+    if (newRecords.length > 0 && newRecords[0].exam_date) {
+      this.setActiveExamDate(newRecords[0].exam_date);
+    }
     this.saveToLocalStorage();
     this.notify();
 
@@ -3714,6 +4058,7 @@ class ImportedService {
               class_id: row.class_id,
               member_id: row.member_id,
               barcode: row.barcode,
+              exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : undefined),
               created_at: row.created_at || new Date().toISOString(),
             };
             return this.matchImportedRecord(tempRec, cleanBarcode);
@@ -3733,6 +4078,7 @@ class ImportedService {
               sch_id: matchedRow.sch_id,
               member_id: matchedRow.member_id,
               barcode: matchedRow.barcode,
+              exam_date: matchedRow.exam_date ? normalizeExamDate(matchedRow.exam_date) : (matchedRow.date ? normalizeExamDate(matchedRow.date) : undefined),
               created_by: matchedRow.created_by,
               created_at: matchedRow.created_at,
             },
@@ -3983,7 +4329,7 @@ class ImportedService {
   public async recordManualInward(
     classId: string,
     memberId: string,
-    options?: { notes?: string; bookletBarcode?: string }
+    options?: { notes?: string; bookletBarcode?: string; inwardedBy?: string }
   ): Promise<{
     success: boolean;
     error?: string;
@@ -4030,6 +4376,8 @@ class ImportedService {
     const currentUser = getCurrentUser();
     const targetRecord = validation.record;
     const canonicalMid = targetRecord?.member_id ? normalizeIdentifier(targetRecord.member_id) : cleanMid;
+    const operator = options?.inwardedBy || currentUser.name || 'Manual Inward';
+    const recExamDate = targetRecord?.exam_date || this.activeExamDate || undefined;
 
     const newRecord: ManualInwardedRecord = {
       id: generateUUID(),
@@ -4040,9 +4388,10 @@ class ImportedService {
       roll_number: canonicalMid,
       member_id: canonicalMid,
       college_name: this.activeUniversity || targetRecord?.university_name || 'VIT',
+      exam_date: recExamDate,
       status: 'inwarded',
-      inwarded_by: currentUser.name || 'Manual Inward',
-      notes: options?.notes || 'Mobile Manual Inward',
+      inwarded_by: operator,
+      notes: options?.notes || 'Manual Inward',
       scanned_at: now,
       created_at: now,
     };
@@ -4057,6 +4406,7 @@ class ImportedService {
           class_id: newRecord.class_id,
           roll_number: newRecord.roll_number,
           booklet_barcode: newRecord.booklet_barcode,
+          exam_date: newRecord.exam_date || null,
           status: 'inwarded',
           inwarded_by: newRecord.inwarded_by,
           notes: newRecord.notes,
@@ -4094,6 +4444,7 @@ class ImportedService {
             class_id: newRecord.class_id,
             member_id: newRecord.member_id,
             barcode: newRecord.booklet_barcode || newRecord.member_id,
+            exam_date: newRecord.exam_date || null,
             scanned_by: newRecord.inwarded_by,
             scanned_at: newRecord.scanned_at,
             saved_by: newRecord.inwarded_by,
@@ -4140,6 +4491,7 @@ class ImportedService {
         class_id: newRecord.class_id,
         member_id: newRecord.member_id || canonicalMid || 'UNKNOWN',
         barcode: newRecord.booklet_barcode || newRecord.member_id || canonicalMid,
+        exam_date: recExamDate,
         scanned_by: newRecord.inwarded_by || 'Manual Inward',
         scanned_at: newRecord.scanned_at || now,
         saved_by: newRecord.inwarded_by || 'Manual Inward',
@@ -4261,6 +4613,7 @@ class ImportedService {
               sch_id: row.sch_id,
               member_id: row.member_id,
               barcode: row.barcode ? row.barcode : normalized,
+              exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : undefined),
               created_by: row.created_by,
               created_at: row.created_at || new Date().toISOString(),
             };
@@ -4283,6 +4636,7 @@ class ImportedService {
                 sch_id: row.sch_id,
                 member_id: row.member_id,
                 barcode: row.barcode ? row.barcode : normalized,
+                exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : undefined),
                 created_by: row.created_by,
                 created_at: row.created_at || new Date().toISOString(),
               };
@@ -4425,6 +4779,8 @@ class ImportedService {
     const uni = this.activeUniversity || importedRow.university_name || importedRow.college_name || 'VIT-AP';
     const recordId = generateUUID();
 
+    const recExamDate = importedRow.exam_date || this.activeExamDate || undefined;
+
     const newSavedRecord: SavedScannedRecord = {
       id: recordId,
       scan_session_id: session?.id || this.activeSessionId || undefined,
@@ -4434,6 +4790,7 @@ class ImportedService {
       sch_id: importedRow.sch_id || undefined,
       member_id: resolvedMemberId,
       barcode: resolvedBarcode || normalized,
+      exam_date: recExamDate,
       scanned_by: operatorName,
       scanned_at: now,
       saved_by: operatorName,
@@ -4475,6 +4832,7 @@ class ImportedService {
             class_id: cleanActiveCid,
             member_id: resolvedMemberId,
             barcode: resolvedBarcode || normalized,
+            exam_date: recExamDate || null,
             scanned_by: operatorName,
             scanned_at: now,
             saved_by: operatorName,

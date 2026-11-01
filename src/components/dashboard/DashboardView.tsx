@@ -8,7 +8,7 @@
 // - Zero duplicate buttons (clean header without redundant Import buttons)
 // ==============================================================================
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Calendar as CalendarIcon,
   Building,
@@ -26,12 +26,19 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import {
   importedService,
   ClassBundle,
   SessionSummary,
   ManualInwardedRecord,
+  formatExamDate,
+  normalizeExamDate,
+  ExamDateFilter,
 } from '../../services/importedService';
 import { ManualInwardModal } from './ManualInwardModal';
 import { exportScanningStatusOverviewToExcel } from '../../utils/excelExport';
@@ -57,6 +64,231 @@ export type SortByType =
   | 'class_asc'
   | 'class_desc';
 
+/**
+ * Auto-hyphenation mask for DD-MM-YYYY inputs:
+ * Automatically appends hyphens after day (2 digits) and month (2 digits).
+ * Allows clean backspacing when editing.
+ */
+function formatDdMmYyyyInput(val: string, prevVal: string = ''): string {
+  // If user is backspacing/deleting, permit direct editing without forcing hyphens back
+  if (prevVal && val.length < prevVal.length) {
+    return val;
+  }
+  const digits = val.replace(/\D/g, '').slice(0, 8);
+  if (!digits) return '';
+
+  if (digits.length <= 2) {
+    return digits.length === 2 ? `${digits}-` : digits;
+  }
+  if (digits.length <= 4) {
+    const d = digits.slice(0, 2);
+    const m = digits.slice(2);
+    return m.length === 2 ? `${d}-${m}-` : `${d}-${m}`;
+  }
+  const d = digits.slice(0, 2);
+  const m = digits.slice(2, 4);
+  const y = digits.slice(4);
+  return `${d}-${m}-${y}`;
+}
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+interface CalendarDropdownProps {
+  currentValue: string;
+  onSelect: (dateStr: string) => void;
+  onClose: () => void;
+  availableDates?: { date: string; displayDate: string; totalRecords: number }[];
+}
+
+const CalendarDropdown: React.FC<CalendarDropdownProps> = ({
+  currentValue,
+  onSelect,
+  onClose,
+  availableDates = [],
+}) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Parse initial view from currentValue (DD-MM-YYYY) or default to available date / Nov 2026
+  const initialDate = useMemo(() => {
+    if (currentValue && /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.test(currentValue.trim())) {
+      const parts = currentValue.trim().split(/[-/.]/);
+      const d = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const y = parseInt(parts[2], 10);
+      return { year: y, month: m, day: d };
+    }
+    if (availableDates.length > 0 && availableDates[0].displayDate) {
+      const parts = availableDates[0].displayDate.split(/[-/.]/);
+      if (parts.length === 3) {
+        return {
+          year: parseInt(parts[2], 10),
+          month: parseInt(parts[1], 10) - 1,
+          day: parseInt(parts[0], 10),
+        };
+      }
+    }
+    return { year: 2026, month: 10, day: 1 };
+  }, [currentValue, availableDates]);
+
+  const [viewYear, setViewYear] = useState<number>(initialDate.year);
+  const [viewMonth, setViewMonth] = useState<number>(initialDate.month);
+
+  const availableMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const d of availableDates) {
+      if (d.displayDate) map.set(d.displayDate, d.totalRecords);
+    }
+    return map;
+  }, [availableDates]);
+
+  // Click outside to close
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [onClose]);
+
+  const handlePrevMonth = () => {
+    if (viewMonth === 0) {
+      setViewMonth(11);
+      setViewYear(y => y - 1);
+    } else {
+      setViewMonth(m => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (viewMonth === 11) {
+      setViewMonth(0);
+      setViewYear(y => y + 1);
+    } else {
+      setViewMonth(m => m + 1);
+    }
+  };
+
+  const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+  const daysGrid: (number | null)[] = [];
+  for (let i = 0; i < firstDayOfWeek; i++) {
+    daysGrid.push(null);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    daysGrid.push(i);
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute top-full left-0 mt-2 z-50 w-72 bg-white rounded-2xl border border-[#CBD5E1] shadow-xl p-3.5"
+    >
+      {/* Month & Year Navigation */}
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-[#F1F5F9]">
+        <button
+          type="button"
+          onClick={handlePrevMonth}
+          className="p-1 rounded-lg text-[#64748B] hover:text-[#172033] hover:bg-[#F1F5F9] transition-colors cursor-pointer"
+          title="Previous Month"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <div className="text-xs font-black text-[#172033] tracking-wide">
+          {MONTH_NAMES[viewMonth]} {viewYear}
+        </div>
+        <button
+          type="button"
+          onClick={handleNextMonth}
+          className="p-1 rounded-lg text-[#64748B] hover:text-[#172033] hover:bg-[#F1F5F9] transition-colors cursor-pointer"
+          title="Next Month"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Weekday labels */}
+      <div className="grid grid-cols-7 gap-1 text-center mb-1">
+        {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(w => (
+          <span key={w} className="text-[10px] font-bold text-[#94A3B8]">
+            {w}
+          </span>
+        ))}
+      </div>
+
+      {/* Days Grid */}
+      <div className="grid grid-cols-7 gap-1">
+        {daysGrid.map((day, idx) => {
+          if (day === null) {
+            return <div key={`empty-${idx}`} className="h-8 w-8" />;
+          }
+
+          const dd = String(day).padStart(2, '0');
+          const mm = String(viewMonth + 1).padStart(2, '0');
+          const dateStr = `${dd}-${mm}-${viewYear}`;
+          const isSelected = currentValue === dateStr;
+          const recordsCount = availableMap.get(dateStr);
+          const hasRecords = recordsCount !== undefined && recordsCount > 0;
+
+          return (
+            <button
+              key={dateStr}
+              type="button"
+              onClick={() => {
+                onSelect(dateStr);
+                onClose();
+              }}
+              title={hasRecords ? `${dateStr}: ${recordsCount} scripts in database` : dateStr}
+              className={`relative h-8 w-8 rounded-xl flex flex-col items-center justify-center text-xs font-semibold transition-all cursor-pointer ${
+                isSelected
+                  ? 'bg-[#1565D8] text-white font-bold shadow-xs'
+                  : hasRecords
+                  ? 'bg-blue-50 text-[#1565D8] font-bold hover:bg-blue-100 border border-blue-200'
+                  : 'text-[#172033] hover:bg-[#F1F5F9]'
+              }`}
+            >
+              <span>{day}</span>
+              {hasRecords && !isSelected && (
+                <span className="absolute bottom-0.5 h-1 w-1 rounded-full bg-[#1565D8]" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Quick Footer */}
+      <div className="mt-3 pt-2 border-t border-[#F1F5F9] flex items-center justify-between text-[11px]">
+        <button
+          type="button"
+          onClick={() => {
+            const today = new Date();
+            const td = String(today.getDate()).padStart(2, '0');
+            const tm = String(today.getMonth() + 1).padStart(2, '0');
+            const ty = today.getFullYear();
+            onSelect(`${td}-${tm}-${ty}`);
+            onClose();
+          }}
+          className="text-[#1565D8] hover:underline font-bold cursor-pointer"
+        >
+          Today
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[#64748B] hover:text-[#172033] font-semibold cursor-pointer"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [bundles, setBundles] = useState<ClassBundle[]>([]);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
@@ -67,10 +299,36 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilterType>('ALL');
   const [sortBy, setSortBy] = useState<SortByType>('default');
 
-  // Date Range Filter States (Requirement 7 & 10: X to Y date sorting for bulk data)
-  const [filterStartDate, setFilterStartDate] = useState<string>('');
-  const [filterEndDate, setFilterEndDate] = useState<string>('');
-  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+  // Top Date Range Inputs (Requirement: From Date & To Date selection strictly in DD-MM-YYYY)
+  const [filterStartDate, setFilterStartDate] = useState<string>(() => {
+    const act = importedService.getActiveExamDate();
+    return act ? formatExamDate(act) : '';
+  });
+  const [filterEndDate, setFilterEndDate] = useState<string>(() => {
+    const act = importedService.getActiveExamDate();
+    return act ? formatExamDate(act) : '';
+  });
+  const [openPickerType, setOpenPickerType] = useState<'from' | 'to' | null>(null);
+
+  const handleFromDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const formatted = formatDdMmYyyyInput(e.target.value, filterStartDate);
+    setFilterStartDate(formatted);
+  };
+
+  const handleToDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const formatted = formatDdMmYyyyInput(e.target.value, filterEndDate);
+    setFilterEndDate(formatted);
+  };
+
+  // Track if user has fetched date data (Do not show data until correct date is fetched)
+  const [hasFetchedData, setHasFetchedData] = useState<boolean>(() => {
+    return Boolean(importedService.getActiveExamDate());
+  });
+  const [fetchedRange, setFetchedRange] = useState<{ startDate: string; endDate: string } | null>(() => {
+    const act = importedService.getActiveExamDate();
+    return act ? { startDate: act, endDate: act } : null;
+  });
+  const [isFetching, setIsFetching] = useState<boolean>(false);
 
   // Manual Inward Modal State (Requirement 5 & 6)
   const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
@@ -82,6 +340,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   // Status Overview Excel Export
   const [isExportingOverview, setIsExportingOverview] = useState<boolean>(false);
+
+  // Available Exam Dates in imported baseline
+  const availableExamDates = useMemo(() => {
+    return importedService.getAvailableExamDates();
+  }, [bundles, sessionSummary]);
 
   const handleExportStatusOverviewExcel = async () => {
     if (bundles.length === 0) return;
@@ -95,28 +358,92 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     }
   };
 
-  // Load and subscribe to live data
-  const loadData = useCallback(() => {
-    const bList = importedService.getClassBundles();
-    const sum = importedService.getSessionSummary();
+  const activeFilterRef = useRef<ExamDateFilter>(importedService.getActiveExamDate() || null);
+  const hasFetchedDataRef = useRef<boolean>(Boolean(importedService.getActiveExamDate()));
+
+  // Load and subscribe to live data scoped to fetched date range
+  const loadData = useCallback((explicitFilter?: ExamDateFilter) => {
+    const filterToUse = explicitFilter !== undefined ? explicitFilter : activeFilterRef.current;
+    const isFetched = hasFetchedDataRef.current || (filterToUse !== null && filterToUse !== undefined && filterToUse !== '');
+
+    if (!isFetched) {
+      setBundles([]);
+      setSessionSummary(null);
+      setManualRecords([]);
+      return;
+    }
+
+    const bList = importedService.getClassBundles(filterToUse || undefined);
+    const sum = importedService.getSessionSummary(filterToUse || undefined);
     const manList = importedService.getManualInwardRecords();
     setBundles(bList);
     setSessionSummary(sum);
     setManualRecords(manList);
   }, []);
 
+  const handleFetchData = (customStart?: string, customEnd?: string) => {
+    const s = customStart !== undefined ? customStart : filterStartDate;
+    const e = customEnd !== undefined ? customEnd : (filterEndDate || filterStartDate);
+
+    if (!s && !e) {
+      if (availableExamDates.length > 0) {
+        const first = availableExamDates[0].date;
+        const firstDisplay = availableExamDates[0].displayDate;
+        setFilterStartDate(firstDisplay);
+        setFilterEndDate(firstDisplay);
+        setFetchedRange({ startDate: first, endDate: first });
+        hasFetchedDataRef.current = true;
+        setHasFetchedData(true);
+        activeFilterRef.current = first;
+        importedService.setActiveExamDate(first);
+        loadData(first);
+      }
+      return;
+    }
+
+    const startIso = normalizeExamDate(s) || s;
+    const endIso = normalizeExamDate(e) || e || startIso;
+    const startDisplay = formatExamDate(startIso);
+    const endDisplay = formatExamDate(endIso);
+
+    setFilterStartDate(startDisplay);
+    setFilterEndDate(endDisplay);
+    setFetchedRange({ startDate: startIso, endDate: endIso });
+    hasFetchedDataRef.current = true;
+    setHasFetchedData(true);
+    setIsFetching(true);
+
+    const filterToUse: ExamDateFilter = startIso === endIso
+      ? startIso
+      : { startDate: startIso, endDate: endIso };
+
+    activeFilterRef.current = filterToUse;
+    if (typeof filterToUse === 'string') {
+      importedService.setActiveExamDate(filterToUse);
+    }
+    loadData(filterToUse);
+    setIsFetching(false);
+  };
+
+  const handleClearDateFilter = () => {
+    setFilterStartDate('');
+    setFilterEndDate('');
+    setFetchedRange(null);
+    hasFetchedDataRef.current = false;
+    setHasFetchedData(false);
+    activeFilterRef.current = null;
+    importedService.setActiveExamDate(null);
+    setBundles([]);
+    setSessionSummary(null);
+  };
+
   useEffect(() => {
     loadData();
-    const unsub = importedService.subscribe(loadData);
-
-    // Real-time background sync poller (every 5 seconds) to guarantee live analysis without overwhelming high-load connections
-    const interval = setInterval(() => {
-      importedService.syncFromSupabase();
-    }, 5000);
-
+    const unsub = importedService.subscribe(() => {
+      loadData();
+    });
     return () => {
       unsub();
-      clearInterval(interval);
     };
   }, [loadData]);
 
@@ -260,21 +587,29 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   // Quick Preset Helper for Date Range
   const setDatePreset = (preset: 'all' | 'today' | 'yesterday' | 'oct_example') => {
+    let s = '';
+    let e = '';
     if (preset === 'all') {
-      setFilterStartDate('');
-      setFilterEndDate('');
+      s = '';
+      e = '';
     } else if (preset === 'today') {
-      setFilterStartDate(todayDateStr);
-      setFilterEndDate(todayDateStr);
+      s = todayDateStr;
+      e = todayDateStr;
     } else if (preset === 'yesterday') {
       const yDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-      setFilterStartDate(yDate);
-      setFilterEndDate(yDate);
+      s = yDate;
+      e = yDate;
     } else if (preset === 'oct_example') {
-      setFilterStartDate('2026-10-01');
-      setFilterEndDate('2026-10-05');
+      s = '2026-10-01';
+      e = '2026-10-05';
     }
-    setShowDatePicker(false);
+    setFilterStartDate(s);
+    setFilterEndDate(e);
+    if (s && e) {
+      handleFetchData(s, e);
+    } else {
+      handleClearDateFilter();
+    }
   };
 
   const isDateFiltered = Boolean(filterStartDate || filterEndDate);
@@ -325,133 +660,135 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         .anim-eq-6 { animation: eq-bar 1.0s ease-in-out infinite 0.6s; transform-origin: bottom; }
       `}</style>
 
-      {/* 1. Header Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 border border-[#CBD5E1] rounded-2xl shadow-xs">
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Interactive Date Range Filter Button */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowDatePicker(prev => !prev)}
-              className={`flex items-center gap-2 h-9 px-3.5 border rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                isDateFiltered
-                  ? 'bg-[#EFF6FF] border-[#93C5FD] text-[#1565D8]'
-                  : 'bg-[#F8FAFC] border-[#E2E8F0] text-[#172033] hover:bg-slate-100'
-              }`}
-              title="Filter by Date Range"
-            >
-              <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
-              <span>
-                {isDateFiltered
-                  ? `${filterStartDate || 'Start'} → ${filterEndDate || 'End'}`
-                  : todayStr}
-              </span>
-              <Filter className="h-3 w-3 text-[#64748B] ml-0.5" />
-            </button>
+      {/* 1. Header Toolbar with Direct Date Range Fetcher */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-4 border border-[#CBD5E1] rounded-2xl shadow-xs">
+        {/* Left: From Date, To Date & Fetch Button */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* FROM DATE */}
+          <div className="flex items-center gap-1.5 text-xs font-bold text-[#172033]">
+            <span className="text-[#64748B] uppercase tracking-wider text-[11px]">From:</span>
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                placeholder="DD-MM-YYYY"
+                value={filterStartDate}
+                onChange={handleFromDateChange}
+                onKeyDown={e => { if (e.key === 'Enter') handleFetchData(); }}
+                className="h-9 w-32 pl-2.5 pr-8 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl text-xs font-semibold text-[#172033] font-mono focus:outline-none focus:border-[#1565D8] shadow-2xs"
+                title="Enter From Date (DD-MM-YYYY, e.g. 04-11-2026)"
+              />
+              <button
+                type="button"
+                onClick={() => setOpenPickerType(prev => prev === 'from' ? null : 'from')}
+                className={`absolute right-1.5 p-1 rounded-lg transition-colors cursor-pointer ${
+                  openPickerType === 'from' ? 'text-[#1565D8] bg-blue-100' : 'text-[#64748B] hover:text-[#1565D8] hover:bg-slate-100'
+                }`}
+                title="Click to open calendar"
+              >
+                <CalendarIcon className="h-3.5 w-3.5" />
+              </button>
 
-            {/* Date Range Dropdown / Popover */}
-            {showDatePicker && (
-              <div className="absolute left-0 top-11 z-30 w-72 sm:w-80 bg-white border border-[#CBD5E1] rounded-xl shadow-xl p-3 animate-in fade-in slide-in-from-top-2 duration-150">
-                <div className="flex items-center justify-between pb-2 border-b border-[#E2E8F0] text-xs font-bold text-[#172033]">
-                  <span>Filter Date Range (X to Y)</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowDatePicker(false)}
-                    className="text-slate-400 hover:text-slate-600"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                {/* Quick Presets */}
-                <div className="grid grid-cols-2 gap-1.5 pt-2 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => setDatePreset('today')}
-                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
-                  >
-                    Today
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDatePreset('oct_example')}
-                    className="px-2 py-1 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] rounded font-bold transition-colors"
-                  >
-                    1-10-26 to 5-10-26
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDatePreset('yesterday')}
-                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
-                  >
-                    Yesterday
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDatePreset('all')}
-                    className="px-2 py-1 bg-[#F1F5F9] hover:bg-[#E2E8F0] rounded font-semibold text-[#1E293B] transition-colors"
-                  >
-                    All Time
-                  </button>
-                </div>
-
-                {/* Custom Inputs */}
-                <div className="pt-2.5 space-y-2 text-xs">
-                  <div>
-                    <label className="text-[10px] font-bold text-[#64748B] uppercase">From Date (X):</label>
-                    <input
-                      type="date"
-                      value={filterStartDate}
-                      onChange={e => setFilterStartDate(e.target.value)}
-                      className="w-full mt-0.5 px-2 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded text-xs font-semibold text-[#172033]"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-[#64748B] uppercase">To Date (Y):</label>
-                    <input
-                      type="date"
-                      value={filterEndDate}
-                      onChange={e => setFilterEndDate(e.target.value)}
-                      className="w-full mt-0.5 px-2 py-1 bg-[#F8FAFC] border border-[#CBD5E1] rounded text-xs font-semibold text-[#172033]"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-3 flex items-center justify-between border-t border-[#E2E8F0] mt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilterStartDate('');
-                      setFilterEndDate('');
-                      setShowDatePicker(false);
-                    }}
-                    className="text-[11px] font-semibold text-[#64748B] hover:text-[#DC2626] flex items-center gap-1 cursor-pointer"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    <span>Clear Filter</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowDatePicker(false)}
-                    className="px-3 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-md transition-colors cursor-pointer"
-                  >
-                    Apply Filter
-                  </button>
-                </div>
-              </div>
-            )}
+              {openPickerType === 'from' && (
+                <CalendarDropdown
+                  currentValue={filterStartDate}
+                  onSelect={val => {
+                    setFilterStartDate(val);
+                    setOpenPickerType(null);
+                  }}
+                  onClose={() => setOpenPickerType(null)}
+                  availableDates={availableExamDates}
+                />
+              )}
+            </div>
           </div>
 
+          {/* TO DATE */}
+          <div className="flex items-center gap-1.5 text-xs font-bold text-[#172033]">
+            <span className="text-[#64748B] uppercase tracking-wider text-[11px]">To:</span>
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                placeholder="DD-MM-YYYY"
+                value={filterEndDate}
+                onChange={handleToDateChange}
+                onKeyDown={e => { if (e.key === 'Enter') handleFetchData(); }}
+                className="h-9 w-32 pl-2.5 pr-8 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl text-xs font-semibold text-[#172033] font-mono focus:outline-none focus:border-[#1565D8] shadow-2xs"
+                title="Enter To Date (DD-MM-YYYY, e.g. 04-11-2026)"
+              />
+              <button
+                type="button"
+                onClick={() => setOpenPickerType(prev => prev === 'to' ? null : 'to')}
+                className={`absolute right-1.5 p-1 rounded-lg transition-colors cursor-pointer ${
+                  openPickerType === 'to' ? 'text-[#1565D8] bg-blue-100' : 'text-[#64748B] hover:text-[#1565D8] hover:bg-slate-100'
+                }`}
+                title="Click to open calendar"
+              >
+                <CalendarIcon className="h-3.5 w-3.5" />
+              </button>
+
+              {openPickerType === 'to' && (
+                <CalendarDropdown
+                  currentValue={filterEndDate}
+                  onSelect={val => {
+                    setFilterEndDate(val);
+                    setOpenPickerType(null);
+                  }}
+                  onClose={() => setOpenPickerType(null)}
+                  availableDates={availableExamDates}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* FETCH DATA BUTTON */}
+          <button
+            type="button"
+            onClick={() => handleFetchData()}
+            disabled={isFetching}
+            className="flex items-center gap-2 h-9 px-4 bg-[#1565D8] hover:bg-[#0D47A1] active:scale-95 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+          >
+            {isFetching ? (
+              <span className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            <span>Fetch Data</span>
+          </button>
+
+          {/* Clear / Reset Date */}
+          {hasFetchedData && (
+            <button
+              type="button"
+              onClick={handleClearDateFilter}
+              className="flex items-center gap-1.5 h-9 px-3 bg-[#F8FAFC] hover:bg-red-50 hover:text-red-600 border border-[#CBD5E1] hover:border-red-200 rounded-xl text-xs font-semibold text-[#64748B] transition-colors cursor-pointer"
+              title="Clear date filter"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>Clear</span>
+            </button>
+          )}
+
           {universityName ? (
-            <div className="flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
+            <div className="hidden xl:flex items-center gap-2 text-xs text-[#64748B] font-medium border-l border-[#CBD5E1] pl-3">
               <Building className="h-4 w-4 text-[#64748B]" />
               <span className="font-bold text-[#172033]">{universityName}</span>
             </div>
           ) : null}
         </div>
 
-        {/* Realtime Live Analysis Badge & Monitoring Indicator */}
-        <div className="flex items-center gap-2.5">
+        {/* Right: Active Date Status & Realtime Live Status */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          {hasFetchedData && fetchedRange && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-xl text-[#1565D8] text-xs font-bold">
+              <span>ACTIVE:</span>
+              <span className="font-mono">
+                {fetchedRange.startDate === fetchedRange.endDate
+                  ? formatExamDate(fetchedRange.startDate)
+                  : `${formatExamDate(fetchedRange.startDate)} → ${formatExamDate(fetchedRange.endDate)}`}
+              </span>
+            </span>
+          )}
+
           <span className="relative inline-flex items-center gap-2 px-3.5 py-1.5 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-black uppercase tracking-wider shadow-2xs overflow-hidden">
             <span className="relative flex h-3 w-3">
               <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -466,6 +803,49 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </span>
         </div>
       </div>
+
+      {!hasFetchedData ? (
+        <div className="bg-white border border-[#CBD5E1] rounded-2xl p-8 sm:p-12 text-center shadow-xs">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 border border-blue-200 text-[#1565D8] mb-4 shadow-xs">
+            <CalendarIcon className="h-8 w-8" />
+          </div>
+          <h3 className="text-lg font-black text-[#172033] tracking-tight">
+            Select Exam Date Range & Click "Fetch Data"
+          </h3>
+          <p className="text-xs sm:text-sm text-[#64748B] max-w-lg mx-auto mt-2 leading-relaxed">
+            Exam valuation datasets with up to 200,000 scripts are partitioned by exam date.
+            Select your <strong>From Date</strong> and <strong>To Date</strong> above and click <strong>"Fetch Data"</strong> to display the dashboard telemetry with zero browser freeze.
+          </p>
+
+          {availableExamDates.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-[#E2E8F0] max-w-2xl mx-auto">
+              <span className="text-[11px] font-black uppercase tracking-wider text-[#64748B] block mb-3">
+                Detected Exam Dates in Database (Click to Fetch):
+              </span>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {availableExamDates.map(d => (
+                  <button
+                    key={d.date}
+                    type="button"
+                    onClick={() => {
+                      setFilterStartDate(d.displayDate);
+                      setFilterEndDate(d.displayDate);
+                      handleFetchData(d.displayDate, d.displayDate);
+                    }}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-[#F8FAFC] hover:bg-[#EFF6FF] hover:border-[#1565D8] border border-[#CBD5E1] rounded-xl text-xs font-semibold text-[#172033] transition-all cursor-pointer shadow-2xs group"
+                  >
+                    <span className="font-mono font-bold text-[#1565D8]">{d.displayDate}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-blue-100 text-[#1565D8] text-[10px] font-bold group-hover:bg-[#1565D8] group-hover:text-white transition-colors">
+                      {d.totalRecords.toLocaleString()} scripts
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
 
       {/* 2. BREATHTAKING HERO SINE WAVE LIVE MONITORING BANNER */}
       <div className="relative overflow-hidden rounded-2xl border border-[#CBD5E1] bg-gradient-to-r from-blue-900 via-[#1565D8] to-indigo-900 p-5 sm:p-6 text-white shadow-md">
@@ -966,9 +1346,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       <span>Pending to Inward</span>
                       <span className="font-bold">{classPending}</span>
                     </div>
-                    <div className="flex items-center justify-between text-[#64748B]">
-                      <span>Operator</span>
-                      <span className="font-semibold text-[#172033] text-[11px] truncate max-w-[150px]" title={b.operatorText || '—'}>
+                    <div className="flex items-start justify-between text-[#64748B] gap-2 pt-0.5">
+                      <span className="shrink-0">Operator</span>
+                      <span className="font-semibold text-[#172033] text-[11px] text-right break-words leading-tight max-w-[190px]" title={b.operatorText || '—'}>
                         {b.operatorText || '—'}
                       </span>
                     </div>
@@ -1053,8 +1433,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                             {b.status}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 text-[#172033] font-medium text-xs whitespace-nowrap">
-                          {b.operatorText || '—'}
+                        <td className="py-2.5 px-3 text-[#172033] font-medium text-xs">
+                          <span className="inline-block max-w-[280px] leading-snug break-words" title={b.operatorText || '—'}>
+                            {b.operatorText || '—'}
+                          </span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <button
@@ -1074,6 +1456,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* 7. Dedicated Manual Inward Table Modal (Requirement 6 & 7) */}
       <ManualInwardModal

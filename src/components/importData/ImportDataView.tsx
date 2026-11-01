@@ -30,14 +30,19 @@ import {
   Search,
   Copy,
   Trash2,
+  ChevronDown,
+  ChevronUp,
+  Calendar,
 } from 'lucide-react';
-import { importedService, ClassBundle } from '../../services/importedService';
+import { importedService, ClassBundle, normalizeExamDate, formatExamDate } from '../../services/importedService';
 
 interface ParsedRow {
   rowNumber: number;
   classId: string;
   memberId: string;
   barcode?: string;
+  examDate: string; // Standardized YYYY-MM-DD
+  displayDate: string; // Formatted DD-MM-YYYY
   unqid: string;
   status: 'valid' | 'duplicate' | 'invalid';
   reason?: string;
@@ -72,6 +77,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [parseError, setParseError] = useState<string | null>(null);
   const [universityRequiredError, setUniversityRequiredError] = useState<boolean>(false);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
+  const [detectedDates, setDetectedDates] = useState<{ date: string; displayDate: string; count: number; classesCount: number }[]>([]);
+  const [showAllDetectedDates, setShowAllDetectedDates] = useState<boolean>(false);
+  const [selectedFilterDate, setSelectedFilterDate] = useState<string | null>(null);
   const [classGroups, setClassGroups] = useState<ClassGroupPreview[]>([]);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [classSearch, setClassSearch] = useState<string>('');
@@ -81,6 +89,35 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [activeTab, setActiveTab] = useState<'classes' | 'unqid_records'>('classes');
   const [recordSearch, setRecordSearch] = useState<string>('');
   const [recordVisibleLimit, setRecordVisibleLimit] = useState<number>(100);
+
+  // Filtered Class Groups respecting both Class search and selectedFilterDate
+  const displayedClassGroups = React.useMemo(() => {
+    return classGroups.filter(cg => {
+      if (classSearch.trim() && !cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase())) {
+        return false;
+      }
+      if (selectedFilterDate) {
+        return parsedRows.some(
+          r => r.classId.toLowerCase() === cg.classId.toLowerCase() && r.examDate === selectedFilterDate && r.status === 'valid'
+        );
+      }
+      return true;
+    });
+  }, [classGroups, classSearch, selectedFilterDate, parsedRows]);
+
+  // Filtered Parsed Rows respecting both unqid/class search and selectedFilterDate
+  const displayedParsedRows = React.useMemo(() => {
+    return parsedRows.filter(r => {
+      if (selectedFilterDate && r.examDate !== selectedFilterDate) return false;
+      if (!recordSearch.trim()) return true;
+      const q = recordSearch.trim().toLowerCase();
+      return (
+        r.unqid.toLowerCase().includes(q) ||
+        r.classId.toLowerCase().includes(q) ||
+        (r.displayDate && r.displayDate.includes(q))
+      );
+    });
+  }, [parsedRows, selectedFilterDate, recordSearch]);
 
   // Preview Modal for individual unqid (Unique Member ID)
   const [selectedUnqPreview, setSelectedUnqPreview] = useState<{
@@ -166,7 +203,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       reader.onload = evt => {
         try {
           const bstr = evt.target?.result;
-          const workbook = XLSX.read(bstr, { type: 'binary', cellText: true });
+          const workbook = XLSX.read(bstr, { type: 'binary', cellDates: true });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           // raw: false ensures strings with leading zeros like "0031" are preserved as pure strings
@@ -177,6 +214,32 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           }
 
           const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
+
+          // Mandatory Date Column Detection:
+          let dateColIdx = headerRow.findIndex(
+            (h: string) => {
+              const clean = h.replace(/[^a-z0-9]/g, '');
+              return (
+                h.includes('date') ||
+                h.includes('exam_date') ||
+                h.includes('exam date') ||
+                h.includes('time') ||
+                clean === 'date' ||
+                clean === 'examdate' ||
+                clean === 'datetime' ||
+                clean === 'dateandtime' ||
+                clean === 'sessiondate' ||
+                clean === 'examdt' ||
+                clean === 'dt' ||
+                clean === 'testdate' ||
+                clean === 'scheduledate'
+              );
+            }
+          );
+
+          if (dateColIdx === -1) {
+            throw new Error(`MANDATORY DATE COLUMN MISSING: The uploaded file "${file.name}" does not contain a "Date" or "Exam Date" column. Please ensure your Excel file contains a Date column (e.g. "Date" with values like 01-11-2026) and re-upload.`);
+          }
 
           // Header Detection for Class ID / SH ID:
           let classColIdx = headerRow.findIndex(
@@ -204,6 +267,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           let barcodeColIdx = headerRow.findIndex(
             (h: string, idx: number) =>
               idx !== classColIdx &&
+              idx !== dateColIdx &&
               (h.includes('barcode') ||
                h.includes('bar_code') ||
                h.includes('bar code') ||
@@ -217,19 +281,21 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             (h: string, idx: number) =>
               idx !== classColIdx &&
               idx !== barcodeColIdx &&
+              idx !== dateColIdx &&
               (h.includes('unqid') ||
                h.includes('unq') ||
                h.includes('member') ||
                h.includes('student') ||
                h.includes('roll') ||
-               (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh')))
+               (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh') && !h.includes('date')))
           );
 
-          if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 2) {
-            classColIdx = 0;
-            memberColIdx = 1;
-            if (headerRow.length >= 3) {
-              barcodeColIdx = 2;
+          if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 3) {
+            dateColIdx = 0;
+            classColIdx = 1;
+            memberColIdx = 2;
+            if (headerRow.length >= 4) {
+              barcodeColIdx = 3;
             }
           } else if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx >= 0) {
             // Barcode only column: Class and Member will be extracted from hyphenated values
@@ -250,6 +316,37 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             let rawClass = classColIdx >= 0 ? String(rowData[classColIdx] ?? '').trim() : '';
             let rawMember = memberColIdx >= 0 ? String(rowData[memberColIdx] ?? '').trim() : '';
             let rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
+            let rawDate = dateColIdx >= 0 ? String(rowData[dateColIdx] ?? '').trim() : '';
+
+            // Extract authoritative exam date directly from cell object or string
+            let normDate = '';
+            if (dateColIdx >= 0 && worksheet) {
+              const cellAddress = XLSX.utils.encode_cell({ r: i, c: dateColIdx });
+              const cell = worksheet[cellAddress];
+              if (cell) {
+                if (cell.v instanceof Date && !isNaN(cell.v.getTime())) {
+                  const y = cell.v.getUTCFullYear();
+                  const m = String(cell.v.getUTCMonth() + 1).padStart(2, '0');
+                  const d = String(cell.v.getUTCDate()).padStart(2, '0');
+                  normDate = `${y}-${m}-${d}`;
+                } else if (typeof cell.v === 'number' && cell.v > 30000 && cell.v < 75000) {
+                  const ms = Math.round((cell.v - 25569) * 86400 * 1000);
+                  const dObj = new Date(ms);
+                  if (!isNaN(dObj.getTime())) {
+                    const y = dObj.getUTCFullYear();
+                    const m = String(dObj.getUTCMonth() + 1).padStart(2, '0');
+                    const d = String(dObj.getUTCDate()).padStart(2, '0');
+                    normDate = `${y}-${m}-${d}`;
+                  }
+                } else if (cell.v !== null && cell.v !== undefined) {
+                  normDate = normalizeExamDate(cell.v);
+                }
+              }
+            }
+            if (!normDate && rawDate) {
+              normDate = normalizeExamDate(rawDate);
+            }
+            const dispDate = formatExamDate(normDate);
 
             // Rule: Split hyphenated barcodes if needed
             if (rawBarcode && rawBarcode.includes('-')) {
@@ -284,7 +381,23 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
             const finalBarcode = rawBarcode || (rawClass && rawMember ? `${rawClass}-${rawMember}` : rawMember);
 
-            if (!rawClass && !rawMember) continue;
+            if (!rawClass && !rawMember && !rawDate) continue;
+
+            if (!normDate) {
+              fileRows.push({
+                rowNumber: i + 1,
+                classId: rawClass || 'MISSING',
+                memberId: rawMember || 'MISSING',
+                barcode: finalBarcode || undefined,
+                examDate: '',
+                displayDate: 'MISSING/INVALID',
+                unqid: rawMember || 'MISSING',
+                status: 'invalid',
+                reason: !rawDate ? 'Date / Exam Date is blank' : 'Date format invalid (expected DD-MM-YYYY or YYYY-MM-DD)',
+                fileOrigin: file.name,
+              });
+              continue;
+            }
 
             if (!rawClass || !rawMember) {
               fileRows.push({
@@ -292,6 +405,8 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 classId: rawClass || 'MISSING',
                 memberId: rawMember || 'MISSING',
                 barcode: finalBarcode || undefined,
+                examDate: normDate,
+                displayDate: dispDate,
                 unqid: rawMember || 'MISSING',
                 status: 'invalid',
                 reason: !rawClass ? 'Class ID / SH ID is blank' : 'Member ID / unqid is blank',
@@ -307,6 +422,8 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 classId: rawClass,
                 memberId: rawMember,
                 barcode: finalBarcode,
+                examDate: normDate,
+                displayDate: dispDate,
                 unqid: rawMember,
                 status: 'duplicate',
                 reason: `Duplicate in ${file.name}`,
@@ -321,6 +438,8 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               classId: rawClass,
               memberId: rawMember,
               barcode: finalBarcode,
+              examDate: normDate,
+              displayDate: dispDate,
               unqid: rawMember,
               status: 'valid',
               fileOrigin: file.name,
@@ -428,15 +547,81 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       });
       groups.sort((a, b) => a.classId.localeCompare(b.classId, undefined, { numeric: true, sensitivity: 'base' }));
 
+      // Compute unique dates summary with class counts
+      const dateMap = new Map<string, { count: number; classes: Set<string> }>();
+      for (const r of combinedRows) {
+        if (r.status === 'valid' && r.examDate) {
+          if (!dateMap.has(r.examDate)) {
+            dateMap.set(r.examDate, { count: 0, classes: new Set() });
+          }
+          const entry = dateMap.get(r.examDate)!;
+          entry.count++;
+          if (r.classId) entry.classes.add(r.classId);
+        }
+      }
+      const dateSummaries = Array.from(dateMap.entries()).map(([date, data]) => ({
+        date,
+        displayDate: formatExamDate(date),
+        count: data.count,
+        classesCount: data.classes.size,
+      })).sort((a, b) => a.date.localeCompare(b.date));
+
       setSelectedFiles(uniqueFiles);
       setFileSummaries(summaries);
       setParsedRows(combinedRows);
       setClassGroups(groups);
+      setDetectedDates(dateSummaries);
       setIsParsing(false);
     } catch (err: any) {
       console.warn('Excel parse error:', err);
       setParseError(err?.message || 'Failed to parse Excel file(s).');
       setIsParsing(false);
+    }
+  };
+
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
+  const handleDropFiles = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (!universityName.trim()) {
+      setUniversityRequiredError(true);
+      return;
+    }
+
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const droppedFiles = Array.from(e.dataTransfer.files).filter(file => {
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        return ext === 'xlsx' || ext === 'xls' || ext === 'csv';
+      });
+
+      if (droppedFiles.length === 0) {
+        setParseError('Please drop valid Excel (.xlsx, .xls) or CSV (.csv) files.');
+        return;
+      }
+
+      processExcelFiles(droppedFiles, true);
     }
   };
 
@@ -454,6 +639,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       setFileSummaries([]);
       setParsedRows([]);
       setClassGroups([]);
+      setDetectedDates([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } else {
       processExcelFiles(updated, false);
@@ -480,6 +666,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       class_id: r.classId,
       member_id: r.memberId,
       barcode: r.barcode || r.memberId,
+      exam_date: r.examDate,
     }));
 
     // If append mode, check against database to notify if some already exist
@@ -524,7 +711,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     }
   };
 
-  const executeImport = async (itemsToInsert: { class_id: string; member_id: string; barcode?: string }[]) => {
+  const executeImport = async (itemsToInsert: { class_id: string; member_id: string; barcode?: string; exam_date?: string }[]) => {
     setDuplicateModalData(null);
     setIsProcessing(true);
 
@@ -533,10 +720,10 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       setProcessingStep(`IMPORTING ${itemsToInsert.length} CANDIDATES FROM ${selectedFiles.length || 1} EXCEL FILE(S)...`);
       await new Promise(r => setTimeout(r, 350));
 
-      setProcessingStep('VALIDATING CLASS IDs & MEMBER BOOKLETS...');
+      setProcessingStep('VALIDATING DATES, CLASS IDs & MEMBER BOOKLETS...');
       await new Promise(r => setTimeout(r, 350));
 
-      setProcessingStep('SAVING TO DATABASE & CALCULATING CLASS ID COUNTS...');
+      setProcessingStep('SAVING TO DATABASE & CALCULATING DATE-WISE COUNTS...');
       const res = await importedService.bulkInsert(
         itemsToInsert,
         universityName.trim(),
@@ -564,10 +751,10 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
   const handleDownloadSample = () => {
     const sampleData = [
-      { 'Class ID': '0020', 'Member ID': '002024EMBA1308', 'Barcode': '002024EMBA1308' },
-      { 'Class ID': '0020', 'Member ID': '002024EMBA1309', 'Barcode': '002024EMBA1309' },
-      { 'Class ID': '0021', 'Member ID': '002124EMBA1601', 'Barcode': '002124EMBA1601' },
-      { 'Class ID': '0021', 'Member ID': '002124EMBA1602', 'Barcode': '002124EMBA1602' },
+      { 'Date': '01-11-2026', 'Class ID': '0020', 'Member ID': '002024EMBA1308', 'Barcode': '002024EMBA1308' },
+      { 'Date': '01-11-2026', 'Class ID': '0020', 'Member ID': '002024EMBA1309', 'Barcode': '002024EMBA1309' },
+      { 'Date': '02-11-2026', 'Class ID': '0021', 'Member ID': '002124EMBA1601', 'Barcode': '002124EMBA1601' },
+      { 'Date': '02-11-2026', 'Class ID': '0021', 'Member ID': '002124EMBA1602', 'Barcode': '002124EMBA1602' },
     ];
 
     const ws = XLSX.utils.json_to_sheet(sampleData);
@@ -701,14 +888,26 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         <div className="p-6 sm:p-8 space-y-5">
           {/* Required Columns Specification Banner */}
           <div className="p-4 bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl text-xs text-[#1E40AF]">
-            <div className="font-bold uppercase tracking-wider text-[11px] mb-1.5">Required Baseline Columns:</div>
-            <div className="flex items-center gap-3 text-xs font-mono font-semibold">
-              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs">Class ID</span>
-              <span className="text-[#64748B] font-sans">and</span>
-              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs">Member ID</span>
+            <div className="font-bold uppercase tracking-wider text-[11px] mb-1.5 flex items-center justify-between">
+              <span>Required Baseline Columns (Mandatory):</span>
+              <span className="text-[10px] bg-blue-200/60 text-blue-950 font-bold px-2 py-0.5 rounded-full">Date Partitioning Enabled</span>
             </div>
-            <div className="text-xs text-[#3B82F6] mt-2 font-sans">
-              Columns are auto-detected by header name. Leading zeros (e.g. 0031) are strictly preserved as text.
+            <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono font-semibold">
+              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs text-[#1565D8]">
+                Date / Exam Date <strong className="text-red-500 font-black">*</strong>
+              </span>
+              <span className="text-[#64748B] font-sans">+</span>
+              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs text-[#172033]">
+                Class ID <strong className="text-red-500 font-black">*</strong>
+              </span>
+              <span className="text-[#64748B] font-sans">+</span>
+              <span className="bg-white px-3 py-1 border border-[#BFDBFE] rounded-lg shadow-2xs text-[#172033]">
+                Member ID <strong className="text-red-500 font-black">*</strong>
+              </span>
+              <span className="text-[#64748B] font-sans text-[11px]">(Optional: Barcode)</span>
+            </div>
+            <div className="text-xs text-[#1E40AF]/90 mt-2 font-sans leading-relaxed">
+              Accepts formats like <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-mono text-[11px]">01-11-2026</code>, <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-mono text-[11px]">2026-11-01</code> or <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-mono text-[11px]">1-11-26</code>. Allows dashboard & inward stations to smoothly fetch and inward by single-day targets (e.g. 15,000 count/day across 1,75,000 records).
             </div>
           </div>
 
@@ -739,8 +938,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             )}
           </div>
 
-          {/* Upload Drop Zone (Supports multiple bulk Excel files) */}
+          {/* Upload Drop Zone (Supports Drag-and-Drop and multiple bulk Excel files) */}
           <div
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDropFiles}
             onClick={() => {
               if (!universityName.trim()) {
                 setUniversityRequiredError(true);
@@ -748,7 +951,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               }
               fileInputRef.current?.click();
             }}
-            className="border-2 border-dashed border-[#CBD5E1] hover:border-[#1565D8] bg-[#F8FAFC] hover:bg-blue-50/40 rounded-xl p-6 text-center cursor-pointer transition-colors"
+            className={`border-2 border-dashed rounded-2xl p-7 text-center cursor-pointer transition-all duration-200 relative overflow-hidden select-none ${
+              isDragging
+                ? 'border-[#1565D8] bg-blue-50/90 ring-4 ring-blue-500/20 shadow-lg scale-[1.01]'
+                : 'border-[#CBD5E1] hover:border-[#1565D8] bg-[#F8FAFC] hover:bg-blue-50/40'
+            }`}
           >
             <input
               ref={fileInputRef}
@@ -759,14 +966,20 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               onChange={handleFilesChange}
             />
 
-            <Upload className="h-8 w-8 text-[#1565D8] mx-auto mb-2" />
-            <div className="text-xs font-bold text-[#172033]">
-              {selectedFiles.length > 0
-                ? `${selectedFiles.length} Excel file(s) selected — Click or drop more to append`
-                : 'Select or drop your Inward Excel file(s) here (Supports multiple bulk Excels at once)'}
-            </div>
-            <div className="text-[11px] text-[#64748B] mt-1">
-              Supports .xlsx, .xls, and .csv formats • Select single or multiple files together
+            <div className={`transition-transform duration-200 ${isDragging ? 'scale-110 -translate-y-1' : ''}`}>
+              <Upload className={`h-9 w-9 mx-auto mb-2.5 transition-colors ${isDragging ? 'text-[#1565D8] animate-bounce' : 'text-[#1565D8]'}`} />
+              <div className="text-sm font-black text-[#172033] tracking-wide">
+                {isDragging ? (
+                  <span className="text-[#1565D8]">Drop your Excel file(s) here now!</span>
+                ) : selectedFiles.length > 0 ? (
+                  `${selectedFiles.length} Excel file(s) loaded — Click or Drag & Drop more to append`
+                ) : (
+                  'Drag & Drop your Inward Excel file(s) here, or Click to Browse'
+                )}
+              </div>
+              <div className="text-xs text-[#64748B] mt-1.5 font-medium">
+                Supports <span className="font-bold text-slate-700">.xlsx, .xls, .csv</span> • Drag single or multiple bulk day files at once
+              </div>
             </div>
 
             {/* List of uploaded files with individual badges */}
@@ -881,6 +1094,212 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               </div>
 
+              {/* Detected Dates Strip — Supports Expanding all dates & Date Filtering */}
+              {detectedDates.length > 0 && (
+                <div className="p-3.5 bg-blue-50/90 border border-blue-200 rounded-2xl shadow-2xs mb-4 transition-all">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex h-8 w-8 items-center justify-center bg-[#1565D8] text-white rounded-xl shadow-xs shrink-0">
+                        <Calendar className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-blue-950 uppercase tracking-wide">
+                            Partitioned By Exam Date ({detectedDates.length} {detectedDates.length === 1 ? 'Date' : 'Dates'})
+                          </span>
+                          {selectedFilterDate && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#1565D8] text-white shadow-2xs">
+                              Filtered: {formatExamDate(selectedFilterDate)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-blue-700">
+                          {selectedFilterDate
+                            ? `Showing data filtered strictly for ${formatExamDate(selectedFilterDate)}. Click 'All' or card to reset.`
+                            : 'Click any date to filter preview below, or press +more to view all dates and script counts.'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Compact Mode Pill Bar */}
+                    {!showAllDetectedDates && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {/* All Dates pill */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFilterDate(null)}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                            !selectedFilterDate
+                              ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-xs'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          All
+                        </button>
+
+                        {/* Top 5 Date Pills */}
+                        {detectedDates.slice(0, 5).map(d => {
+                          const isSelected = selectedFilterDate === d.date;
+                          return (
+                            <button
+                              key={d.date}
+                              type="button"
+                              onClick={() => setSelectedFilterDate(isSelected ? null : d.date)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono transition-all cursor-pointer border ${
+                                isSelected
+                                  ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-xs'
+                                  : 'bg-white hover:bg-blue-50/80 text-slate-800 border-blue-200 shadow-2xs'
+                              }`}
+                              title={`Filter preview to ${d.displayDate}`}
+                            >
+                              <span className={`font-bold ${isSelected ? 'text-white' : 'text-[#1565D8]'}`}>
+                                {d.displayDate}
+                              </span>
+                              <span className="text-slate-300 font-sans">|</span>
+                              <span className={`font-semibold ${isSelected ? 'text-blue-100' : 'text-slate-600'}`}>
+                                {d.count.toLocaleString()} scripts
+                              </span>
+                            </button>
+                          );
+                        })}
+
+                        {/* Interactive "+N more dates" Button */}
+                        {detectedDates.length > 5 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAllDetectedDates(true)}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-xs active:scale-95"
+                            title="Click to view all exam dates and script counts"
+                          >
+                            <span>+{detectedDates.length - 5} more dates</span>
+                            <ChevronDown className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* In Expanded Mode, Top Right Action */}
+                    {showAllDetectedDates && (
+                      <div className="flex items-center gap-2">
+                        {selectedFilterDate && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedFilterDate(null)}
+                            className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                          >
+                            Clear Filter (Show All)
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowAllDetectedDates(false)}
+                          className="inline-flex items-center gap-1 px-3 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <span>Show Less</span>
+                          <ChevronUp className="h-3.5 w-3.5 text-slate-500" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* EXPANDED FULL DATES BREAKDOWN MATRIX */}
+                  {showAllDetectedDates && (
+                    <div className="mt-3 pt-3 border-t border-blue-200/80 animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-black uppercase tracking-wider text-blue-900">
+                          Complete Exam Dates Breakdown ({detectedDates.length} Dates • {parsedRows.length.toLocaleString()} Total Scripts)
+                        </span>
+                        <span className="text-[11px] text-blue-700">
+                          Click any date card to view only that date's data below
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 max-h-72 overflow-y-auto pr-1">
+                        {/* All Dates Card */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFilterDate(null)}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                            !selectedFilterDate
+                              ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-sm ring-2 ring-blue-300'
+                              : 'bg-white hover:bg-blue-50 text-slate-800 border-blue-200 shadow-2xs'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-black ${!selectedFilterDate ? 'text-white' : 'text-[#1565D8]'}`}>
+                              ALL DATES
+                            </span>
+                            {!selectedFilterDate && <Check className="h-3.5 w-3.5 text-white" />}
+                          </div>
+                          <div className="mt-1 flex items-baseline justify-between text-[11px]">
+                            <span className={`font-bold ${!selectedFilterDate ? 'text-blue-100' : 'text-slate-700'}`}>
+                              {parsedRows.length.toLocaleString()} scripts
+                            </span>
+                            <span className={`text-[10px] ${!selectedFilterDate ? 'text-blue-200' : 'text-slate-400'}`}>
+                              100%
+                            </span>
+                          </div>
+                        </button>
+
+                        {/* Each Date Card with exact count & classes */}
+                        {detectedDates.map(d => {
+                          const isSelected = selectedFilterDate === d.date;
+                          const pct = ((d.count / (parsedRows.length || 1)) * 100).toFixed(1);
+                          return (
+                            <button
+                              key={d.date}
+                              type="button"
+                              onClick={() => setSelectedFilterDate(isSelected ? null : d.date)}
+                              className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                                isSelected
+                                  ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-sm ring-2 ring-blue-300'
+                                  : 'bg-white hover:bg-blue-50 text-slate-800 border-blue-200 shadow-2xs hover:border-blue-300'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className={`text-xs font-black font-mono ${isSelected ? 'text-white' : 'text-[#1565D8]'}`}>
+                                  {d.displayDate}
+                                </span>
+                                {isSelected && <Check className="h-3.5 w-3.5 text-white" />}
+                              </div>
+                              <div className="mt-1 flex items-baseline justify-between text-[11px]">
+                                <span className={`font-bold ${isSelected ? 'text-blue-100' : 'text-slate-800'}`}>
+                                  {d.count.toLocaleString()} scripts
+                                </span>
+                                <span className={`text-[10px] font-semibold ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
+                                  {pct}%
+                                </span>
+                              </div>
+                              {d.classesCount !== undefined && (
+                                <div className={`text-[10px] mt-0.5 ${isSelected ? 'text-blue-200' : 'text-slate-500'}`}>
+                                  {d.classesCount} Class IDs
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="text-[10px] text-blue-700 mt-2 flex items-center justify-between">
+                        <span>
+                          {selectedFilterDate
+                            ? `Currently filtered to ${formatExamDate(selectedFilterDate)} (${detectedDates.find(d => d.date === selectedFilterDate)?.count.toLocaleString()} scripts).`
+                            : 'All dates are currently active in preview.'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAllDetectedDates(false)}
+                          className="font-bold text-[#1565D8] hover:underline cursor-pointer flex items-center gap-1"
+                        >
+                          <span>Collapse View</span>
+                          <ChevronUp className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* TAB 1: CLASS ID BUNDLES */}
               {activeTab === 'classes' && (
                 <div>
@@ -889,8 +1308,13 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                       <Layers className="h-4 w-4 text-[#1565D8]" />
                       <span>Class ID Wise Import Records:</span>
                       <span className="px-2 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded-full font-mono text-[10px]">
-                        {classGroups.length} Class IDs
+                        {displayedClassGroups.length} {selectedFilterDate ? `of ${classGroups.length}` : ''} Class IDs
                       </span>
+                      {selectedFilterDate && (
+                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-[10px] font-bold">
+                          Date: {formatExamDate(selectedFilterDate)}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -951,15 +1375,14 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   </div>
 
                   {/* Filter Empty State */}
-                  {classGroups.filter(cg => !classSearch.trim() || cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase())).length === 0 ? (
+                  {displayedClassGroups.length === 0 ? (
                     <div className="p-8 text-center bg-white border border-[#CBD5E1] rounded-xl text-xs text-[#64748B]">
-                      No classes found matching "{classSearch}".
+                      No classes found {selectedFilterDate ? `for date ${formatExamDate(selectedFilterDate)}` : ''} matching "{classSearch}".
                     </div>
                   ) : viewMode === 'grid' ? (
                     /* 1. GRID VIEW */
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {classGroups
-                        .filter(cg => !classSearch.trim() || cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase()))
+                      {displayedClassGroups
                         .slice(0, visibleLimit)
                         .map(cg => (
                           <div
@@ -1016,8 +1439,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {classGroups
-                              .filter(cg => !classSearch.trim() || cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase()))
+                            {displayedClassGroups
                               .slice(0, visibleLimit)
                               .map((cg, idx) => (
                                 <tr key={cg.classId} className="hover:bg-blue-50/30 transition-colors">
@@ -1065,12 +1487,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   )}
 
                   {/* Pagination / Load More if large dataset */}
-                  {classGroups.filter(cg => !classSearch.trim() || cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase())).length > visibleLimit && (
+                  {displayedClassGroups.length > visibleLimit && (
                     <div className="mt-3 p-3 bg-white border border-[#CBD5E1] rounded-xl flex items-center justify-between text-xs">
                       <span className="text-[#64748B]">
                         Showing <strong className="text-[#172033]">{visibleLimit}</strong> of{' '}
                         <strong className="text-[#1565D8]">
-                          {classGroups.filter(cg => !classSearch.trim() || cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase())).length}
+                          {displayedClassGroups.length}
                         </strong>{' '}
                         classes
                       </span>
@@ -1084,7 +1506,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         </button>
                         <button
                           type="button"
-                          onClick={() => setVisibleLimit(classGroups.length)}
+                          onClick={() => setVisibleLimit(displayedClassGroups.length)}
                           className="px-3 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white font-bold rounded-lg transition-colors cursor-pointer"
                         >
                           Show All
@@ -1104,8 +1526,13 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         <Eye className="h-4 w-4 text-[#1565D8]" />
                         <span>All Inward Records Preview (unqid):</span>
                         <span className="px-2 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded-full font-mono text-[10px]">
-                          {parsedRows.length} Records
+                          {displayedParsedRows.length} {selectedFilterDate ? `of ${parsedRows.length}` : ''} Records
                         </span>
+                        {selectedFilterDate && (
+                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-[10px] font-bold">
+                            Date: {formatExamDate(selectedFilterDate)}
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-[#64748B] mt-0.5">
                         Click the <strong className="text-[#1565D8]">Eye icon</strong> on any row to open the detailed Unique Member ID preview.
@@ -1144,6 +1571,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         <thead className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] uppercase tracking-wider text-[#64748B] font-bold">
                           <tr>
                             <th className="py-2.5 px-4 w-12 text-center">Row #</th>
+                            <th className="py-2.5 px-4">Exam Date</th>
                             <th className="py-2.5 px-4">Class ID</th>
                             <th className="py-2.5 px-4">Unique Member ID (unqid)</th>
                             <th className="py-2.5 px-4 text-center">Status</th>
@@ -1151,17 +1579,17 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {parsedRows
-                            .filter(r => {
-                              if (!recordSearch.trim()) return true;
-                              const q = recordSearch.trim().toLowerCase();
-                              return r.unqid.toLowerCase().includes(q) || r.classId.toLowerCase().includes(q);
-                            })
+                          {displayedParsedRows
                             .slice(0, recordVisibleLimit)
                             .map(r => (
                               <tr key={`${r.rowNumber}-${r.classId}-${r.unqid}`} className="hover:bg-blue-50/30 transition-colors">
                                 <td className="py-2.5 px-4 text-center font-mono text-[11px] text-[#64748B]">
                                   {r.rowNumber}
+                                </td>
+                                <td className="py-2.5 px-4">
+                                  <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-[#1565D8] bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                                    {r.displayDate}
+                                  </span>
                                 </td>
                                 <td className="py-2.5 px-4">
                                   <span className="font-mono font-bold text-xs text-[#172033] bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
@@ -1213,20 +1641,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   </div>
 
                   {/* Load more records pagination */}
-                  {parsedRows.filter(r => {
-                    if (!recordSearch.trim()) return true;
-                    const q = recordSearch.trim().toLowerCase();
-                    return r.unqid.toLowerCase().includes(q) || r.classId.toLowerCase().includes(q);
-                  }).length > recordVisibleLimit && (
+                  {displayedParsedRows.length > recordVisibleLimit && (
                     <div className="p-3 bg-white border border-[#CBD5E1] rounded-xl flex items-center justify-between text-xs">
                       <span className="text-[#64748B]">
                         Showing <strong className="text-[#172033]">{recordVisibleLimit}</strong> of{' '}
                         <strong className="text-[#1565D8]">
-                          {parsedRows.filter(r => {
-                            if (!recordSearch.trim()) return true;
-                            const q = recordSearch.trim().toLowerCase();
-                            return r.unqid.toLowerCase().includes(q) || r.classId.toLowerCase().includes(q);
-                          }).length}
+                          {displayedParsedRows.length}
                         </strong>{' '}
                         records
                       </span>
@@ -1240,7 +1660,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         </button>
                         <button
                           type="button"
-                          onClick={() => setRecordVisibleLimit(parsedRows.length)}
+                          onClick={() => setRecordVisibleLimit(displayedParsedRows.length)}
                           className="px-3 py-1 bg-[#1565D8] hover:bg-[#0D47A1] text-white font-bold rounded-lg transition-colors cursor-pointer"
                         >
                           Show All

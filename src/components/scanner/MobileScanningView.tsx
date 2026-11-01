@@ -99,6 +99,20 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const [hasImportedData, setHasImportedData] = useState<boolean>(false);
   const [bundleRecords, setBundleRecords] = useState<BundleRecordView[]>([]);
   const [savedScannedRecords, setSavedScannedRecords] = useState<any[]>([]);
+  const [activeExamDate, setActiveExamDate] = useState<string>(() => importedService.getActiveExamDate() || '');
+
+  const availableDates = React.useMemo(() => {
+    return importedService.getAvailableExamDates();
+  }, [bundles, sessionSummary]);
+
+  const handleSelectExamDate = useCallback((date: string) => {
+    setActiveExamDate(date);
+    importedService.setActiveExamDate(date);
+    const bList = importedService.getClassBundles(date || undefined);
+    const sum = importedService.getSessionSummary(date || undefined);
+    setBundles(bList);
+    setSessionSummary(sum);
+  }, []);
 
   // Class ID wise inward summaries exclusively for logged-in user
   const myClassSummaries: UserClassInwardSummary[] = React.useMemo(() => {
@@ -199,10 +213,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const activeBundle = selectedClassId ? importedService.getClassBundle(selectedClassId) : null;
 
   const loadData = useCallback(() => {
+    const curDate = importedService.getActiveExamDate();
+    setActiveExamDate(curDate || '');
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const bList = importedService.getClassBundles();
-    const sum = importedService.getSessionSummary();
+    const bList = importedService.getClassBundles(curDate || undefined);
+    const sum = importedService.getSessionSummary(curDate || undefined);
     const allSaved = importedService.getSavedScannedRecords();
     setBundles(bList);
     setSessionSummary(sum);
@@ -618,6 +634,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       const res = await importedService.recordManualInward(cleanCid, canonicalMemberId, {
         notes: 'Mobile Manual Inward',
         bookletBarcode: cleanRaw,
+        inwardedBy: currentOperator,
       });
 
       if (res.success && res.record) {
@@ -1178,6 +1195,27 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <div className="mt-1 pt-1 border-t border-slate-100 flex items-center gap-1.5 text-xs text-[#64748B]">
               <Building className="h-3.5 w-3.5 text-[#64748B]" />
               <span className="font-bold text-[#172033]">{universityName}</span>
+            </div>
+          )}
+
+          {/* Exam Date Scope Selector */}
+          {availableDates.length > 0 && (
+            <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between gap-2">
+              <span className="text-[10px] font-black uppercase tracking-wider text-[#1565D8]">
+                Exam Date:
+              </span>
+              <select
+                value={activeExamDate}
+                onChange={(e) => handleSelectExamDate(e.target.value)}
+                className="bg-blue-50/70 text-[11px] font-bold text-slate-800 border border-blue-200 rounded-lg px-2 py-0.5 outline-hidden"
+              >
+                <option value="">All Dates ({sessionSummary?.totalExpected || 0})</option>
+                {availableDates.map(d => (
+                  <option key={d.date} value={d.date}>
+                    {d.displayDate} ({d.totalRecords.toLocaleString()} scripts)
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </div>
