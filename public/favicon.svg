@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- Background Royal Blue Gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E3A8A" />
+      <stop offset="45%" stop-color="#1565D8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Laser Beam Glow Gradient -->
+    <linearGradient id="laserGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.2" />
+      <stop offset="50%" stop-color="#38BDF8" stop-opacity="1" />
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0.2" />
+    </linearGradient>
+
+    <!-- Laser Glow Filter -->
+    <filter id="glow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- App Rounded Squircle Base -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bgGradient)" stroke="rgba(255, 255, 255, 0.25)" stroke-width="2.5" />
+
+  <!-- Scanner Corner Brackets (Viewfinder) -->
+  <!-- Top Left -->
+  <path d="M 28 46 L 28 32 Q 28 28 32 28 L 46 28" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Top Right -->
+  <path d="M 82 28 L 96 28 Q 100 28 100 32 L 100 46" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Bottom Left -->
+  <path d="M 28 82 L 28 96 Q 28 100 32 100 L 46 100" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Bottom Right -->
+  <path d="M 82 100 L 96 100 Q 100 100 100 96 L 100 82" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Stylized Barcode Bars in Center -->
+  <g fill="#FFFFFF" opacity="0.95">
+    <rect x="36" y="42" width="5" height="44" rx="2.5" />
+    <rect x="46" y="42" width="3" height="44" rx="1.5" />
+    <rect x="54" y="42" width="7" height="44" rx="3" fill="#BAE6FD" />
+    <rect x="66" y="42" width="4" height="44" rx="2" />
+    <rect x="75" y="42" width="8" height="44" rx="3" fill="#BAE6FD" />
+    <rect x="88" y="42" width="4" height="44" rx="2" />
+  </g>
+
+  <!-- Horizontal Laser Scan Line with Glow -->
+  <line x1="22" y1="64" x2="106" y2="64" stroke="url(#laserGlow)" stroke-width="4" stroke-linecap="round" filter="url(#glow)" />
+  <line x1="26" y1="64" x2="102" y2="64" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" opacity="0.9" />
+
+  <!-- Verification Status Dot Badge (Bottom Right) -->
+  <circle cx="98" cy="98" r="9" fill="#10B981" stroke="#FFFFFF" stroke-width="2.5" />
+  <path d="M 94 98 L 96.8 101 L 102.5 95" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
