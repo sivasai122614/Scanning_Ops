@@ -1606,7 +1606,7 @@ class ImportedService {
   // Received/Scanned: COUNT(saved_scanned_data)
   // Not Scanned: Expected - Scanned
   // ==============================================================================
-  public getDashboardStats(universityFilter?: string): {
+  public getDashboardStats(universityFilter?: string, dateFilter?: ExamDateFilter): {
     totalClasses: number;
     expectedBooklets: number;
     scannedBooklets: number;
@@ -1615,15 +1615,33 @@ class ImportedService {
     completionPercentage: number;
   } {
     const uni = universityFilter || this.activeUniversity;
-    const expected = this.importInwarded.filter(
+    let expected = this.importInwarded.filter(
       r => !uni || r.college_name.toLowerCase() === uni.toLowerCase() || (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase())
     );
-    const saved = this.savedScanned.filter(
+    let saved = this.savedScanned.filter(
       r => !uni || r.college_name.toLowerCase() === uni.toLowerCase()
     );
 
-    const expectedCount = expected.length > 0 ? expected.length : (this.backendExpectedCount || 0);
-    const scannedCount = saved.length > 0 ? saved.length : (this.backendReceivedCount || 0);
+    // Backfill exam_date on saved records from imported data if missing
+    for (const s of saved) {
+      if (!s.exam_date) {
+        const match = this.importInwarded.find(r =>
+          normalizeIdentifier(r.class_id).toLowerCase() === normalizeIdentifier(s.class_id).toLowerCase() &&
+          normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(s.member_id).toLowerCase()
+        );
+        if (match?.exam_date) {
+          s.exam_date = match.exam_date;
+        }
+      }
+    }
+
+    if (dateFilter && dateFilter !== 'ALL') {
+      expected = expected.filter(r => isRecordMatchingDateFilter(r.exam_date, dateFilter));
+      saved = saved.filter(s => isRecordMatchingDateFilter(s.exam_date, dateFilter));
+    }
+
+    const expectedCount = expected.length;
+    const scannedCount = saved.length;
     const notScannedCount = Math.max(0, expectedCount - scannedCount);
     const totalClasses = new Set(expected.map(r => r.class_id)).size;
     const completionPercentage = expectedCount > 0 ? Math.min(100, Math.round((scannedCount / expectedCount) * 100)) : 0;
@@ -2103,15 +2121,46 @@ class ImportedService {
   }
 
   /**
-   * Return all saved scanned records from saved_scanned_data
-   * Optional classId filter to get only records for a specific class
+   * Return saved scanned records from saved_scanned_data
+   * Supports:
+   * 1. getSavedScannedRecords(classId?: string)
+   * 2. getSavedScannedRecords(universityFilter?: string, dateFilter?: ExamDateFilter)
    */
-  public getSavedScannedRecords(classId?: string): SavedScannedRecord[] {
-    if (classId) {
-      const clean = normalizeIdentifier(classId).toLowerCase();
-      return this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === clean);
+  public getSavedScannedRecords(
+    filterOrClassId?: string,
+    dateFilter?: ExamDateFilter
+  ): SavedScannedRecord[] {
+    let records = [...this.savedScanned];
+
+    // Backfill exam_date from imported records if missing
+    for (const s of records) {
+      if (!s.exam_date) {
+        const match = this.importInwarded.find(
+          r => normalizeIdentifier(r.class_id).toLowerCase() === normalizeIdentifier(s.class_id).toLowerCase() &&
+               normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(s.member_id).toLowerCase()
+        );
+        if (match?.exam_date) {
+          s.exam_date = match.exam_date;
+        }
+      }
     }
-    return [...this.savedScanned];
+
+    if (filterOrClassId && filterOrClassId.trim()) {
+      const target = filterOrClassId.trim();
+      const knownUnis = this.getUniversities().map(u => u.toLowerCase());
+      if (dateFilter !== undefined || knownUnis.includes(target.toLowerCase())) {
+        records = records.filter(s => (s.college_name || '').toLowerCase() === target.toLowerCase());
+      } else {
+        const clean = normalizeIdentifier(target).toLowerCase();
+        records = records.filter(s => normalizeIdentifier(s.class_id).toLowerCase() === clean);
+      }
+    }
+
+    if (dateFilter && dateFilter !== 'ALL') {
+      records = records.filter(s => isRecordMatchingDateFilter(s.exam_date, dateFilter));
+    }
+
+    return records;
   }
 
   /**
@@ -3680,7 +3729,10 @@ class ImportedService {
   // Sheet 2: Not Scanned Data (import_inwarded_data MINUS saved_scanned_data)
   // Sheet 3: Class Wise Data (One row per Class ID with actual stats)
   // ==============================================================================
-  public async exportUniversityExcel(selectedUniversity: string): Promise<{
+  public async exportUniversityExcel(
+    selectedUniversity: string,
+    dateFilter?: ExamDateFilter
+  ): Promise<{
     success: boolean;
     filename: string;
     scannedCount: number;
@@ -3709,6 +3761,7 @@ class ImportedService {
             class_id: String(r.class_id).trim(),
             member_id: String(r.member_id).trim(),
             barcode: r.barcode,
+            exam_date: r.exam_date ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date)) : (r.date ? (healInvertedExamDate(r.date) || normalizeExamDate(r.date)) : undefined),
             created_at: r.created_at,
           }));
         } else {
@@ -3725,6 +3778,7 @@ class ImportedService {
                 sch_id: r.sch_id,
                 member_id: String(r.member_id).trim(),
                 barcode: r.barcode,
+                exam_date: r.exam_date ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date)) : (r.date ? (healInvertedExamDate(r.date) || normalizeExamDate(r.date)) : undefined),
                 created_by: r.created_by,
                 created_at: r.created_at,
               }));
@@ -3746,6 +3800,7 @@ class ImportedService {
             sch_id: s.sch_id,
             member_id: String(s.member_id).trim(),
             barcode: s.barcode,
+            exam_date: s.exam_date ? (healInvertedExamDate(s.exam_date) || normalizeExamDate(s.exam_date)) : (s.date ? (healInvertedExamDate(s.date) || normalizeExamDate(s.date)) : undefined),
             scanned_by: s.scanned_by,
             scanned_at: s.scanned_at,
             saved_by: s.saved_by,
@@ -3771,6 +3826,28 @@ class ImportedService {
       );
     }
 
+    // Backfill exam_date on saved records if missing
+    for (const s of uniSaved) {
+      if (!s.exam_date) {
+        const match = uniExpected.find(r =>
+          normalizeIdentifier(r.class_id).toLowerCase() === normalizeIdentifier(s.class_id).toLowerCase() &&
+          normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(s.member_id).toLowerCase()
+        ) || this.importInwarded.find(r =>
+          normalizeIdentifier(r.class_id).toLowerCase() === normalizeIdentifier(s.class_id).toLowerCase() &&
+          normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(s.member_id).toLowerCase()
+        );
+        if (match?.exam_date) {
+          s.exam_date = match.exam_date;
+        }
+      }
+    }
+
+    // Apply Date Filter if specified
+    if (dateFilter && dateFilter !== 'ALL') {
+      uniExpected = uniExpected.filter(r => isRecordMatchingDateFilter(r.exam_date, dateFilter));
+      uniSaved = uniSaved.filter(s => isRecordMatchingDateFilter(s.exam_date, dateFilter));
+    }
+
     // Map of saved members: class_id::member_id
     const savedKeys = new Set(
       uniSaved.map(s => `${s.class_id.toLowerCase()}::${s.member_id.toLowerCase()}`)
@@ -3782,14 +3859,15 @@ class ImportedService {
     );
 
     // ---------------------------------------------------------------------------
-    // SHEET 1 — SCANNED DATA
+    // SHEET 1 — SCANNED DATA (Strictly from saved_scanned_data)
     // ---------------------------------------------------------------------------
     const scannedSheetRows: any[][] = [
       [
         'College / University',
-        'Import Session',
+        'Exam Date',
         'Class ID',
         'Member ID',
+        'Barcode',
         'Scan Status',
         'Scanned By',
         'Scanned Time',
@@ -3802,26 +3880,28 @@ class ImportedService {
       for (const s of uniSaved) {
         scannedSheetRows.push([
           s.college_name || uni,
-          s.import_session_id || s.scan_session_id || 'SES-001',
+          s.exam_date ? formatExamDate(s.exam_date) : '—',
           s.class_id,
           s.member_id,
+          s.barcode || s.member_id,
           'SAVED',
-          s.scanned_by || 'Siva Sai',
+          s.scanned_by || 'Operator',
           s.scanned_at ? new Date(s.scanned_at).toLocaleString() : '—',
-          s.saved_by || 'Siva Sai',
+          s.saved_by || 'Operator',
           s.saved_at ? new Date(s.saved_at).toLocaleString() : '—',
         ]);
       }
     } else {
-      scannedSheetRows.push(['No saved scanned records yet for this university', '', '', '', '', '', '', '', '']);
+      scannedSheetRows.push(['No saved scanned records found for selected criteria', '', '', '', '', '', '', '', '', '']);
     }
 
     const wsScanned = XLSX.utils.aoa_to_sheet(scannedSheetRows);
     wsScanned['!cols'] = [
       { wch: 25 },
-      { wch: 18 },
       { wch: 14 },
-      { wch: 16 },
+      { wch: 14 },
+      { wch: 18 },
+      { wch: 22 },
       { wch: 14 },
       { wch: 18 },
       { wch: 22 },
@@ -3833,13 +3913,14 @@ class ImportedService {
     // SHEET 2 — NOT SCANNED DATA
     // ---------------------------------------------------------------------------
     const notScannedSheetRows: any[][] = [
-      ['College / University', 'Class ID', 'Member ID', 'Status', 'Import Time'],
+      ['College / University', 'Exam Date', 'Class ID', 'Member ID', 'Status', 'Import Time'],
     ];
 
     if (uniNotScanned.length > 0) {
       for (const ns of uniNotScanned) {
         notScannedSheetRows.push([
           ns.college_name || ns.university_name || uni,
+          ns.exam_date ? formatExamDate(ns.exam_date) : '—',
           ns.class_id,
           ns.member_id,
           'NOT SCANNED',
@@ -3847,12 +3928,13 @@ class ImportedService {
         ]);
       }
     } else {
-      notScannedSheetRows.push(['No pending unscanned records', '', '', '', '']);
+      notScannedSheetRows.push(['No pending unscanned records', '', '', '', '', '']);
     }
 
     const wsNotScanned = XLSX.utils.aoa_to_sheet(notScannedSheetRows);
     wsNotScanned['!cols'] = [
       { wch: 25 },
+      { wch: 14 },
       { wch: 14 },
       { wch: 16 },
       { wch: 16 },
@@ -3914,7 +3996,19 @@ class ImportedService {
 
     const cleanUniName = uni.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_');
     const today = new Date().toISOString().split('T')[0];
-    const filename = `ExamScan_${cleanUniName}_${today}.xlsx`;
+    let dateTag = today;
+
+    if (dateFilter && dateFilter !== 'ALL') {
+      if (typeof dateFilter === 'string') {
+        dateTag = formatExamDate(dateFilter);
+      } else if (dateFilter.startDate && dateFilter.endDate) {
+        dateTag = `${formatExamDate(dateFilter.startDate)}_to_${formatExamDate(dateFilter.endDate)}`;
+      } else if (dateFilter.startDate) {
+        dateTag = formatExamDate(dateFilter.startDate);
+      }
+    }
+
+    const filename = `ExamScan_${cleanUniName}_${dateTag}.xlsx`;
 
     XLSX.writeFile(wb, filename);
 
@@ -3923,6 +4017,7 @@ class ImportedService {
       filename,
       scannedCount: uniSaved.length,
       notScannedCount: uniNotScanned.length,
+
       totalExpected: uniExpected.length,
     };
   }

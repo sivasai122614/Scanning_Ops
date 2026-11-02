@@ -1432,8 +1432,7 @@ export const BarcodeScannerView: React.FC<{
       )}
 
       {/* ---------------------------------------------------------------------- */}
-      {/* REQUIREMENT 7: POPUP MODAL FOR EXPECTED COUNT EXCEEDED */}
-      {/* "Expected count cross ayyvelthundi akkada pop up ravali expected count cross ayindi you want to edit or need to re check ani" */}
+      {/* Expected count exceeded modal: alerts operator when scanned count exceeds expected booklet target */}
       {/* ---------------------------------------------------------------------- */}
       {showExcessModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">

@@ -169,6 +169,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   // Step Loading State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
+  const [importProgress, setImportProgress] = useState<{ processed: number; total: number; percentage: number } | null>(null);
 
   // Deletion modals state (Synchronized deletion of imported data and saved scan data)
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
@@ -714,21 +715,25 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const executeImport = async (itemsToInsert: { class_id: string; member_id: string; barcode?: string; exam_date?: string }[]) => {
     setDuplicateModalData(null);
     setIsProcessing(true);
+    const totalCount = itemsToInsert.length;
+    setImportProgress({ processed: 0, total: totalCount, percentage: 0 });
 
     try {
       const fileNamesList = selectedFiles.map(f => f.name).join(', ') || 'bulk_import.xlsx';
-      setProcessingStep(`IMPORTING ${itemsToInsert.length} CANDIDATES FROM ${selectedFiles.length || 1} EXCEL FILE(S)...`);
-      await new Promise(r => setTimeout(r, 350));
+      setProcessingStep(`PREPARING ${totalCount.toLocaleString()} CANDIDATE RECORDS...`);
+      await new Promise(r => setTimeout(r, 200));
 
-      setProcessingStep('VALIDATING DATES, CLASS IDs & MEMBER BOOKLETS...');
-      await new Promise(r => setTimeout(r, 350));
+      const onProgress = (processed: number, total: number) => {
+        const pct = Math.min(100, Math.round((processed / total) * 100));
+        setImportProgress({ processed, total, percentage: pct });
+        setProcessingStep(`SAVING TO DATABASE: ${processed.toLocaleString()} out of ${total.toLocaleString()} records (${pct}%)`);
+      };
 
-      setProcessingStep('SAVING TO DATABASE & CALCULATING DATE-WISE COUNTS...');
       const res = await importedService.bulkInsert(
         itemsToInsert,
         universityName.trim(),
         fileNamesList,
-        undefined,
+        onProgress,
         replaceExistingData
       );
 
@@ -736,9 +741,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         throw new Error(res.error || 'Failed to save imported records.');
       }
 
-      await new Promise(r => setTimeout(r, 350));
+      setImportProgress({ processed: totalCount, total: totalCount, percentage: 100 });
+      setProcessingStep(`SAVED ${totalCount.toLocaleString()} out of ${totalCount.toLocaleString()} RECORDS SUCCESSFULLY!`);
+      await new Promise(r => setTimeout(r, 400));
       setProcessingStep('OPENING SCANNING DASHBOARD...');
-      await new Promise(r => setTimeout(r, 350));
+      await new Promise(r => setTimeout(r, 300));
 
       // Automatically navigate to Scan screen!
       onNavigateToScan();
@@ -746,18 +753,21 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       console.warn('Import execution error:', err);
       setParseError(err?.message || 'Error saving imported records.');
       setIsProcessing(false);
+      setImportProgress(null);
     }
   };
 
   const handleDownloadSample = () => {
-    const sampleData = [
-      { 'Date': '01-11-2026', 'Class ID': '0020', 'Member ID': '002024EMBA1308', 'Barcode': '002024EMBA1308' },
-      { 'Date': '01-11-2026', 'Class ID': '0020', 'Member ID': '002024EMBA1309', 'Barcode': '002024EMBA1309' },
-      { 'Date': '02-11-2026', 'Class ID': '0021', 'Member ID': '002124EMBA1601', 'Barcode': '002124EMBA1601' },
-      { 'Date': '02-11-2026', 'Class ID': '0021', 'Member ID': '002124EMBA1602', 'Barcode': '002124EMBA1602' },
+    // Mandatory Date Column with headers only (zero example rows filled)
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Date', 'Class ID', 'Member ID', 'Barcode Value']
+    ]);
+    ws['!cols'] = [
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 18 },
+      { wch: 20 },
     ];
-
-    const ws = XLSX.utils.json_to_sheet(sampleData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'InwardingTemplate');
     XLSX.writeFile(wb, 'InwardScan_Template.xlsx');
@@ -785,16 +795,45 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         }
       `}</style>
 
-      {/* 1. Step-by-Step Processing Overlay */}
+      {/* 1. Step-by-Step Processing Overlay with Live Record Count */}
       {isProcessing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
           <div className="w-full max-w-md bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-6 text-center">
-            <div className="h-12 w-12 border-4 border-[#1565D8]/20 border-t-[#1565D8] rounded-full animate-spin mx-auto mb-4" />
-            <div className="text-sm font-black uppercase tracking-wider text-[#1565D8]">
-              {processingStep}
+            <div className="h-14 w-14 border-4 border-[#1565D8]/20 border-t-[#1565D8] rounded-full animate-spin mx-auto mb-4" />
+            
+            <div className="text-base font-black uppercase tracking-wide text-[#172033]">
+              Importing Examination Dataset
             </div>
-            <div className="text-xs text-[#64748B] mt-2">
-              Preparing class bundles and synchronizing database records...
+            
+            {importProgress ? (
+              <div className="mt-4 space-y-2.5">
+                <div className="flex items-center justify-between text-xs font-bold text-[#64748B]">
+                  <span>Database Insertion Progress</span>
+                  <span className="font-mono text-[#1565D8] font-black">
+                    {importProgress.processed.toLocaleString()} / {importProgress.total.toLocaleString()}
+                  </span>
+                </div>
+                
+                {/* Visual Progress Bar */}
+                <div className="h-3.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 shadow-inner">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-600 via-[#1565D8] to-emerald-500 transition-all duration-200"
+                    style={{ width: `${importProgress.percentage}%` }}
+                  />
+                </div>
+                
+                <div className="text-xs font-mono font-black text-[#1565D8] bg-blue-50 py-1.5 px-3 rounded-xl border border-blue-100">
+                  {importProgress.processed.toLocaleString()} out of {importProgress.total.toLocaleString()} records saved ({importProgress.percentage}%)
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs font-mono font-bold text-[#1565D8] mt-3">
+                {processingStep}
+              </div>
+            )}
+
+            <div className="text-[11px] text-[#64748B] mt-3 leading-relaxed font-medium">
+              Writing directly to PostgreSQL tables. Zero browser freeze guaranteed.
             </div>
           </div>
         </div>
@@ -1686,7 +1725,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                       <p className="text-[11px] text-slate-500 font-normal mt-0.5 leading-relaxed">
                         {replaceExistingData
                           ? '⚠️ Overwrite Mode: Will wipe existing Class IDs and scans to start fresh with this import.'
-                          : '✓ Append & Merge Mode (Default): Combines these Excel files with all previously imported Class IDs without deleting earlier batches or scans. Yenni Excels import chesina automatic ga accumulate aipothayi.'}
+                          : '✓ Append & Merge Mode (Default): Combines these Excel files with all previously imported Class IDs without deleting earlier batches or scans. All imported files automatically accumulate.'}
                       </p>
                     </div>
                   </label>

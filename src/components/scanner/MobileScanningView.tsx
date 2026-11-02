@@ -1125,7 +1125,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               Select Scan Type
             </h3>
             <p className="text-xs text-[#64748B] mt-1 mb-4 leading-relaxed">
-              Inward role open cheygane: Barcode or QR Code select chesukondi.
+              Choose standard 1D Barcode or 2D QR Code to start scanning booklets.
             </p>
 
             <div className="grid grid-cols-2 gap-3 mb-4">
