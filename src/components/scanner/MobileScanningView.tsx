@@ -35,6 +35,7 @@ import {
   Search,
   Scan as ScanIcon,
   Save,
+  X,
 } from 'lucide-react';
 import {
   importedService,
@@ -45,6 +46,8 @@ import {
   ScanResult,
   UserClassInwardSummary,
   isRecordInwardedByUser,
+  formatExamDate,
+  isRecordMatchingDateFilter,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound, triggerHapticFeedback, primeHapticAndAudio } from '../../utils/scannerSound';
 import { normalizeIdentifier } from '../../utils/normalize';
@@ -219,7 +222,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     setHasImportedData(hasData);
     const bList = importedService.getClassBundles(curDate || undefined);
     const sum = importedService.getSessionSummary(curDate || undefined);
-    const allSaved = importedService.getSavedScannedRecords();
+    const allSaved = importedService.getSavedScannedRecords(undefined, curDate || undefined);
     setBundles(bList);
     setSessionSummary(sum);
     setSavedScannedRecords(allSaved);
@@ -230,7 +233,11 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         b => normalizeIdentifier(b.classId).toLowerCase() === normalizeIdentifier(curCid).toLowerCase()
       );
       if (exists) {
-        const recs = importedService.getBundleRecordViews(curCid);
+        const recs = importedService.getBundleRecordViews(
+          curCid,
+          curDate || undefined,
+          isRestrictedInward ? user : undefined
+        );
         setBundleRecords(recs);
       } else {
         // Stale or deleted class: reset to CLASS_MODE
@@ -411,6 +418,31 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     }, 150);
   };
 
+  // Exam Date Mismatch Warning Modal State
+  interface DateMismatchModalData {
+    isOpen: boolean;
+    barcode: string;
+    memberId?: string;
+    targetClassId?: string;
+    recordExamDate: string;
+    activeExamDate: string;
+  }
+  const [dateMismatchModal, setDateMismatchModal] = useState<DateMismatchModalData | null>(null);
+
+  const handleSwitchDateAndOpenBundle = useCallback((targetDate: string, targetCid?: string) => {
+    handleSelectExamDate(targetDate);
+    if (targetCid) {
+      openClassBundle(targetCid);
+    }
+    setDateMismatchModal(null);
+    showToast({
+      type: 'success',
+      title: '✓ Exam Date Switched',
+      subtitle: `Station date changed to ${targetDate}${targetCid ? ` • Class ${targetCid}` : ''}`,
+      duration: 3000,
+    });
+  }, [handleSelectExamDate, openClassBundle, showToast]);
+
   // Exit back to CLASS_MODE
   const backToClassSelection = () => {
     try {
@@ -540,6 +572,33 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     const res = await importedService.resolveClassFromBarcode(rawBarcode);
 
     if (res.exists && res.classId) {
+      const cleanCid = normalizeIdentifier(res.classId);
+      if (activeExamDate && activeExamDate !== 'ALL') {
+        const bundleForActive = importedService.getClassBundle(cleanCid, activeExamDate);
+        if (!bundleForActive || bundleForActive.expectedCount === 0) {
+          const classDate = importedService.getClassExamDate(cleanCid);
+          if (classDate && !isRecordMatchingDateFilter(classDate, activeExamDate)) {
+            const recDmy = formatExamDate(classDate) || classDate;
+            const actDmy = formatExamDate(activeExamDate) || activeExamDate;
+            playScanWarningSound();
+            setDateMismatchModal({
+              isOpen: true,
+              barcode: rawBarcode,
+              targetClassId: cleanCid,
+              recordExamDate: recDmy,
+              activeExamDate: actDmy,
+            });
+            showToast({
+              type: 'warning',
+              title: '⚠ Exam Date Mismatch',
+              subtitle: `Belongs to date ${recDmy}`,
+              duration: 3500,
+            });
+            return;
+          }
+        }
+      }
+
       console.log('[STAGE 1] Matching imported class found:', res.classId);
       playScanSuccessSound();
       openClassBundle(res.classId);
@@ -581,8 +640,27 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
     try {
       // 1. Validate strictly against active class and entered member ID
-      const validation = await importedService.validateMemberForClass(cleanCid, enteredMid);
+      const validation = await importedService.validateMemberForClass(cleanCid, enteredMid, activeExamDate || undefined);
       console.log('[MANUAL INWARD FLOW] Validation result: ', validation.status);
+
+      if (validation.status === 'DATE_MISMATCH') {
+        playScanWarningSound();
+        setDateMismatchModal({
+          isOpen: true,
+          barcode: cleanRaw,
+          memberId: validation.record?.member_id || enteredMid,
+          targetClassId: validation.actualClassId || cleanCid,
+          recordExamDate: validation.actualExamDate || 'Another Date',
+          activeExamDate: validation.expectedExamDate || activeExamDate || 'Current Date',
+        });
+        showToast({
+          type: 'warning',
+          title: '⚠ Exam Date Mismatch',
+          subtitle: `Belongs to date ${validation.actualExamDate}`,
+          duration: 3500,
+        });
+        return false;
+      }
 
       if (validation.status === 'WRONG_CLASS') {
         playScanWarningSound();
@@ -724,7 +802,31 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
     try {
       const operatorName = user?.username || user?.full_name || user?.email?.split('@')[0] || currentOperator || 'Siva Sai';
-      const res = await importedService.processMobileMemberBarcodeScan(activeCid, code, operatorName);
+      const res = await importedService.processMobileMemberBarcodeScan(
+        activeCid,
+        code,
+        operatorName,
+        activeExamDate || undefined
+      );
+
+      if (res.isDateMismatch) {
+        playScanWarningSound();
+        setDateMismatchModal({
+          isOpen: true,
+          barcode: code,
+          memberId: res.detectedMemberId || code,
+          targetClassId: res.detectedClassId || activeCid,
+          recordExamDate: res.expectedDate || 'Another Date',
+          activeExamDate: res.activeDate || activeExamDate || 'Current Date',
+        });
+        showToast({
+          type: 'warning',
+          title: '⚠ Exam Date Mismatch',
+          subtitle: `Belongs to date ${res.expectedDate}`,
+          duration: 3500,
+        });
+        return false;
+      }
 
       if (res.isWrongClass) {
         playScanWarningSound();
@@ -1914,6 +2016,83 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               >
                 <Check className="h-3.5 w-3.5" />
                 <span>{isSaving ? 'Saving...' : 'Confirm & Save'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXAM DATE MISMATCH WARNING MODAL */}
+      {dateMismatchModal && dateMismatchModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-sm w-full p-5 text-[#172033] relative">
+            <button
+              onClick={() => setDateMismatchModal(null)}
+              className="absolute top-3.5 right-3.5 p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-600 shrink-0 shadow-xs">
+                <AlertTriangle className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="flex-1 pr-5">
+                <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">
+                  Exam Date Mismatch
+                </h3>
+                <p className="text-[11px] text-amber-700 font-semibold mt-0.5">
+                  Inwarding Blocked For Current Schedule
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 p-3 rounded-xl bg-amber-50/90 border border-amber-200 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-600">Scanned Record Date:</span>
+                <span className="px-2 py-0.5 bg-amber-200/90 text-amber-900 font-black rounded-lg border border-amber-300 font-mono text-[11px]">
+                  📅 {dateMismatchModal.recordExamDate}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-600">Active Station Date:</span>
+                <span className="px-2 py-0.5 bg-blue-100 text-blue-900 font-black rounded-lg border border-blue-200 font-mono text-[11px]">
+                  📅 {dateMismatchModal.activeExamDate}
+                </span>
+              </div>
+              {dateMismatchModal.targetClassId && (
+                <div className="flex items-center justify-between border-t border-amber-200/70 pt-1.5">
+                  <span className="font-medium text-slate-500">Class ID:</span>
+                  <span className="font-bold font-mono text-slate-800">{dateMismatchModal.targetClassId}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3.5 text-xs leading-relaxed text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <p className="font-medium">
+                This booklet belongs to date <strong className="text-amber-800 font-black">{dateMismatchModal.recordExamDate}</strong>.
+                You cannot inward it under the current date (<strong className="text-blue-800 font-black">{dateMismatchModal.activeExamDate}</strong>).
+              </p>
+              <p className="mt-1 text-slate-500 font-medium">
+                To inward this booklet, please change the date to <strong className="text-amber-800 font-black">{dateMismatchModal.recordExamDate}</strong> and open that bundle.
+              </p>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => handleSwitchDateAndOpenBundle(dateMismatchModal.recordExamDate, dateMismatchModal.targetClassId)}
+                className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+              >
+                <CalendarIcon className="w-4 h-4" />
+                Switch to {dateMismatchModal.recordExamDate} & Open Bundle
+              </button>
+              <button
+                type="button"
+                onClick={() => setDateMismatchModal(null)}
+                className="w-full py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+              >
+                Dismiss
               </button>
             </div>
           </div>

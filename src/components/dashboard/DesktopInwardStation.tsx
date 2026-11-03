@@ -35,6 +35,7 @@ import {
   Clock,
   ChevronRight,
   ShieldAlert,
+  X,
 } from 'lucide-react';
 import {
   importedService,
@@ -46,6 +47,7 @@ import {
   isRecordInwardedByUser,
   formatExamDate,
   normalizeExamDate,
+  isRecordMatchingDateFilter,
 } from '../../services/importedService';
 import { playScanSuccessSound, playScanWarningSound } from '../../utils/scannerSound';
 import { useBarcodeGunListener, BarcodeGunScanEvent } from '../../utils/useBarcodeGunListener';
@@ -158,13 +160,35 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   const [manualInput, setManualInput] = useState<string>('');
   const manualInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Load imported datasets and bundles across all dates (date-free inwarding)
+  // Active Exam Date state (Scoped to Supabase exam_date)
+  const [activeExamDate, setActiveExamDate] = useState<string>(() => importedService.getActiveExamDate() || '');
+
+  const availableDates = useMemo(() => {
+    return importedService.getAvailableExamDates();
+  }, [bundles, hasImportedData]);
+
+  // Auto-select the active exam date from imported dataset if not yet set
+  useEffect(() => {
+    if (!activeExamDate && availableDates.length > 0) {
+      const defaultDate = availableDates[0].date;
+      setActiveExamDate(defaultDate);
+      importedService.setActiveExamDate(defaultDate);
+    }
+  }, [availableDates, activeExamDate]);
+
+  const handleSelectExamDate = useCallback((date: string) => {
+    setActiveExamDate(date);
+    importedService.setActiveExamDate(date);
+  }, []);
+
+  // Load imported datasets and bundles scoped to active exam date
   const loadData = useCallback(() => {
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const bList = importedService.getClassBundles(null);
-    const sum = importedService.getSessionSummary(null);
-    const allSaved = importedService.getSavedScannedRecords();
+    const curDate = activeExamDate || importedService.getActiveExamDate() || undefined;
+    const bList = importedService.getClassBundles(curDate || undefined);
+    const sum = importedService.getSessionSummary(curDate || undefined);
+    const allSaved = importedService.getSavedScannedRecords(undefined, curDate || undefined);
     setBundles(bList);
     setSessionSummary(sum);
     setAllCampRecords(allSaved);
@@ -178,7 +202,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         try { localStorage.removeItem('examscan_desktop_selected_class_id'); } catch {}
       }
     }
-  }, [selectedClassId]);
+  }, [selectedClassId, activeExamDate]);
 
   useEffect(() => {
     loadData();
@@ -186,15 +210,20 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     return () => unsub();
   }, [loadData]);
 
-  // Load records for currently selected class
+  // Load records for currently selected class scoped to date & user role
   useEffect(() => {
     if (selectedClassId) {
-      const recs = importedService.getBundleRecordViews(selectedClassId);
+      const curDate = activeExamDate || importedService.getActiveExamDate() || undefined;
+      const recs = importedService.getBundleRecordViews(
+        selectedClassId,
+        curDate || undefined,
+        isInwardRole ? user : undefined
+      );
       setRecords(recs);
     } else {
       setRecords([]);
     }
-  }, [selectedClassId, bundles]);
+  }, [selectedClassId, bundles, activeExamDate, isInwardRole, user]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -249,6 +278,31 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     setManualInput('');
   }, []);
 
+  // Exam Date Mismatch Warning Modal State
+  interface DateMismatchModalData {
+    isOpen: boolean;
+    barcode: string;
+    memberId?: string;
+    targetClassId?: string;
+    recordExamDate: string;
+    activeExamDate: string;
+  }
+  const [dateMismatchModal, setDateMismatchModal] = useState<DateMismatchModalData | null>(null);
+
+  const handleSwitchDateAndOpenBundle = useCallback((targetDate: string, targetCid?: string) => {
+    handleSelectExamDate(targetDate);
+    if (targetCid) {
+      openClassBundle(targetCid);
+    }
+    setDateMismatchModal(null);
+    showToast({
+      type: 'success',
+      title: '✓ Exam Date Switched',
+      subtitle: `Station date changed to ${targetDate}${targetCid ? ` • Class ${targetCid}` : ''}`,
+      duration: 3000,
+    });
+  }, [handleSelectExamDate, openClassBundle, showToast]);
+
   // Main Barcode Processing Pipeline (Triggered by Physical Gun or Manual Entry)
   const processGunBarcode = useCallback(async (barcodeRaw: string, source: 'gun' | 'manual' = 'gun') => {
     const barcode = barcodeRaw.trim();
@@ -275,6 +329,27 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         // 1. Resolve Class ID from scanned barcode using authoritative imported dataset
         const classRes = await importedService.resolveClassFromBarcode(barcode);
         if (classRes.exists && classRes.classId) {
+          const resolvedCid = normalizeIdentifier(classRes.classId);
+          if (activeExamDate && activeExamDate !== 'ALL') {
+            const bundleForActive = importedService.getClassBundle(resolvedCid, activeExamDate);
+            if (!bundleForActive || bundleForActive.expectedCount === 0) {
+              const classDate = importedService.getClassExamDate(resolvedCid);
+              if (classDate && !isRecordMatchingDateFilter(classDate, activeExamDate)) {
+                const recDmy = formatExamDate(classDate) || classDate;
+                const actDmy = formatExamDate(activeExamDate) || activeExamDate;
+                if (soundEnabled) playScanWarningSound();
+                setDateMismatchModal({
+                  isOpen: true,
+                  barcode,
+                  targetClassId: resolvedCid,
+                  recordExamDate: recDmy,
+                  activeExamDate: actDmy,
+                });
+                return;
+              }
+            }
+          }
+
           openClassBundle(classRes.classId);
           if (soundEnabled) playScanSuccessSound();
           triggerHudFlash({
@@ -291,6 +366,27 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         // 2. Fallback: Check if manual entered Class ID matches any imported class
         const valRes = await importedService.validateClassId(barcode);
         if (valRes.exists && valRes.classId) {
+          const resolvedCid = normalizeIdentifier(valRes.classId);
+          if (activeExamDate && activeExamDate !== 'ALL') {
+            const bundleForActive = importedService.getClassBundle(resolvedCid, activeExamDate);
+            if (!bundleForActive || bundleForActive.expectedCount === 0) {
+              const classDate = importedService.getClassExamDate(resolvedCid);
+              if (classDate && !isRecordMatchingDateFilter(classDate, activeExamDate)) {
+                const recDmy = formatExamDate(classDate) || classDate;
+                const actDmy = formatExamDate(activeExamDate) || activeExamDate;
+                if (soundEnabled) playScanWarningSound();
+                setDateMismatchModal({
+                  isOpen: true,
+                  barcode,
+                  targetClassId: resolvedCid,
+                  recordExamDate: recDmy,
+                  activeExamDate: actDmy,
+                });
+                return;
+              }
+            }
+          }
+
           openClassBundle(valRes.classId);
           if (soundEnabled) playScanSuccessSound();
           triggerHudFlash({
@@ -360,7 +456,28 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         const cleanCid = normalizeIdentifier(targetClassId);
 
         // 1. Validation check against imported_inward_data
-        const validation = await importedService.validateMemberForClass(cleanCid, cleanMid);
+        const validation = await importedService.validateMemberForClass(cleanCid, cleanMid, activeExamDate || undefined);
+
+        if (validation.status === 'DATE_MISMATCH') {
+          if (soundEnabled) playScanWarningSound();
+          setDateMismatchModal({
+            isOpen: true,
+            barcode,
+            memberId: validation.record?.member_id || cleanMid,
+            targetClassId: validation.actualClassId || targetClassId,
+            recordExamDate: validation.actualExamDate || 'Another Date',
+            activeExamDate: validation.expectedExamDate || activeExamDate || 'Current Date',
+          });
+          triggerHudFlash({
+            type: 'wrong_class',
+            title: 'EXAM DATE MISMATCH',
+            subtitle: `Belongs to Date: ${validation.actualExamDate}. Station date is ${validation.expectedExamDate}!`,
+            barcode,
+            classId: targetClassId,
+            timestamp: Date.now(),
+          }, 3500);
+          return;
+        }
 
         if (validation.status === 'WRONG_CLASS') {
           if (soundEnabled) playScanWarningSound();
@@ -545,8 +662,31 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
       const result: ScanResult = await importedService.processMobileMemberBarcodeScan(
         targetClassId,
         barcode,
-        currentOperator
+        currentOperator,
+        activeExamDate || undefined
       );
+
+      // Handle Case: Date Mismatch - Inward blocked for wrong date schedule!
+      if (result.isDateMismatch) {
+        if (soundEnabled) playScanWarningSound();
+        setDateMismatchModal({
+          isOpen: true,
+          barcode,
+          memberId: result.detectedMemberId || barcode,
+          targetClassId: result.detectedClassId || targetClassId,
+          recordExamDate: result.expectedDate || 'Another Date',
+          activeExamDate: result.activeDate || activeExamDate || 'Current Date',
+        });
+        triggerHudFlash({
+          type: 'wrong_class',
+          title: 'EXAM DATE MISMATCH',
+          subtitle: `Belongs to Date: ${result.expectedDate}. Station date is ${result.activeDate}!`,
+          barcode,
+          classId: targetClassId,
+          timestamp: Date.now(),
+        }, 3500);
+        return;
+      }
 
       // Handle Case: Duplicate Inward
       if (result.isDuplicate) {
@@ -822,10 +962,26 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     }
   };
 
-  // Currently active bundle details
-  const activeBundle = bundles.find(b => b.classId.toLowerCase() === selectedClassId.toLowerCase()) || bundles[0];
+  // Currently active bundle details scoped to active exam date
+  const activeBundle = useMemo(() => {
+    return selectedClassId
+      ? importedService.getClassBundle(selectedClassId, activeExamDate || undefined)
+      : (bundles.length > 0 ? bundles[0] : null);
+  }, [selectedClassId, activeExamDate, bundles]);
+
   const activeExpected = activeBundle?.expectedCount || 0;
-  const activeSaved = activeBundle?.savedCount || 0;
+
+  // Inward operator data isolation: activeSaved strictly reflects logged-in operator's inwards
+  const myClassRecord = useMemo(() => {
+    return myClassSummaries.find(
+      c => normalizeIdentifier(c.classId).toLowerCase() === normalizeIdentifier(selectedClassId || '').toLowerCase()
+    );
+  }, [myClassSummaries, selectedClassId]);
+
+  const activeSaved = isInwardRole
+    ? (myClassRecord ? myClassRecord.inwardedCount : 0)
+    : (activeBundle?.savedCount || 0);
+
   const activePending = activeBundle?.pendingCount || 0;
   const activeReceived = activeSaved + activePending;
   const activeMissing = Math.max(0, activeExpected - activeReceived);
@@ -836,7 +992,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     !classSearch || b.classId.toLowerCase().includes(classSearch.toLowerCase())
   );
 
-  // Filtered records inside active bundle or camp-wide
+  // Filtered records inside active bundle or camp-wide with strict user isolation
   const displayRecords = useMemo(() => {
     if (activeRecordsTab === 'all_camp') {
       const recordsToUse = isInwardRole
@@ -857,6 +1013,10 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     }
     return records.filter(r => {
       if (activeRecordsTab === 'scanned') {
+        if (isInwardRole) {
+          return (r.scan_status === 'saved' || r.scan_status === 'pending_save') &&
+                 isRecordInwardedByUser({ scanned_by: r.scanned_by, saved_by: r.saved_by }, user);
+        }
         return r.scan_status === 'saved' || r.scan_status === 'pending_save';
       }
       if (activeRecordsTab === 'not_scanned') {
@@ -980,8 +1140,8 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
 
       {/* 1. TOP HARDWARE CONTROL & STATUS BAR */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl border border-[#CBD5E1] bg-white text-[#172033] shadow-xs transition-all duration-200">
-        {/* Left: Gun Status & Mode Indicator */}
-        <div className="flex items-center gap-3">
+        {/* Left: Gun Status, Date Selector & Mode Indicator */}
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 px-3.5 py-2 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 shadow-2xs">
             <span className="relative flex h-3 w-3">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -992,7 +1152,24 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             </span>
           </div>
 
-
+          {/* Interactive Exam Date Selector */}
+          {availableDates.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50/90 border border-blue-200 rounded-xl shadow-2xs">
+              <Calendar className="h-4 w-4 text-[#1565D8] shrink-0" />
+              <span className="text-[11px] font-bold text-slate-500 uppercase hidden sm:inline">Exam Date:</span>
+              <select
+                value={activeExamDate}
+                onChange={(e) => handleSelectExamDate(e.target.value)}
+                className="bg-transparent text-xs font-black text-[#1565D8] cursor-pointer focus:outline-none"
+              >
+                {availableDates.map(d => (
+                  <option key={d.date} value={d.date}>
+                    {d.displayDate} ({d.totalRecords} scripts • {d.totalClasses} classes)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="hidden lg:flex items-center gap-2 text-xs font-semibold text-slate-600">
             <span className="text-slate-300">•</span>
@@ -1421,8 +1598,15 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                 <span>← Switch Class ID (Stage 1)</span>
               </button>
               <div>
-                <div className="text-xs font-black uppercase tracking-wider text-emerald-200">
-                  STAGE 2 • INWARDING MEMBER BOOKLETS
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black uppercase tracking-wider text-emerald-200">
+                    STAGE 2 • INWARDING MEMBER BOOKLETS
+                  </span>
+                  {(activeBundle?.examDate || activeExamDate) && (
+                    <span className="px-2 py-0.5 bg-black/25 text-white border border-white/25 rounded-md text-[10px] font-mono font-bold">
+                      Exam Date: {formatExamDate(activeBundle?.examDate || activeExamDate)}
+                    </span>
+                  )}
                 </div>
                 <div className="text-xl sm:text-2xl font-black tracking-tight font-mono">
                   Active Bundle: Class ID {selectedClassId}
@@ -1462,8 +1646,14 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                     <span className="text-3xl font-black font-mono tracking-tight text-[#1565D8]">
                       Class ID: {selectedClassId}
                     </span>
-                    <div className="text-xs text-slate-500 font-semibold mt-1">
-                      Target: {activeExpected} Booklets
+                    <div className="flex items-center gap-2 text-xs text-slate-500 font-semibold mt-1">
+                      <span>Target: {activeExpected} Booklets</span>
+                      {(activeBundle?.examDate || activeExamDate) && (
+                        <>
+                          <span>•</span>
+                          <span className="text-blue-600 font-bold">{formatExamDate(activeBundle?.examDate || activeExamDate)}</span>
+                        </>
+                      )}
                     </div>
                   </div>
                   <div className="text-right">
@@ -1896,6 +2086,89 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                   </table>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXAM DATE MISMATCH WARNING MODAL */}
+      {dateMismatchModal && dateMismatchModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/75 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-lg w-full p-6 text-[#172033] relative">
+            <button
+              onClick={() => setDateMismatchModal(null)}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-600 shrink-0 shadow-xs">
+                <AlertTriangle className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="flex-1 pr-6">
+                <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
+                  Exam Date Mismatch
+                </h3>
+                <p className="text-xs text-amber-700 font-semibold mt-0.5">
+                  Inwarding Blocked For Selected Station Schedule
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 p-4 rounded-xl bg-amber-50/80 border border-amber-200 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-600">Scanned Booklet Exam Date:</span>
+                <span className="px-2.5 py-1 bg-amber-200/90 text-amber-900 font-black rounded-lg border border-amber-300 font-mono">
+                  📅 {dateMismatchModal.recordExamDate}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-600">Current Station Date:</span>
+                <span className="px-2.5 py-1 bg-blue-100 text-blue-900 font-black rounded-lg border border-blue-200 font-mono">
+                  📅 {dateMismatchModal.activeExamDate}
+                </span>
+              </div>
+              {dateMismatchModal.targetClassId && (
+                <div className="flex items-center justify-between text-xs border-t border-amber-200/70 pt-2">
+                  <span className="font-medium text-slate-500">Class ID:</span>
+                  <span className="font-bold font-mono text-slate-800">{dateMismatchModal.targetClassId}</span>
+                </div>
+              )}
+              {dateMismatchModal.memberId && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-500">Member ID / Barcode:</span>
+                  <span className="font-bold font-mono text-slate-800">{dateMismatchModal.memberId}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 text-xs leading-relaxed text-slate-600 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+              <p className="font-medium">
+                This booklet belongs to date <strong className="text-amber-800 font-black">{dateMismatchModal.recordExamDate}</strong>.
+                You cannot inward it under the current station date (<strong className="text-blue-800 font-black">{dateMismatchModal.activeExamDate}</strong>).
+              </p>
+              <p className="mt-1 text-slate-500 font-medium">
+                To inward this booklet, please change the date to <strong className="text-amber-800 font-black">{dateMismatchModal.recordExamDate}</strong> and open that bundle.
+              </p>
+            </div>
+
+            <div className="mt-6 flex flex-col sm:flex-row items-center gap-3">
+              <button
+                type="button"
+                onClick={() => handleSwitchDateAndOpenBundle(dateMismatchModal.recordExamDate, dateMismatchModal.targetClassId)}
+                className="w-full sm:flex-1 py-3 px-4 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+              >
+                <Calendar className="w-4 h-4" />
+                Switch Date to {dateMismatchModal.recordExamDate} & Open Bundle
+              </button>
+              <button
+                type="button"
+                onClick={() => setDateMismatchModal(null)}
+                className="w-full sm:w-auto py-3 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+              >
+                Dismiss
+              </button>
             </div>
           </div>
         </div>

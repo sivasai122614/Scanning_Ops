@@ -339,6 +339,9 @@ export interface ScanResult {
   shouldRedirectToBundle?: boolean;
   isComplete?: boolean;
   isAllScanned?: boolean;
+  isDateMismatch?: boolean;
+  expectedDate?: string;
+  activeDate?: string;
 }
 
 export interface UserClassInwardSummary {
@@ -615,6 +618,18 @@ class ImportedService {
       }
     } catch {}
     this.notify();
+  }
+
+  public getClassExamDate(classId: string): string | undefined {
+    const clean = normalizeIdentifier(classId).toLowerCase();
+    const match = this.importInwarded.find(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === clean && Boolean(r.exam_date)
+    );
+    return match?.exam_date;
+  }
+
+  public getImportInwardedRecords(): ImportInwardedRecord[] {
+    return [...this.importInwarded];
   }
 
   public rebuildDateIndex(): void {
@@ -1971,10 +1986,11 @@ class ImportedService {
     return result;
   }
 
-  public getClassBundle(classId: string): ClassBundle | null {
+  public getClassBundle(classId: string, dateFilter?: ExamDateFilter): ClassBundle | null {
     if (!classId) return null;
     const clean = normalizeIdentifier(classId).toLowerCase();
-    const bundles = this.getClassBundles();
+    const filterToUse = dateFilter !== undefined ? dateFilter : (this.activeExamDate || null);
+    const bundles = this.getClassBundles(filterToUse);
     return bundles.find(b => normalizeIdentifier(b.classId).toLowerCase() === clean) || null;
   }
 
@@ -2005,32 +2021,69 @@ class ImportedService {
   // ==============================================================================
   // BUNDLE RECORDS VIEW (Section 7 & 30)
   // All members displayed inside the class come from imported_inward_data
+  // Scoped to active exam date and optionally user role
   // ==============================================================================
-  public getBundleRecordViews(classId: string): BundleRecordView[] {
+  public getBundleRecordViews(
+    classId: string,
+    dateFilter?: ExamDateFilter,
+    userFilter?: any
+  ): BundleRecordView[] {
     const clean = normalizeIdentifier(classId).toLowerCase();
+    const filterToUse = dateFilter !== undefined ? dateFilter : (this.activeExamDate || null);
 
     // Expected members for this class from imported_inward_data
-    const expected = this.importInwarded.filter(
+    let expected = this.importInwarded.filter(
       r => normalizeIdentifier(r.class_id).toLowerCase() === clean
     );
+    if (filterToUse && filterToUse !== 'ALL') {
+      expected = expected.filter(r => isRecordMatchingDateFilter(r.exam_date, filterToUse));
+    }
 
     const activeUni = (this.activeUniversity || '').toLowerCase();
 
     // Saved scans for this class from saved_scanned_data scoped to active university
-    const saved = this.savedScanned.filter(
+    let saved = this.savedScanned.filter(
       s => normalizeIdentifier(s.class_id).toLowerCase() === clean &&
            (!activeUni || !s.college_name || s.college_name.toLowerCase() === activeUni)
     );
+
+    // Backfill exam_date from imported records if missing
+    for (const s of saved) {
+      if (!s.exam_date) {
+        const match = this.importInwarded.find(
+          r => normalizeIdentifier(r.class_id).toLowerCase() === clean &&
+               normalizeIdentifier(r.member_id).toLowerCase() === normalizeIdentifier(s.member_id).toLowerCase()
+        );
+        if (match?.exam_date) {
+          s.exam_date = match.exam_date;
+        }
+      }
+    }
+
+    if (filterToUse && filterToUse !== 'ALL') {
+      saved = saved.filter(s => isRecordMatchingDateFilter(s.exam_date, filterToUse));
+    }
+
+    if (userFilter) {
+      saved = saved.filter(s => isRecordInwardedByUser(s, userFilter));
+    }
+
     const savedMap = new Map<string, SavedScannedRecord>();
     for (const s of saved) {
       savedMap.set(normalizeIdentifier(s.member_id).toLowerCase(), s);
     }
 
     // Manual inwards for this class from manual_inward_data scoped to active university
-    const manual = this.manualInwarded.filter(
+    let manual = this.manualInwarded.filter(
       m => normalizeIdentifier(m.class_id).toLowerCase() === clean &&
            (!activeUni || !m.college_name || m.college_name.toLowerCase() === activeUni)
     );
+    if (filterToUse && filterToUse !== 'ALL') {
+      manual = manual.filter(m => isRecordMatchingDateFilter(m.exam_date, filterToUse));
+    }
+    if (userFilter) {
+      manual = manual.filter(m => isRecordInwardedByUser(m, userFilter));
+    }
     const manualMap = new Map<string, ManualInwardedRecord>();
     for (const m of manual) {
       const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '');
@@ -2040,9 +2093,12 @@ class ImportedService {
     }
 
     // Pending scans for this class
-    const pending = this.scanItems.filter(
+    let pending = this.scanItems.filter(
       i => normalizeIdentifier(i.class_id).toLowerCase() === clean && i.status === 'PENDING_SAVE'
     );
+    if (userFilter) {
+      pending = pending.filter(p => isRecordInwardedByUser({ scanned_by: p.detected_by }, userFilter));
+    }
     const pendingMap = new Map<string, ScanSessionItem>();
     for (const p of pending) {
       pendingMap.set(normalizeIdentifier(p.member_id).toLowerCase(), p);
@@ -2064,6 +2120,7 @@ class ImportedService {
           class_id: exp.class_id,
           member_id: mid,
           barcode: sv.barcode || exp.barcode || null,
+          exam_date: sv.exam_date || exp.exam_date || null,
           scan_status: 'saved',
           scanned_by: sv.scanned_by,
           scanned_at: sv.scanned_at,
@@ -2076,6 +2133,7 @@ class ImportedService {
           class_id: exp.class_id,
           member_id: mid,
           barcode: man.booklet_barcode || exp.barcode || null,
+          exam_date: man.exam_date || exp.exam_date || null,
           scan_status: 'saved',
           scanned_by: man.inwarded_by || 'Manual Inward',
           scanned_at: man.scanned_at || man.created_at,
@@ -2088,6 +2146,7 @@ class ImportedService {
           class_id: exp.class_id,
           member_id: mid,
           barcode: pend.barcode || exp.barcode || null,
+          exam_date: exp.exam_date || null,
           scan_status: 'pending_save',
           scanned_by: pend.detected_by,
           scanned_at: pend.detected_at,
@@ -2100,6 +2159,7 @@ class ImportedService {
           class_id: exp.class_id,
           member_id: mid,
           barcode: exp.barcode || null,
+          exam_date: exp.exam_date || null,
           scan_status: 'not_started',
           scanned_by: null,
           scanned_at: null,
@@ -4240,10 +4300,13 @@ class ImportedService {
    */
   public async validateMemberForClass(
     activeClassId: string,
-    rawMemberId: string
+    rawMemberId: string,
+    expectedExamDate?: string
   ): Promise<{
-    status: 'VALID' | 'WRONG_CLASS' | 'NOT_FOUND';
+    status: 'VALID' | 'WRONG_CLASS' | 'NOT_FOUND' | 'DATE_MISMATCH';
     actualClassId?: string;
+    actualExamDate?: string;
+    expectedExamDate?: string;
     record?: ImportInwardedRecord;
   }> {
     const cleanActiveCid = normalizeIdentifier(activeClassId);
@@ -4300,6 +4363,7 @@ class ImportedService {
               sch_id: row.sch_id,
               member_id: row.member_id,
               barcode: row.barcode ? row.barcode : undefined,
+              exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : undefined),
               created_by: row.created_by,
               created_at: row.created_at || new Date().toISOString(),
             };
@@ -4322,6 +4386,7 @@ class ImportedService {
                 sch_id: row.sch_id,
                 member_id: row.member_id,
                 barcode: row.barcode ? row.barcode : undefined,
+                exam_date: row.exam_date ? normalizeExamDate(row.exam_date) : (row.date ? normalizeExamDate(row.date) : undefined),
                 created_by: row.created_by,
                 created_at: row.created_at || new Date().toISOString(),
               };
@@ -4345,6 +4410,22 @@ class ImportedService {
     }
 
     const importedClassId = foundRecord.class_id;
+
+    // Check date mismatch if date filtering is active
+    const activeDateFilter = expectedExamDate || this.activeExamDate;
+    if (activeDateFilter && activeDateFilter !== 'ALL' && foundRecord.exam_date) {
+      if (!isRecordMatchingDateFilter(foundRecord.exam_date, activeDateFilter)) {
+        const actualDmy = formatExamDate(foundRecord.exam_date) || foundRecord.exam_date;
+        const currentDmy = formatExamDate(activeDateFilter) || activeDateFilter;
+        return {
+          status: 'DATE_MISMATCH',
+          actualClassId: importedClassId,
+          actualExamDate: actualDmy,
+          expectedExamDate: currentDmy,
+          record: foundRecord,
+        };
+      }
+    }
 
     // If member exists and imported class_id === currentClassId
     if (normalizeIdentifier(importedClassId).toLowerCase() === cidLower) {
@@ -4635,7 +4716,8 @@ class ImportedService {
   public async processMobileMemberBarcodeScan(
     activeClassId: string,
     rawBarcode: string,
-    operatorOverride?: string
+    operatorOverride?: string,
+    expectedExamDate?: string
   ): Promise<ScanResult> {
     const normalized = normalizeIdentifier(rawBarcode);
     const cleanActiveCid = normalizeIdentifier(activeClassId);
@@ -4773,6 +4855,27 @@ class ImportedService {
     const resolvedMemberId = importedRow.member_id;
     const resolvedClassId = importedRow.class_id;
     const resolvedBarcode = importedRow.barcode || normalized;
+
+    // STEP 4b: Verify exam date matches active station date if date filtering is active
+    const activeDateFilter = expectedExamDate || this.activeExamDate;
+    if (activeDateFilter && activeDateFilter !== 'ALL' && importedRow.exam_date) {
+      if (!isRecordMatchingDateFilter(importedRow.exam_date, activeDateFilter)) {
+        const actualDmy = formatExamDate(importedRow.exam_date) || importedRow.exam_date;
+        const currentDmy = formatExamDate(activeDateFilter) || activeDateFilter;
+        console.warn(`[STAGE 2] Exam date mismatch: Record belongs to date ${actualDmy}, active station date is ${currentDmy}`);
+        return {
+          success: false,
+          isDateMismatch: true,
+          class_id: activeClassId,
+          detectedClassId: resolvedClassId,
+          detectedMemberId: resolvedMemberId,
+          barcode: normalized,
+          expectedDate: actualDmy,
+          activeDate: currentDmy,
+          message: `This booklet belongs to Exam Date: ${actualDmy}. Current station date is ${currentDmy}.`,
+        };
+      }
+    }
 
     // STEP 5: Verify resolved class_id matches active Class ID
     if (normalizeIdentifier(resolvedClassId).toLowerCase() !== cleanActiveCid.toLowerCase()) {
