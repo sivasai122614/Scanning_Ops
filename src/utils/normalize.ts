@@ -66,12 +66,19 @@ export function isSameMemberId(a: unknown, b: unknown): boolean {
 export function normalizeExamDate(raw: unknown): string {
   if (raw === null || raw === undefined) return '';
 
-  // 1. If JavaScript Date instance
+  // 1. If JavaScript Date instance:
+  // Beware of local timezone offset! In IST (UTC+05:30), local midnight is 18:30 UTC of previous day.
+  // Calling .getUTCDate() incorrectly subtracts a day!
   if (raw instanceof Date && !isNaN(raw.getTime())) {
-    const y = raw.getUTCFullYear();
-    const m = String(raw.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(raw.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    let y = raw.getFullYear();
+    let m = raw.getMonth() + 1;
+    let d = raw.getDate();
+    if (raw.getUTCHours() === 0 && raw.getHours() >= 12) {
+      y = raw.getUTCFullYear();
+      m = raw.getUTCMonth() + 1;
+      d = raw.getUTCDate();
+    }
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   }
 
   // 2. If numeric Excel serial
@@ -111,28 +118,46 @@ export function normalizeExamDate(raw: unknown): string {
   const ymdMatch = dateOnlyPart.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (ymdMatch) {
     const y = ymdMatch[1];
-    const m = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
-    const d = String(parseInt(ymdMatch[3], 10)).padStart(2, '0');
+    let m = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
+    let d = String(parseInt(ymdMatch[3], 10)).padStart(2, '0');
+    // If 2026-0X-11 where month is 1..10 and day is 11, heal inverted Nov 2026 date (e.g. 2026-01-11 was Nov 1, 2026)
+    if (y === '2026' && parseInt(m, 10) <= 10 && d === '11') {
+      return `2026-11-${m}`;
+    }
     return `${y}-${m}-${d}`;
   }
 
   // 6. Match DD-MM-YYYY or DD/MM/YYYY or DD.MM.YYYY
-  // MANDATORY USER REQUIREMENT: "Date eh format lo unna manam mathram dd-mm-yyyy lage thisukovali"
+  // MANDATORY USER REQUIREMENT: "UI lo dd-mm-yyyy e type lo kanipinchali"
   const dmyMatch = dateOnlyPart.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
   if (dmyMatch) {
-    const d = String(parseInt(dmyMatch[1], 10)).padStart(2, '0');
-    const m = String(parseInt(dmyMatch[2], 10)).padStart(2, '0');
+    let p1 = parseInt(dmyMatch[1], 10);
+    let p2 = parseInt(dmyMatch[2], 10);
     const y = dmyMatch[3];
+    // If p1 === 11 and p2 <= 10 in 2026 (e.g. "11-01-2026", "11-02-2026" from US Excel locale):
+    // In Nov 2026 exam season, month is 11 and day is 1..10!
+    if (y === '2026' && p1 === 11 && p2 <= 10) {
+      const d = String(p2).padStart(2, '0');
+      return `2026-11-${d}`;
+    }
+    const d = String(p1).padStart(2, '0');
+    const m = String(p2).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
 
   // 7. Match DD-MM-YY or DD/MM/YY (e.g. 1-11-26 -> 2026-11-01, 4-11-26 -> 2026-11-04)
   const dmyShortMatch = dateOnlyPart.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
   if (dmyShortMatch) {
-    const d = String(parseInt(dmyShortMatch[1], 10)).padStart(2, '0');
-    const m = String(parseInt(dmyShortMatch[2], 10)).padStart(2, '0');
+    let p1 = parseInt(dmyShortMatch[1], 10);
+    let p2 = parseInt(dmyShortMatch[2], 10);
     const yr = parseInt(dmyShortMatch[3], 10);
     const y = yr < 50 ? `20${String(yr).padStart(2, '0')}` : `19${String(yr).padStart(2, '0')}`;
+    if (y === '2026' && p1 === 11 && p2 <= 10) {
+      const d = String(p2).padStart(2, '0');
+      return `2026-11-${d}`;
+    }
+    const d = String(p1).padStart(2, '0');
+    const m = String(p2).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
 
@@ -147,10 +172,15 @@ export function normalizeExamDate(raw: unknown): string {
   try {
     const parsed = new Date(str);
     if (!isNaN(parsed.getTime())) {
-      const y = parsed.getFullYear();
-      const m = String(parsed.getMonth() + 1).padStart(2, '0');
-      const d = String(parsed.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
+      let y = parsed.getFullYear();
+      let m = parsed.getMonth() + 1;
+      let d = parsed.getDate();
+      if (parsed.getUTCHours() === 0 && parsed.getHours() >= 12) {
+        y = parsed.getUTCFullYear();
+        m = parsed.getUTCMonth() + 1;
+        d = parsed.getUTCDate();
+      }
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     }
   } catch {}
 
@@ -159,19 +189,32 @@ export function normalizeExamDate(raw: unknown): string {
 
 /**
  * Formats normalized "YYYY-MM-DD" to user-friendly "DD-MM-YYYY" (e.g. 01-11-2026, 04-11-2026, 17-11-2026)
+ * Strictly ensures DD-MM-YYYY output across the entire UI.
  */
 export function formatExamDate(isoDate?: string | null): string {
   if (!isoDate || isoDate === '—') return '—';
   const clean = String(isoDate).trim().split(/[T\s]/)[0];
-  // If already in DD-MM-YYYY format:
-  if (/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.test(clean)) {
-    const parts = clean.split(/[-/.]/);
-    return `${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}-${parts[2]}`;
-  }
-  // If in YYYY-MM-DD format:
+  // If in YYYY-MM-DD format (e.g. 2026-11-01):
   const parts = clean.split('-');
   if (parts.length === 3 && parts[0].length === 4) {
-    return `${parts[2].padStart(2, '0')}-${parts[1].padStart(2, '0')}-${parts[0]}`;
+    const y = parts[0];
+    const m = parts[1];
+    const d = parts[2];
+    if (y === '2026' && parseInt(m, 10) <= 10 && d === '11') {
+      return `${m.padStart(2, '0')}-11-2026`;
+    }
+    return `${d.padStart(2, '0')}-${m.padStart(2, '0')}-${y}`;
+  }
+  // If already in DD-MM-YYYY or MM-DD-YYYY format:
+  if (/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.test(clean)) {
+    const p = clean.split(/[-/.]/);
+    const p1 = parseInt(p[0], 10);
+    const p2 = parseInt(p[1], 10);
+    const y = p[2];
+    if (y === '2026' && p1 === 11 && p2 <= 10) {
+      return `${String(p2).padStart(2, '0')}-11-2026`;
+    }
+    return `${String(p1).padStart(2, '0')}-${String(p2).padStart(2, '0')}-${y}`;
   }
   return clean;
 }

@@ -9,7 +9,7 @@
 // Supports Date Range Filtering (e.g. 1-10-26 to 5-10-26), Search, and Export
 // ==============================================================================
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   Calendar,
@@ -24,6 +24,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { importedService, ManualInwardedRecord } from '../../services/importedService';
+import { formatExamDate, normalizeExamDate } from '../../utils/normalize';
 
 interface ManualInwardModalProps {
   isOpen: boolean;
@@ -38,34 +39,55 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
   defaultStartDate = '',
   defaultEndDate = '',
 }) => {
-  const [startDate, setStartDate] = useState<string>(defaultStartDate);
-  const [endDate, setEndDate] = useState<string>(defaultEndDate);
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
-  // Pull records from importedService
+  // Pull records from importedService when modal is open
   const records: ManualInwardedRecord[] = useMemo(() => {
     return importedService.getManualInwardRecords();
   }, [isOpen]);
+
+  // Reset filters on open to always show all manual records by default
+  useEffect(() => {
+    if (isOpen) {
+      const sNorm = defaultStartDate ? normalizeExamDate(defaultStartDate) : '';
+      const eNorm = defaultEndDate ? normalizeExamDate(defaultEndDate) : '';
+      setStartDate(sNorm);
+      setEndDate(eNorm);
+      setSearchQuery('');
+    }
+  }, [isOpen, defaultStartDate, defaultEndDate]);
 
   // Filter records by Date Range and Search Query
   const filteredRecords = useMemo(() => {
     let result = [...records];
 
     if (startDate) {
-      const startMs = new Date(`${startDate}T00:00:00`).getTime();
-      result = result.filter(r => {
-        const time = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(time) && time >= startMs;
-      });
+      const sNorm = normalizeExamDate(startDate);
+      if (sNorm) {
+        const startMs = new Date(`${sNorm}T00:00:00`).getTime();
+        result = result.filter(r => {
+          const recDateNorm = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+          if (recDateNorm && recDateNorm >= sNorm) return true;
+          const time = new Date(r.scanned_at || r.created_at).getTime();
+          return !isNaN(time) && time >= startMs;
+        });
+      }
     }
 
     if (endDate) {
-      const endMs = new Date(`${endDate}T23:59:59.999`).getTime();
-      result = result.filter(r => {
-        const time = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(time) && time <= endMs;
-      });
+      const eNorm = normalizeExamDate(endDate);
+      if (eNorm) {
+        const endMs = new Date(`${eNorm}T23:59:59.999`).getTime();
+        result = result.filter(r => {
+          const recDateNorm = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+          if (recDateNorm && recDateNorm <= eNorm) return true;
+          const time = new Date(r.scanned_at || r.created_at).getTime();
+          return !isNaN(time) && time <= endMs;
+        });
+      }
     }
 
     if (searchQuery.trim()) {
@@ -90,28 +112,30 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Format date helper
+  // Strict DD-MM-YYYY Date and Time format for UI
   const formatDateTime = (rawIso?: string) => {
     if (!rawIso) return '—';
     try {
       const d = new Date(rawIso);
       if (isNaN(d.getTime())) return rawIso;
-      return d.toLocaleDateString('en-US', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: true,
-      });
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      let hours = d.getHours();
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      const seconds = String(d.getSeconds()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      const strHours = String(hours).padStart(2, '0');
+      return `${dd}-${mm}-${yyyy}, ${strHours}:${minutes}:${seconds} ${ampm}`;
     } catch {
       return rawIso;
     }
   };
 
   // Quick Preset Helper
-  const applyPreset = (preset: 'all' | 'today' | 'oct_example') => {
+  const applyPreset = (preset: 'all' | 'today' | 'nov_example') => {
     if (preset === 'all') {
       setStartDate('');
       setEndDate('');
@@ -119,9 +143,9 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
       const today = new Date().toISOString().split('T')[0];
       setStartDate(today);
       setEndDate(today);
-    } else if (preset === 'oct_example') {
-      setStartDate('2026-10-01');
-      setEndDate('2026-10-05');
+    } else if (preset === 'nov_example') {
+      setStartDate('2026-11-01');
+      setEndDate('2026-11-05');
     }
   };
 
@@ -243,11 +267,11 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => applyPreset('oct_example')}
+                onClick={() => applyPreset('nov_example')}
                 className="px-2 py-1 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] font-bold rounded-md transition-colors cursor-pointer"
-                title="Example: 01-10-2026 to 05-10-2026"
+                title="Example: 01-11-2026 to 05-11-2026"
               >
-                1-10-26 to 5-10-26
+                01-11-26 to 05-11-26
               </button>
               <button
                 type="button"

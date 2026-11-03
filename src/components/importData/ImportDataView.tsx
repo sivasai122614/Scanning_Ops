@@ -204,7 +204,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       reader.onload = evt => {
         try {
           const bstr = evt.target?.result;
-          const workbook = XLSX.read(bstr, { type: 'binary', cellDates: true });
+          const workbook = XLSX.read(bstr, { type: 'binary', cellDates: false });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           // raw: false ensures strings with leading zeros like "0031" are preserved as pure strings
@@ -325,21 +325,32 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               const cellAddress = XLSX.utils.encode_cell({ r: i, c: dateColIdx });
               const cell = worksheet[cellAddress];
               if (cell) {
-                if (cell.v instanceof Date && !isNaN(cell.v.getTime())) {
-                  const y = cell.v.getUTCFullYear();
-                  const m = String(cell.v.getUTCMonth() + 1).padStart(2, '0');
-                  const d = String(cell.v.getUTCDate()).padStart(2, '0');
-                  normDate = `${y}-${m}-${d}`;
-                } else if (typeof cell.v === 'number' && cell.v > 30000 && cell.v < 75000) {
-                  const ms = Math.round((cell.v - 25569) * 86400 * 1000);
-                  const dObj = new Date(ms);
-                  if (!isNaN(dObj.getTime())) {
-                    const y = dObj.getUTCFullYear();
-                    const m = String(dObj.getUTCMonth() + 1).padStart(2, '0');
-                    const d = String(dObj.getUTCDate()).padStart(2, '0');
-                    normDate = `${y}-${m}-${d}`;
+                // Priority 1: Check formatted text string in cell.w (e.g. "3-11-26") or rawDate
+                const textCandidate = (typeof cell.w === 'string' && cell.w.trim()) ||
+                                      (typeof rawDate === 'string' && rawDate.trim()) ||
+                                      (typeof cell.v === 'string' && cell.v.trim());
+                if (textCandidate) {
+                  normDate = normalizeExamDate(textCandidate);
+                }
+
+                // Priority 2: If numeric Excel date code (e.g. 46329 for 3-Nov-2026)
+                if (!normDate && typeof cell.v === 'number' && cell.v > 30000 && cell.v < 75000) {
+                  if ((XLSX as any).SSF && typeof (XLSX as any).SSF.parse_date_code === 'function') {
+                    const parsed = (XLSX as any).SSF.parse_date_code(cell.v);
+                    if (parsed && parsed.y && parsed.m && parsed.d) {
+                      const y = parsed.y;
+                      const m = String(parsed.m).padStart(2, '0');
+                      const d = String(parsed.d).padStart(2, '0');
+                      normDate = `${y}-${m}-${d}`;
+                    }
                   }
-                } else if (cell.v !== null && cell.v !== undefined) {
+                  if (!normDate) {
+                    normDate = normalizeExamDate(cell.v);
+                  }
+                }
+
+                // Priority 3: If Date instance
+                if (!normDate && cell.v instanceof Date && !isNaN(cell.v.getTime())) {
                   normDate = normalizeExamDate(cell.v);
                 }
               }

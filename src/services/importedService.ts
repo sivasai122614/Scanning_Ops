@@ -2000,18 +2000,28 @@ class ImportedService {
   public getManualInwardRecords(startDate?: string, endDate?: string): ManualInwardedRecord[] {
     let list = [...this.manualInwarded];
     if (startDate) {
-      const sTime = new Date(`${startDate}T00:00:00.000`).getTime();
-      list = list.filter(r => {
-        const t = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(t) && t >= sTime;
-      });
+      const sNorm = normalizeExamDate(startDate);
+      if (sNorm) {
+        const sTime = new Date(`${sNorm}T00:00:00.000`).getTime();
+        list = list.filter(r => {
+          const recNorm = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+          if (recNorm && recNorm >= sNorm) return true;
+          const t = new Date(r.scanned_at || r.created_at).getTime();
+          return !isNaN(t) && t >= sTime;
+        });
+      }
     }
     if (endDate) {
-      const eTime = new Date(`${endDate}T23:59:59.999`).getTime();
-      list = list.filter(r => {
-        const t = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(t) && t <= eTime;
-      });
+      const eNorm = normalizeExamDate(endDate);
+      if (eNorm) {
+        const eTime = new Date(`${eNorm}T23:59:59.999`).getTime();
+        list = list.filter(r => {
+          const recNorm = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+          if (recNorm && recNorm <= eNorm) return true;
+          const t = new Date(r.scanned_at || r.created_at).getTime();
+          return !isNaN(t) && t <= eTime;
+        });
+      }
     }
     // Sort newest first
     list.sort((a, b) => new Date(b.scanned_at || b.created_at).getTime() - new Date(a.scanned_at || a.created_at).getTime());
@@ -3810,14 +3820,16 @@ class ImportedService {
 
     if (isSupabaseConfigured) {
       try {
-        const { data: dbExpected1 } = await fetchAllRowsFromTable('imported_inward_data', q => q.eq('university_name', uni));
+        const { data: dbExpected1 } = await fetchAllRowsFromTable('imported_inward_data', q =>
+          q.or(`university_name.eq.${uni},college_name.eq.${uni}`)
+        );
 
         if (dbExpected1 && Array.isArray(dbExpected1) && dbExpected1.length > 0) {
           uniExpected = dbExpected1.map((r: any) => ({
             id: r.id,
             import_session_id: r.import_session_id || 'default_sess',
-            college_name: r.university_name || uni,
-            university_name: r.university_name || uni,
+            college_name: r.university_name || r.college_name || uni,
+            university_name: r.university_name || r.college_name || uni,
             class_id: String(r.class_id).trim(),
             member_id: String(r.member_id).trim(),
             barcode: r.barcode,
@@ -3832,8 +3844,8 @@ class ImportedService {
               uniExpected = dbExpected2.map((r: any) => ({
                 id: r.id,
                 import_session_id: r.import_session_id,
-                college_name: r.college_name,
-                university_name: r.university_name || r.college_name,
+                college_name: r.college_name || r.university_name || uni,
+                university_name: r.university_name || r.college_name || uni,
                 class_id: String(r.class_id).trim(),
                 sch_id: r.sch_id,
                 member_id: String(r.member_id).trim(),
@@ -3848,14 +3860,16 @@ class ImportedService {
           }
         }
 
-        const { data: dbSaved } = await fetchAllRowsFromTable('saved_scanned_data', q => q.eq('college_name', uni));
+        const { data: dbSaved } = await fetchAllRowsFromTable('saved_scanned_data', q =>
+          q.or(`college_name.eq.${uni},university_name.eq.${uni}`)
+        );
 
         if (dbSaved && Array.isArray(dbSaved)) {
           uniSaved = dbSaved.map((s: any) => ({
             id: s.id,
             scan_session_id: s.scan_session_id,
             import_session_id: s.import_session_id,
-            college_name: s.college_name,
+            college_name: s.college_name || (s as any).university_name || uni,
             class_id: String(s.class_id).trim(),
             sch_id: s.sch_id,
             member_id: String(s.member_id).trim(),
@@ -3873,20 +3887,30 @@ class ImportedService {
       }
     }
 
-    // Fallback to in-memory state if remote fetch produced no records
-    if (uniExpected.length === 0) {
-      uniExpected = this.importInwarded.filter(
-        r => (r.college_name && r.college_name.toLowerCase() === uni.toLowerCase()) ||
-             (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase())
-      );
-    }
-    if (uniSaved.length === 0) {
-      uniSaved = this.savedScanned.filter(
-        s => s.college_name && s.college_name.toLowerCase() === uni.toLowerCase()
-      );
+    // Include in-memory state to ensure full synchronization with active UI view
+    const memExpected = this.importInwarded.filter(
+      r => (r.college_name && r.college_name.toLowerCase() === uni.toLowerCase()) ||
+           (r.university_name && r.university_name.toLowerCase() === uni.toLowerCase())
+    );
+    if (memExpected.length > uniExpected.length || uniExpected.length === 0) {
+      uniExpected = memExpected;
     }
 
-    // Backfill exam_date on saved records if missing
+    const memSaved = this.savedScanned.filter(
+      s => (s.college_name && s.college_name.toLowerCase() === uni.toLowerCase()) ||
+           ((s as any).university_name && (s as any).university_name.toLowerCase() === uni.toLowerCase())
+    );
+    if (memSaved.length > uniSaved.length || uniSaved.length === 0) {
+      uniSaved = memSaved;
+    }
+
+    // Ensure all records have their authoritative exam_date populated
+    for (const r of uniExpected) {
+      if (!r.exam_date) {
+        const cDate = this.getClassExamDate(r.class_id);
+        if (cDate) r.exam_date = cDate;
+      }
+    }
     for (const s of uniSaved) {
       if (!s.exam_date) {
         const match = uniExpected.find(r =>
@@ -3898,6 +3922,9 @@ class ImportedService {
         );
         if (match?.exam_date) {
           s.exam_date = match.exam_date;
+        } else {
+          const cDate = this.getClassExamDate(s.class_id);
+          if (cDate) s.exam_date = cDate;
         }
       }
     }
@@ -3910,12 +3937,12 @@ class ImportedService {
 
     // Map of saved members: class_id::member_id
     const savedKeys = new Set(
-      uniSaved.map(s => `${s.class_id.toLowerCase()}::${s.member_id.toLowerCase()}`)
+      uniSaved.map(s => `${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
     );
 
     // Not Scanned records = Expected MINUS Saved
     const uniNotScanned = uniExpected.filter(
-      r => !savedKeys.has(`${r.class_id.toLowerCase()}::${r.member_id.toLowerCase()}`)
+      r => !savedKeys.has(`${normalizeIdentifier(r.class_id).toLowerCase()}::${normalizeIdentifier(r.member_id).toLowerCase()}`)
     );
 
     // ---------------------------------------------------------------------------

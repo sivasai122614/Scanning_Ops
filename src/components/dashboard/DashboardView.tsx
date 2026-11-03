@@ -1463,8 +1463,6 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       <ManualInwardModal
         isOpen={isManualModalOpen}
         onClose={() => setIsManualModalOpen(false)}
-        defaultStartDate={filterStartDate}
-        defaultEndDate={filterEndDate}
       />
 
       {/* Delete Class Confirmation Modal */}
