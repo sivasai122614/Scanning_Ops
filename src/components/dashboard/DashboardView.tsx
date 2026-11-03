@@ -796,11 +796,6 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </span>
             <span>Realtime Live</span>
           </span>
-
-          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F1F5F9] border border-[#CBD5E1] rounded-xl text-[#475569] text-xs font-bold uppercase tracking-wider shadow-2xs">
-            <Activity className="h-3.5 w-3.5 text-[#1565D8]" />
-            <span>Monitoring Overview</span>
-          </span>
         </div>
       </div>
 
@@ -900,34 +895,34 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
       </div>
 
-      {/* 3. Enlarged Statistics KPI Cards Grid (Generous Padding & Big Numbers to Fill Space) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 sm:gap-6 w-full">
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASS IDs</div>
-          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">{totalClasses}</div>
-          <div className="text-xs text-[#64748B] mt-1.5 font-medium">Imported Examination Sessions</div>
+      {/* 3. Statistics KPI Cards Grid (Responsive 2-column on mobile, 4-column on desktop) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6 w-full">
+        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASS IDs</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5">{totalClasses}</div>
+          <div className="text-[10px] sm:text-xs text-[#64748B] mt-1 sm:mt-1.5 font-medium truncate">Imported Sessions</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
-          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">{totalExpected}</div>
-          <div className="text-xs text-[#64748B] mt-1.5 font-medium">Source Baseline from Excel</div>
+        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5">{totalExpected}</div>
+          <div className="text-[10px] sm:text-xs text-[#64748B] mt-1 sm:mt-1.5 font-medium truncate">Baseline from Excel</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border-2 border-blue-400/80 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 hover:-translate-y-0.5 relative overflow-hidden">
-          <div className="absolute top-3 right-3 flex h-3 w-3">
+        <div className="bg-white p-3.5 sm:p-6 border-2 border-blue-400/80 rounded-xl sm:rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 relative overflow-hidden">
+          <div className="absolute top-2.5 right-2.5 sm:top-3 sm:right-3 flex h-2.5 w-2.5 sm:h-3 sm:w-3">
             <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-[#1565D8]" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 sm:h-3 sm:w-3 bg-[#1565D8]" />
           </div>
-          <div className="text-xs font-bold text-[#1565D8] uppercase tracking-wider">RECEIVED BOOKLETS</div>
-          <div className="text-4xl sm:text-5xl font-black text-[#1565D8] font-tabular mt-2.5">{totalReceived}</div>
-          <div className="text-xs text-[#1565D8] mt-1.5 font-semibold">Verified &amp; Inwarded</div>
+          <div className="text-[10px] sm:text-xs font-bold text-[#1565D8] uppercase tracking-wider">RECEIVED BOOKLETS</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#1565D8] font-tabular mt-1.5 sm:mt-2.5">{totalReceived}</div>
+          <div className="text-[10px] sm:text-xs text-[#1565D8] mt-1 sm:mt-1.5 font-semibold truncate">Verified &amp; Inwarded</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
-          <div className="text-4xl sm:text-5xl font-black text-[#DC2626] font-tabular mt-2.5">{totalPending}</div>
-          <div className="text-xs text-[#DC2626] mt-1.5 font-medium">Remaining Intake Required</div>
+        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#DC2626] font-tabular mt-1.5 sm:mt-2.5">{totalPending}</div>
+          <div className="text-[10px] sm:text-xs text-[#DC2626] mt-1 sm:mt-1.5 font-medium truncate">Remaining Required</div>
         </div>
       </div>
 

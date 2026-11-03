@@ -167,14 +167,21 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     return importedService.getAvailableExamDates();
   }, [bundles, hasImportedData]);
 
-  // Auto-select the active exam date from imported dataset if not yet set
+  const hasInitializedDateRef = useRef<boolean>(false);
+  // Auto-select the active exam date from imported dataset on initial mount only
   useEffect(() => {
-    if (!activeExamDate && availableDates.length > 0) {
-      const defaultDate = availableDates[0].date;
-      setActiveExamDate(defaultDate);
-      importedService.setActiveExamDate(defaultDate);
+    if (!hasInitializedDateRef.current && availableDates.length > 0) {
+      hasInitializedDateRef.current = true;
+      const savedDate = importedService.getActiveExamDate();
+      if (savedDate !== undefined && savedDate !== null) {
+        setActiveExamDate(savedDate);
+      } else if (availableDates[0]?.date) {
+        const defaultDate = availableDates[0].date;
+        setActiveExamDate(defaultDate);
+        importedService.setActiveExamDate(defaultDate);
+      }
     }
-  }, [availableDates, activeExamDate]);
+  }, [availableDates]);
 
   const handleSelectExamDate = useCallback((date: string) => {
     setActiveExamDate(date);
@@ -1162,6 +1169,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                 onChange={(e) => handleSelectExamDate(e.target.value)}
                 className="bg-transparent text-xs font-black text-[#1565D8] cursor-pointer focus:outline-none"
               >
+                <option value="">All Dates ({sessionSummary?.totalExpected || 0} scripts • {sessionSummary?.totalClasses || bundles.length} classes)</option>
                 {availableDates.map(d => (
                   <option key={d.date} value={d.date}>
                     {d.displayDate} ({d.totalRecords} scripts • {d.totalClasses} classes)
@@ -1331,10 +1339,10 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                 <div>
                   <h3 className="text-sm font-black text-[#172033] uppercase tracking-wide flex items-center gap-2">
                     <CheckCircle2 className="h-4.5 w-4.5 text-emerald-600" />
-                    <span>My Inwarded Classes ({myClassSummaries.length})</span>
+                    <span>My Inwarded Class IDs ({myClassSummaries.length})</span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Class ID wise inward progress for operator <strong className="text-[#1565D8]">{currentOperator}</strong>. Only classes inwarded by you are displayed.
+                    Class ID wise inward progress for operator <strong className="text-[#1565D8]">{currentOperator}</strong>. Only Class IDs inwarded by you are displayed.
                   </p>
                 </div>
 
@@ -1354,7 +1362,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                   <div className="h-12 w-12 rounded-2xl bg-blue-50 border border-blue-200 text-[#1565D8] flex items-center justify-center mx-auto mb-3 shadow-xs">
                     <Layers className="h-6 w-6 stroke-[2]" />
                   </div>
-                  <h4 className="text-sm font-bold text-[#172033]">No Inwarded Classes Recorded Yet by You</h4>
+                  <h4 className="text-sm font-bold text-[#172033]">No Inwarded Class IDs Recorded Yet by You</h4>
                   <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
                     You have not inwarded any booklets yet today as <strong className="text-slate-700">{currentOperator}</strong>. Trigger the barcode gun on a Class ID barcode above to begin inwarding.
                   </p>

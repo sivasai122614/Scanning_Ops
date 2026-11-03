@@ -44,21 +44,25 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
-  // Pull records from importedService when modal is open
-  const records: ManualInwardedRecord[] = useMemo(() => {
-    return importedService.getManualInwardRecords();
-  }, [isOpen]);
+  // Pull live records from importedService
+  const [records, setRecords] = useState<ManualInwardedRecord[]>(() => importedService.getManualInwardRecords());
 
-  // Reset filters on open to always show all manual records by default
   useEffect(() => {
     if (isOpen) {
-      const sNorm = defaultStartDate ? normalizeExamDate(defaultStartDate) : '';
-      const eNorm = defaultEndDate ? normalizeExamDate(defaultEndDate) : '';
-      setStartDate(sNorm);
-      setEndDate(eNorm);
+      setRecords(importedService.getManualInwardRecords());
+      // By default show all manual records without restrictive date filter
+      setStartDate('');
+      setEndDate('');
       setSearchQuery('');
     }
-  }, [isOpen, defaultStartDate, defaultEndDate]);
+  }, [isOpen]);
+
+  useEffect(() => {
+    const unsub = importedService.subscribe(() => {
+      setRecords(importedService.getManualInwardRecords());
+    });
+    return () => unsub();
+  }, []);
 
   // Filter records by Date Range and Search Query
   const filteredRecords = useMemo(() => {
@@ -332,9 +336,22 @@ export const ManualInwardModal: React.FC<ManualInwardModalProps> = ({
               <h3 className="text-sm font-bold text-[#172033]">No manual entries found</h3>
               <p className="text-xs text-[#64748B] mt-1 max-w-md mx-auto">
                 {startDate || endDate || searchQuery
-                  ? 'No records match the selected date range or search filter. Try clearing filters.'
+                  ? 'No records match the selected date range or search filter.'
                   : 'No manual inward records have been entered into public.manual_inward_data yet.'}
               </p>
+              {(startDate || endDate || searchQuery) && records.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStartDate('');
+                    setEndDate('');
+                    setSearchQuery('');
+                  }}
+                  className="mt-3 px-3 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold rounded-lg cursor-pointer transition-all"
+                >
+                  Show All {records.length} Manual Records
+                </button>
+              )}
             </div>
           ) : (
             <table className="w-full text-left text-xs font-sans">

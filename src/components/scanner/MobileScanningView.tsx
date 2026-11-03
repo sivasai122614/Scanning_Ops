@@ -19,6 +19,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Calendar as CalendarIcon,
   Building,
+  Building2,
   CheckCircle2,
   AlertTriangle,
   ArrowRight,
@@ -36,6 +37,17 @@ import {
   Scan as ScanIcon,
   Save,
   X,
+  BarChart3,
+  ScanLine,
+  Barcode,
+  QrCode,
+  Zap,
+  Sparkles,
+  Video,
+  Keyboard,
+  CornerDownLeft,
+  ArrowLeftRight,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   importedService,
@@ -73,7 +85,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   onNavigateToImport,
   isRestrictedInward = false,
 }) => {
-  const { user } = useAuth();
+  const { user, appRole } = useAuth();
+  const isInwardRole = isRestrictedInward || appRole === 'inward' || (user as any)?.role === 'inward' || (user as any)?.appRole === 'inward';
   const currentOperator = (user?.username || user?.full_name || user?.email?.split('@')[0] || '').toLowerCase();
 
   const [selectedClassId, setSelectedClassId] = useState<string | null>(() => {
@@ -236,7 +249,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         const recs = importedService.getBundleRecordViews(
           curCid,
           curDate || undefined,
-          isRestrictedInward ? user : undefined
+          isInwardRole ? user : undefined
         );
         setBundleRecords(recs);
       } else {
@@ -253,7 +266,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     } else {
       setBundleRecords([]);
     }
-  }, [selectedClassId]);
+  }, [selectedClassId, user, isInwardRole]);
 
   const reconcileLiveStatus = useCallback((_cid?: string) => {
     loadData();
@@ -1120,10 +1133,8 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
   // Active bundle stats (MEMBER_MODE)
   const bundleExpected = activeBundle?.expectedCount || 0;
-  const bundleInwarded = (activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0);
-
-  // All inwarded records are visible to inward operators and admins alike (Requirement 7)
-  const displayInwardedCount = bundleInwarded;
+  const userInwardedCount = bundleRecords.filter(r => r.scan_status === 'saved' || r.scan_status === 'pending_save').length;
+  const displayInwardedCount = isInwardRole ? userInwardedCount : ((activeBundle?.savedCount || 0) + (activeBundle?.pendingCount || 0));
   const displayNotInwardedCount = Math.max(0, bundleExpected - displayInwardedCount);
   const displayProgress = bundleExpected > 0 ? Math.round((displayInwardedCount / bundleExpected) * 100) : 0;
 
@@ -1215,236 +1226,304 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
       {/* PART 10, 11, 12: Fixed Small Success & Error Top Toast */}
       <ScannerTopToast toast={topToast} onDismiss={() => setTopToast(null)} duration={2000} />
 
-      {/* SCAN TYPE MODAL (Prompted when Inward Role opens per user requirement) */}
+      {/* SCAN TYPE MODAL (Styled to match Stitch mockup) */}
       {showScanTypeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 font-sans animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-white border border-[#CBD5E1] rounded-2xl shadow-2xl p-5 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-[#EFF6FF] text-[#1565D8] rounded-2xl mx-auto mb-3 border border-[#BFDBFE]">
-              <ScanIcon className="h-6 w-6" />
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 font-sans animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-center">
+            {/* Floating Header Scan Icon */}
+            <div className="mx-auto w-16 h-16 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#1565D8] mb-4 shadow-inner">
+              <ScanIcon className="w-8 h-8 animate-pulse text-[#1565D8]" />
             </div>
 
-            <h3 className="text-base font-black text-[#172033] uppercase tracking-wide">
-              Select Scan Type
+            <h3 className="text-lg font-black text-slate-900 tracking-tight">
+              SELECT SCAN TYPE
             </h3>
-            <p className="text-xs text-[#64748B] mt-1 mb-4 leading-relaxed">
+            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
               Choose standard 1D Barcode or 2D QR Code to start scanning booklets.
             </p>
 
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <button
-                type="button"
+            <div className="grid grid-cols-2 gap-3 my-5">
+              <div
                 onClick={() => handleSelectScanFormat('barcode')}
-                className={`p-3.5 rounded-xl border-2 text-center transition-all cursor-pointer ${
+                className={`p-3.5 rounded-2xl border-2 flex flex-col items-center justify-center cursor-pointer transition active:scale-95 shadow-xs ${
                   scanFormat === 'barcode'
-                    ? 'border-[#1565D8] bg-blue-50/70 shadow-xs'
-                    : 'border-[#CBD5E1] hover:border-slate-400 bg-white'
+                    ? 'border-[#1565D8] bg-blue-50/70 shadow-sm'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                <div className="text-2xl mb-1">📊</div>
-                <div className="text-xs font-black text-[#172033] uppercase">Barcode (1D)</div>
-                <div className="text-[10px] text-[#64748B] mt-0.5">Code 128 / Code 39</div>
-              </button>
+                <div className="w-10 h-10 rounded-xl bg-white shadow-2xs border border-slate-200 flex items-center justify-center mb-2">
+                  <Barcode className="w-6 h-6 text-[#1565D8]" />
+                </div>
+                <strong className="text-xs font-bold text-slate-900">BARCODE (1D)</strong>
+                <span className="text-[10px] text-slate-500 mt-0.5">Code 128 / Code 39</span>
+              </div>
 
-              <button
-                type="button"
+              <div
                 onClick={() => handleSelectScanFormat('qr_code')}
-                className={`p-3.5 rounded-xl border-2 text-center transition-all cursor-pointer ${
+                className={`p-3.5 rounded-2xl border-2 flex flex-col items-center justify-center cursor-pointer transition active:scale-95 shadow-xs ${
                   scanFormat === 'qr_code'
-                    ? 'border-[#1565D8] bg-blue-50/70 shadow-xs'
-                    : 'border-[#CBD5E1] hover:border-slate-400 bg-white'
+                    ? 'border-[#1565D8] bg-blue-50/70 shadow-sm'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                <div className="text-2xl mb-1">📱</div>
-                <div className="text-xs font-black text-[#172033] uppercase">QR Code (2D)</div>
-                <div className="text-[10px] text-[#64748B] mt-0.5">Matrix QR Code</div>
-              </button>
+                <div className="w-10 h-10 rounded-xl bg-white shadow-2xs border border-slate-200 flex items-center justify-center mb-2">
+                  <QrCode className="w-6 h-6 text-indigo-600" />
+                </div>
+                <strong className="text-xs font-bold text-slate-900">QR CODE (2D)</strong>
+                <span className="text-[10px] text-slate-500 mt-0.5">Matrix QR Code</span>
+              </div>
             </div>
 
             <button
               type="button"
               onClick={() => setShowScanTypeModal(false)}
-              className="w-full py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors cursor-pointer"
+              className="w-full bg-[#1565D8] hover:bg-blue-700 text-white font-black text-xs py-3.5 rounded-2xl shadow-glow-blue transition active:scale-98 tracking-wider cursor-pointer"
             >
-              Confirm Selection
+              CONFIRM SELECTION
             </button>
           </div>
         </div>
       )}
 
-      {/* FIXED TOP SECTION: Header, Active Class Banner & Camera Viewfinder */}
-      <div className="sticky top-0 z-30 bg-[#F8FAFC] pt-2 px-3 pb-2 space-y-2 border-b border-[#CBD5E1]/60 shadow-xs">
-        {/* 1. Header & Active Mode Indicator */}
-        <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-semibold text-[#172033]">
-              <CalendarIcon className="h-4 w-4 text-[#1565D8]" />
+      {/* TOP SECTION: Meta & Exam Details, Scan Format, Active Class Banner & Camera Viewfinder */}
+      <div className="sticky top-0 z-30 bg-[#F5F7FA]/95 backdrop-blur-md pt-2 px-3 pb-2 space-y-2 border-b border-slate-200/90 shadow-xs">
+        {/* 1. Meta & Exam Details Card */}
+        <div className="glass-card rounded-xl p-2.5 shadow-xs border border-slate-200/90">
+          <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
+            <div className="flex items-center gap-1.5 text-slate-700 font-semibold text-xs">
+              <span className="p-1 bg-blue-50 text-[#1565D8] rounded-md">
+                <CalendarIcon className="w-3 h-3" />
+              </span>
               <span>{todayStr}</span>
             </div>
 
-            {/* Mode Pill Indicator */}
+            {/* Stage Badge with glow pulse ring */}
             <div
-              className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
                 scannerMode === 'CLASS_MODE'
-                  ? 'bg-blue-50 text-[#1565D8] border-blue-200'
-                  : 'bg-emerald-50 text-[#16A34A] border-emerald-200'
+                  ? 'bg-blue-50 text-[#1565D8] border border-blue-300'
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-300'
               }`}
             >
-              {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS / SH ID' : 'STAGE 2: MEMBER ID'}
+              <span
+                className={`w-1.5 h-1.5 rounded-full animate-pulse-ring ${
+                  scannerMode === 'CLASS_MODE' ? 'bg-[#1565D8]' : 'bg-emerald-500'
+                }`}
+              />
+              {scannerMode === 'CLASS_MODE' ? 'STAGE 1: CLASS ID' : 'STAGE 2: MEMBER ID'}
             </div>
           </div>
 
-          {universityName && (
-            <div className="mt-1 pt-1 border-t border-slate-100 flex items-center gap-1.5 text-xs text-[#64748B]">
-              <Building className="h-3.5 w-3.5 text-[#64748B]" />
-              <span className="font-bold text-[#172033]">{universityName}</span>
+          <div className="mt-1.5 flex items-center justify-between text-xs">
+            <div className="flex items-center gap-1.5 font-bold text-slate-700 text-[11px]">
+              <Building2 className="w-3.5 h-3.5 text-[#1565D8]" />
+              <span className="truncate max-w-[210px]">{universityName || 'VALUATION CAMP HUB'}</span>
             </div>
-          )}
+            <span className="text-[9px] font-mono bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded border border-slate-200">
+              CAMP HUB
+            </span>
+          </div>
 
-          {/* Exam Date Scope Selector */}
           {availableDates.length > 0 && (
-            <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between gap-2">
-              <span className="text-[10px] font-black uppercase tracking-wider text-[#1565D8]">
-                Exam Date:
+            <div className="mt-2 flex items-center justify-between bg-slate-50/80 rounded-lg p-1 border border-slate-200">
+              <span className="text-[9px] font-bold tracking-wider text-[#1565D8] uppercase pl-1">
+                EXAM DATE:
               </span>
-              <select
-                value={activeExamDate}
-                onChange={(e) => handleSelectExamDate(e.target.value)}
-                className="bg-blue-50/70 text-[11px] font-bold text-slate-800 border border-blue-200 rounded-lg px-2 py-0.5 outline-hidden"
-              >
-                <option value="">All Dates ({sessionSummary?.totalExpected || 0})</option>
-                {availableDates.map(d => (
-                  <option key={d.date} value={d.date}>
-                    {d.displayDate} ({d.totalRecords.toLocaleString()} scripts)
-                  </option>
-                ))}
-              </select>
+              <div className="relative inline-flex items-center">
+                <select
+                  value={activeExamDate}
+                  onChange={(e) => handleSelectExamDate(e.target.value)}
+                  className="bg-white font-medium text-xs text-slate-800 pl-2 pr-6 py-0.5 rounded-md border border-slate-200 shadow-2xs focus:outline-hidden focus:ring-1 focus:ring-[#1565D8] cursor-pointer"
+                >
+                  <option value="">All Dates ({sessionSummary?.totalExpected || 0} scripts)</option>
+                  {availableDates.map(d => (
+                    <option key={d.date} value={d.date}>
+                      {d.displayDate} ({d.totalRecords.toLocaleString()} scripts)
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           )}
         </div>
 
-        {/* SCAN FORMAT TOGGLE (Barcode vs QR Code) */}
-        <div className="flex items-center justify-between bg-white px-2.5 py-1.5 border border-[#CBD5E1] rounded-xl shadow-xs">
-          <div className="flex items-center gap-1.5">
-            <ScanIcon className="h-3.5 w-3.5 text-[#1565D8]" />
-            <span className="text-[11px] font-bold text-[#172033] uppercase">Scan Format:</span>
+        {/* 2. SCAN FORMAT SWITCHER */}
+        <div className="glass-card rounded-xl p-1.5 shadow-xs border border-slate-200/90 flex items-center justify-between gap-1.5">
+          <div className="flex items-center gap-1 pl-1">
+            <ScanLine className="w-3.5 h-3.5 text-[#1565D8]" />
+            <span className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">Format:</span>
           </div>
 
-          <div className="inline-flex rounded-lg bg-slate-100 p-0.5 border border-slate-200">
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-lg gap-1 border border-slate-200">
             <button
               type="button"
               onClick={() => handleSelectScanFormat('barcode')}
-              className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer ${
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold transition-all shadow-2xs cursor-pointer ${
                 scanFormat === 'barcode'
-                  ? 'bg-[#1565D8] text-white shadow-xs'
-                  : 'text-[#64748B] hover:text-[#172033]'
+                  ? 'bg-[#1565D8] text-white shadow-glow-blue scale-[1.02]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              📊 Barcode
+              <Barcode className="w-3 h-3" />
+              <span>BARCODE</span>
             </button>
             <button
               type="button"
               onClick={() => handleSelectScanFormat('qr_code')}
-              className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer ${
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold transition-all shadow-2xs cursor-pointer ${
                 scanFormat === 'qr_code'
-                  ? 'bg-[#1565D8] text-white shadow-xs'
-                  : 'text-[#64748B] hover:text-[#172033]'
+                  ? 'bg-[#1565D8] text-white shadow-glow-blue scale-[1.02]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              📱 QR Code
+              <QrCode className="w-3 h-3" />
+              <span>QR CODE</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowScanTypeModal(true)}
+              className="p-0.5 rounded-md text-slate-400 hover:text-slate-700 transition"
+              title="More format options"
+            >
+              <SlidersHorizontal className="w-3 h-3" />
             </button>
           </div>
         </div>
 
-        {/* MEMBER_MODE BANNER: Active Class / SH ID */}
+        {/* 3. CURRENT CLASS ID BANNER (Side-by-side Class ID and Compact Cute styling) */}
         {scannerMode === 'MEMBER_MODE' && selectedClassId && (
-          <div className="bg-[#1565D8] text-white p-2.5 rounded-xl shadow-xs flex items-center justify-between">
-            <div>
-              <div className="text-[9px] uppercase font-bold text-blue-200 tracking-wider">
-                CURRENT CLASS / SH ID BUNDLE
-              </div>
-              <div className="text-sm font-black font-mono tracking-wide">
-                CLASS / SH ID {selectedClassId}
+          <div className="rounded-xl p-2.5 text-white bg-gradient-to-r from-blue-800 via-[#1565D8] to-blue-600 shadow-sm border border-blue-500 relative overflow-hidden">
+            <div className="absolute -right-6 -bottom-6 w-20 h-20 bg-white/10 rounded-full blur-xl pointer-events-none" />
+            <div className="flex items-center justify-between gap-2 relative z-10">
+              <span className="text-[10px] font-bold tracking-wider uppercase text-blue-200">
+                CURRENT CLASS ID BUNDLE
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={onSaveButtonClick}
+                  disabled={isSaving}
+                  className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-glow-emerald transition-all border border-emerald-400 cursor-pointer disabled:opacity-50"
+                  title="Save Class ID Inward and continue"
+                >
+                  <Save className="w-3 h-3" />
+                  <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={backToClassSelection}
+                  className="flex items-center gap-1 bg-white/20 hover:bg-white/30 active:scale-95 text-white text-[11px] font-bold px-2 py-1 rounded-lg backdrop-blur transition-all border border-white/30 cursor-pointer"
+                  title="Switch to another Class ID"
+                >
+                  <ArrowLeftRight className="w-3 h-3" />
+                  <span>CHANGE</span>
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={onSaveButtonClick}
-                disabled={isSaving}
-                className="px-3 py-1 bg-[#16A34A] hover:bg-[#15803D] active:scale-95 text-white text-[11px] font-black uppercase tracking-wider rounded-lg transition-all shadow-sm flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                title="Save Class Inward and continue"
-              >
-                <Save className="h-3 w-3" />
-                <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={backToClassSelection}
-                className="px-2 py-1 bg-white/15 hover:bg-white/25 text-white text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors border border-white/20 flex items-center gap-1 cursor-pointer"
-              >
-                <ArrowLeft className="h-3 w-3" />
-                <span>Change</span>
-              </button>
+
+            {/* Side-by-side Class ID layout */}
+            <div className="flex items-center justify-between gap-2 pt-1.5 mt-1 border-t border-white/15 relative z-10">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-blue-200 uppercase tracking-wide">CLASS ID:</span>
+                <span className="text-sm font-black font-mono text-white tracking-wider bg-white/20 px-2.5 py-0.5 rounded-md border border-white/30 shadow-xs">
+                  {selectedClassId}
+                </span>
+              </div>
+              <p className="text-[10px] text-blue-100 font-medium">
+                Target: <span className="font-bold text-white">{bundleExpected} Booklets</span>
+              </p>
             </div>
           </div>
         )}
 
-        {/* CAMERA VIEWFINDER (Fixed at top right below header/banner) */}
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-          {/* Mode Header over Camera */}
-          <div className="px-3 py-1.5 bg-[#0F172A] text-white flex items-center justify-between text-xs">
-            <div className="flex items-center gap-1.5 font-bold">
-              <ScanIcon className="h-3.5 w-3.5 text-[#60A5FA]" />
-              <span>
+        {/* 4. FUTURISTIC CAMERA VIEWFINDER (Live Video with No restrictive bounding box) */}
+        <div className="glass-card rounded-xl overflow-hidden border border-slate-300 shadow-md relative bg-slate-950 text-white">
+          {/* Viewfinder Header Bar */}
+          <div className="bg-slate-900/90 backdrop-blur-md px-3 py-1.5 flex items-center justify-between border-b border-slate-800 text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+              </span>
+              <span className="font-bold font-mono tracking-wide text-slate-100 truncate max-w-[200px] text-[11px]">
                 {scannerMode === 'CLASS_MODE'
-                  ? 'Scan Class / SH ID'
-                  : `Scan Member ID (Class / SH ID ${selectedClassId})`}
+                  ? 'Scan Class ID / SH ID'
+                  : `Scan Member ID (${selectedClassId})`}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-cyan-400 font-mono font-bold uppercase">
-                {scanFormat === 'qr_code' ? 'QR Code' : 'Barcode'}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-blue-900/80 text-blue-300 border border-blue-700 uppercase">
+                {scanFormat === 'qr_code' ? 'QR' : 'Barcode'}
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {cameraActive ? 'CAMERA ACTIVE' : 'STANDBY'}
+              <span
+                className={`text-[9px] font-mono uppercase font-semibold tracking-wider ${
+                  cameraActive ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              >
+                {cameraActive ? 'ACTIVE' : 'PAUSED'}
               </span>
             </div>
           </div>
 
-          {/* Viewport: Dynamic Aspect Ratio (Compact Slim Rectangle for Barcode, 4:3 for QR Code) with NO detection area overlays */}
+          {/* Viewport: Dynamic Aspect Ratio (No restrictive frame overlay as instructed) */}
           <div
-            className={`relative bg-black w-full flex items-center justify-center overflow-hidden transition-all duration-300 ${
+            className={`relative bg-slate-950 w-full flex items-center justify-center overflow-hidden transition-all duration-300 ${
               scanFormat === 'qr_code'
-                ? 'aspect-[4/3] min-h-[190px] max-h-[30vh]'
-                : 'aspect-[2.5/1] min-h-[90px] max-h-[14vh] sm:max-h-[110px]'
+                ? 'aspect-[4/3] min-h-[150px] max-h-[22vh]'
+                : 'aspect-[2.8/1] min-h-[82px] max-h-[12.5vh]'
             }`}
           >
+            {/* Cyber Animated Background Grid */}
+            <div className="absolute inset-0 cyber-grid opacity-25 pointer-events-none" />
+
+            {/* Live Camera Video Feed */}
             <video
               ref={videoRef}
               playsInline
               muted
               autoPlay
-              className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
+              className={`w-full h-full object-cover relative z-10 ${cameraActive ? 'block' : 'hidden'}`}
             />
 
+            {/* Laser Sweeper Bar Animation */}
+            {cameraActive && (
+              <div className="absolute w-full h-[2px] bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_#10B981] animate-scan-sweep z-20 pointer-events-none" />
+            )}
+
+            {/* Flashlight / Torch Floating Toggle */}
+            {hasTorch && (
+              <button
+                type="button"
+                onClick={handleToggleTorch}
+                className={`absolute top-2 right-2 z-30 p-1.5 rounded-full border transition active:scale-90 cursor-pointer ${
+                  torchOn
+                    ? 'bg-yellow-400 text-slate-950 shadow-[0_0_12px_#FACC15] border-yellow-300'
+                    : 'bg-slate-900/80 border-slate-700 text-yellow-400 hover:bg-slate-800'
+                }`}
+                title="Toggle Flashlight"
+              >
+                <Zap className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             {cameraLoading && (
-              <div className="text-center text-white px-4">
-                <div className="h-6 w-6 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-1.5" />
-                <div className="text-[10px] font-bold uppercase tracking-wider">Starting Camera...</div>
+              <div className="text-center text-white px-4 relative z-20">
+                <div className="h-5 w-5 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-1" />
+                <div className="text-[9px] font-bold uppercase tracking-wider">Starting Camera...</div>
               </div>
             )}
 
             {!cameraActive && !cameraLoading && (
-              <div className="text-center text-white/80 p-3">
-                <CameraOff className="h-6 w-6 mx-auto mb-1 text-white/50" />
-                <div className="text-xs font-bold text-white mb-0.5">Camera Paused</div>
-                <div className="text-[10px] text-white/70 max-w-xs mx-auto mb-2">
+              <div className="text-center text-white/80 p-2.5 relative z-20">
+                <CameraOff className="h-5 w-5 mx-auto mb-1 text-white/50" />
+                <div className="text-[11px] font-bold text-white mb-0.5">Camera Paused</div>
+                <div className="text-[9px] text-white/70 max-w-xs mx-auto mb-1.5">
                   {cameraError || 'Tap below to scan or enter barcode manually.'}
                 </div>
                 <button
                   type="button"
                   onClick={startCamera}
-                  className="px-3.5 py-1 bg-[#1565D8] text-white text-[11px] font-bold uppercase tracking-wider rounded-lg hover:bg-[#0D47A1] transition-colors cursor-pointer"
+                  className="px-3 py-1 bg-[#1565D8] text-white text-[10px] font-bold uppercase tracking-wider rounded-md hover:bg-blue-700 transition-colors cursor-pointer shadow-glow-blue"
                 >
                   Start Camera
                 </button>
@@ -1452,52 +1531,40 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             )}
           </div>
 
-          {/* Camera Controls toolbar */}
-          <div className="px-2.5 py-1.5 bg-white border-t border-[#E2E8F0] flex items-center justify-between gap-2">
+          {/* Camera Control Bar at Bottom of Viewport */}
+          <div className="p-2 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between">
+            <div className="text-[10px] text-slate-300 flex items-center gap-1.5 pl-0.5">
+              <Sparkles className="w-3 h-3 text-blue-400" />
+              <span>Auto-focus enabled</span>
+            </div>
             <div className="flex items-center gap-1.5">
-              {hasTorch && (
-                <button
-                  type="button"
-                  onClick={handleToggleTorch}
-                  className={`p-1.5 text-xs font-bold rounded-lg border transition-colors flex items-center gap-1 ${
-                    torchOn
-                      ? 'bg-[#F59E0B] text-black border-[#D97706]'
-                      : 'bg-slate-50 text-[#172033] border-[#CBD5E1]'
-                  }`}
-                  title="Flashlight"
-                >
-                  {torchOn ? <Flashlight className="h-3 w-3" /> : <FlashlightOff className="h-3 w-3" />}
-                </button>
-              )}
-
               {availableDevices.length > 1 && (
                 <button
                   type="button"
                   onClick={handleCycleCamera}
-                  className="p-1.5 text-xs font-bold rounded-lg border border-[#CBD5E1] bg-slate-50 text-[#172033]"
+                  className="p-1 text-xs font-bold rounded-md border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 transition cursor-pointer"
                   title="Switch Lens"
                 >
                   <SwitchCamera className="h-3 w-3" />
                 </button>
               )}
-            </div>
-
-            <div>
               {cameraActive ? (
                 <button
                   type="button"
                   onClick={stopCamera}
-                  className="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-[#CBD5E1] text-[#64748B]"
+                  className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 transition cursor-pointer"
                 >
-                  Pause
+                  <Video className="w-3 h-3" />
+                  <span>Pause</span>
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={startCamera}
-                  className="px-3 py-1 text-[11px] font-bold rounded-lg bg-[#1565D8] text-white"
+                  className="flex items-center gap-1 bg-[#1565D8] hover:bg-blue-600 active:scale-95 text-white font-bold text-[11px] px-3 py-1 rounded-lg shadow-glow-blue transition cursor-pointer"
                 >
-                  Start Camera
+                  <Video className="w-3 h-3" />
+                  <span>Start</span>
                 </button>
               )}
             </div>
@@ -1505,114 +1572,145 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         </div>
       </div>
 
-      {/* SCROLLABLE CONTENT AREA (Below the fixed Camera) */}
-      <div className="px-3 pt-2 space-y-3">
-        {/* CLASS ID STATISTICS (Moved below camera per user request) */}
+      {/* SCROLLABLE CONTENT AREA */}
+      <div className="px-3 pt-2 space-y-2.5">
+        {/* 5. STATISTICS METRICS */}
         {scannerMode === 'CLASS_MODE' ? (
           !isRestrictedInward ? (
-            <div className="grid grid-cols-4 gap-2">
-              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-                <div className="text-[9px] font-bold text-[#64748B] uppercase">CLASS / SH IDS</div>
-                <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
+            <div className="grid grid-cols-4 gap-1.5">
+              <div className="bg-white p-2 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[8px] font-bold text-[#64748B] uppercase">CLASS IDS</div>
+                <div className="text-sm font-black text-[#172033] font-tabular mt-0.5">{totalClasses}</div>
               </div>
-              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-                <div className="text-[9px] font-bold text-[#64748B] uppercase">EXPECTED</div>
-                <div className="text-base font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
+              <div className="bg-white p-2 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[8px] font-bold text-[#64748B] uppercase">EXPECTED</div>
+                <div className="text-sm font-black text-[#172033] font-tabular mt-0.5">{totalExpected}</div>
               </div>
-              <div className="bg-[#F0FDF4] p-2.5 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
-                <div className="text-[9px] font-bold text-[#16A34A] uppercase">INWARDED</div>
-                <div className="text-base font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
+              <div className="bg-[#F0FDF4] p-2 border border-[#BBF7D0] rounded-xl text-center shadow-xs">
+                <div className="text-[8px] font-bold text-[#16A34A] uppercase">INWARDED</div>
+                <div className="text-sm font-black text-[#16A34A] font-tabular mt-0.5">{totalInwarded}</div>
               </div>
-              <div className="bg-white p-2.5 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
-                <div className="text-[9px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
-                <div className="text-base font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
+              <div className="bg-white p-2 border border-[#CBD5E1] rounded-xl text-center shadow-xs">
+                <div className="text-[8px] font-bold text-[#DC2626] uppercase">NOT INWARDED</div>
+                <div className="text-sm font-black text-[#DC2626] font-tabular mt-0.5">{totalNotInwarded}</div>
               </div>
             </div>
           ) : (
-            <div className="bg-[#EFF6FF] border border-[#BFDBFE] p-3 rounded-xl flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
+            <div className="bg-[#EFF6FF] border border-[#BFDBFE] p-2.5 rounded-xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5">
                 <ScanIcon className="h-4 w-4 text-[#1565D8]" />
-                <span className="font-bold text-[#1E40AF]">Ready for Inward Scanning</span>
+                <span className="font-bold text-[#1E40AF] text-[11px]">Ready for Inward Scanning</span>
               </div>
-              <span className="text-[11px] font-semibold text-[#3B82F6]">Stage 1: Scan Class / SH Code</span>
+              <span className="text-[10px] font-semibold text-[#3B82F6]">Stage 1: Scan Class ID</span>
             </div>
           )
         ) : (
-          /* MEMBER_MODE Class Bundle Statistics (Positioned directly under camera) */
-          <div className="bg-white p-3 border border-[#CBD5E1] rounded-xl shadow-xs space-y-2">
-            <div className="flex items-center justify-between text-xs font-bold text-[#172033]">
-              <span>Class / SH ID {selectedClassId} Statistics</span>
-              <span className="font-mono text-xs text-[#16A34A] font-black">
-                {classStats.inwardedCount} / {classStats.importedCount} ({classStats.progress}%)
-              </span>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2 pt-1 text-center">
-              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-                <div className="text-[9px] font-bold text-[#64748B] uppercase">Imported</div>
-                <div className="text-sm font-black text-[#172033] font-mono">{classStats.importedCount}</div>
+          /* MEMBER_MODE Class ID Bundle Statistics */
+          <div className="glass-card rounded-xl p-2.5 shadow-xs border border-slate-200/90">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <BarChart3 className="w-3.5 h-3.5 text-[#1565D8]" />
+                <h3 className="text-[11px] font-black tracking-wide uppercase text-slate-800">
+                  Class ID {selectedClassId} Statistics
+                </h3>
               </div>
-              <div className="bg-[#F0FDF4] p-2 border border-[#BBF7D0] rounded-lg">
-                <div className="text-[9px] font-bold text-[#16A34A] uppercase">Inwarded</div>
-                <div className="text-sm font-black text-[#16A34A] font-mono">{classStats.inwardedCount}</div>
-              </div>
-              <div className="bg-slate-50 p-2 border border-slate-200 rounded-lg">
-                <div className="text-[9px] font-bold text-[#DC2626] uppercase">Not Inwarded</div>
-                <div className="text-sm font-black text-[#DC2626] font-mono">{classStats.notInwardedCount}</div>
+              <div className="flex items-center gap-1 font-mono font-bold text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                <span>{classStats.inwardedCount} / {classStats.importedCount}</span>
+                <span className="text-[9px] bg-emerald-600 text-white rounded px-1">({classStats.progress}%)</span>
               </div>
             </div>
 
-            {/* Progress Bar */}
-            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 mt-1">
+            {/* Micro Progress Track */}
+            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mb-2 border border-slate-200">
               <div
-                className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
+                className="h-full bg-gradient-to-r from-blue-600 to-emerald-500 rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, classStats.progress)}%` }}
               />
             </div>
 
-            {/* Action Row - Progress Summary */}
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-[#64748B]">
-              <span>Inward Progress: <strong className="text-[#16A34A] font-bold">{classStats.inwardedCount}</strong> / {classStats.importedCount}</span>
-              <span className="font-mono text-xs font-bold text-[#16A34A]">{classStats.progress}%</span>
+            {/* 3 Status Cards (Cute, compact) */}
+            <div className="grid grid-cols-3 gap-1.5">
+              <div className="bg-slate-50/90 rounded-lg p-1.5 text-center border border-slate-200/80 shadow-2xs">
+                <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 block">
+                  IMPORTED
+                </span>
+                <span className="text-base font-extrabold text-slate-800 font-mono">
+                  {classStats.importedCount}
+                </span>
+              </div>
+              <div className="bg-emerald-50/80 rounded-lg p-1.5 text-center border border-emerald-300 shadow-2xs relative overflow-hidden">
+                <div className="absolute -right-2 -bottom-2 w-6 h-6 bg-emerald-400/10 rounded-full pointer-events-none" />
+                <span className="text-[9px] font-black uppercase tracking-wider text-emerald-700 block">
+                  INWARDED
+                </span>
+                <span className="text-base font-black text-emerald-600 font-mono">
+                  {classStats.inwardedCount}
+                </span>
+              </div>
+              <div className="bg-rose-50/60 rounded-lg p-1.5 text-center border border-rose-200/80 shadow-2xs">
+                <span className="text-[9px] font-black uppercase tracking-wider text-rose-700 block">
+                  NOT INWARDED
+                </span>
+                <span className="text-base font-black text-rose-600 font-mono">
+                  {classStats.notInwardedCount}
+                </span>
+              </div>
             </div>
           </div>
         )}
 
-        {/* DYNAMIC CONTEXT-AWARE MANUAL INPUT BAR */}
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs p-3">
-          <div className="text-[10px] font-bold text-[#64748B] uppercase tracking-wider mb-1.5 flex items-center justify-between">
-            <span>
-              {scannerMode === 'CLASS_MODE' ? 'Manual Class / SH ID Entry' : `Manual Inward into Class / SH ID ${selectedClassId}`}
-            </span>
-            <span className="text-[9px] text-[#1565D8] font-normal">
-              {scannerMode === 'CLASS_MODE' ? 'Stage 1' : 'Stage 2'}
+        {/* 6. DYNAMIC MANUAL INPUT BAR */}
+        <div className="glass-card rounded-xl p-2.5 shadow-xs border border-slate-200/90 animate-card-glow">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_8px_#10B981]" />
+              </span>
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-800">
+                {scannerMode === 'CLASS_MODE'
+                  ? 'MANUAL CLASS ID ENTRY'
+                  : `MANUAL INWARD INTO CLASS ID ${selectedClassId}`}
+              </span>
+            </div>
+            <span className="text-[9px] font-mono font-extrabold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded-full border border-emerald-300 shadow-2xs flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+              {scannerMode === 'CLASS_MODE' ? 'STAGE 1' : 'STAGE 2'}
             </span>
           </div>
 
-          <form onSubmit={handleManualSubmit} className="flex gap-2">
-            <input
-              type="text"
-              value={manualInput}
-              onChange={e => setManualInput(e.target.value)}
-              placeholder={
-                scannerMode === 'CLASS_MODE' ? 'Enter Class ID / SH ID' : 'Enter Member ID (or scan Barcode / QR)'
-              }
-              className="flex-1 px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs text-[#172033] bg-white focus:outline-hidden focus:border-[#1565D8] font-mono uppercase"
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
-            />
+          <form onSubmit={handleManualSubmit} className="flex items-center gap-1.5">
+            <div className="relative flex-1 group">
+              <div className="absolute left-2.5 top-1/2 -translate-y-1/2 flex items-center pointer-events-none text-emerald-600 group-focus-within:text-[#1565D8] transition-colors">
+                <Keyboard className="w-3.5 h-3.5" />
+              </div>
+              <input
+                type="text"
+                value={manualInput}
+                onChange={e => setManualInput(e.target.value)}
+                placeholder={
+                  scannerMode === 'CLASS_MODE' ? 'ENTER CLASS ID' : 'ENTER MEMBER ID (OR SCAN)'
+                }
+                className="w-full text-xs font-mono font-semibold tracking-wider uppercase pl-8 pr-6 py-2 rounded-lg border-2 border-emerald-300/80 bg-white placeholder:text-slate-400 focus:outline-hidden focus:border-[#1565D8] focus:ring-2 focus:ring-blue-500/20 shadow-2xs hover:border-emerald-400 transition-all duration-200"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
+                <span className="w-1 h-3 bg-emerald-500 rounded-xs animate-cursor-blink shadow-[0_0_6px_#10B981]" />
+              </div>
+            </div>
 
             <button
               type="submit"
               disabled={isSubmittingManual || !manualInput.trim()}
-              className={`px-4 py-2 text-white text-xs font-bold uppercase tracking-wider rounded-lg transition-colors shrink-0 cursor-pointer disabled:opacity-50 ${
-                scannerMode === 'CLASS_MODE'
-                  ? 'bg-[#1565D8] hover:bg-[#0D47A1]'
-                  : 'bg-[#16A34A] hover:bg-[#15803D]'
-              }`}
+              className="relative overflow-hidden bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-500 hover:from-emerald-600 hover:to-emerald-700 active:scale-95 text-white text-[11px] font-extrabold uppercase px-3.5 py-2 rounded-lg shadow-glow-emerald transition-all duration-200 flex items-center gap-1 whitespace-nowrap border border-emerald-400 group cursor-pointer disabled:opacity-50"
             >
-              {scannerMode === 'CLASS_MODE' ? 'OPEN CLASS / SH ID' : 'INWARD'}
+              <div className="absolute inset-0 w-1/2 h-full bg-gradient-to-r from-transparent via-white/30 to-transparent -skew-x-12 animate-sheen pointer-events-none" />
+              <span className="relative z-10 tracking-wider">
+                {scannerMode === 'CLASS_MODE' ? 'OPEN' : 'INWARD'}
+              </span>
+              <CornerDownLeft className="w-3 h-3 relative z-10 transition-transform group-hover:translate-x-0.5" />
             </button>
 
             <input
@@ -1625,320 +1723,318 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="px-2.5 py-2 bg-white border border-[#CBD5E1] text-[#172033] text-xs font-bold rounded-lg hover:bg-slate-100 shrink-0 cursor-pointer"
-              title="Upload photo"
+              className="p-2 rounded-lg border border-slate-300 bg-white hover:bg-blue-50 hover:border-blue-400 hover:text-[#1565D8] text-slate-700 active:scale-95 transition-all shadow-2xs group cursor-pointer"
+              title="Upload photo / file"
             >
-              <Upload className="h-3.5 w-3.5" />
+              <Upload className="w-3.5 h-3.5" />
             </button>
           </form>
         </div>
-      </div>
 
-      {/* 4. CONTENT AREA: CLASS LIST (STAGE 1) VS MEMBER LIST (STAGE 2) */}
-      {scannerMode === 'CLASS_MODE' ? (
-        /* STAGE 1: INWARD ROLE SEES VERIFIED INWARDED BOOKLETS; ADMIN SEES IMPORTED BUNDLES */
-        isRestrictedInward ? (
-          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
-              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                <span>MY INWARDED CLASSES</span>
-                <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-mono text-[10px]">
-                  {myClassSummaries.length}
+        {/* 7. CONTENT AREA: CLASS LIST (STAGE 1) VS MEMBER LIST (STAGE 2) */}
+        {scannerMode === 'CLASS_MODE' ? (
+          /* STAGE 1: INWARD ROLE SEES VERIFIED INWARDED BOOKLETS; ADMIN SEES IMPORTED BUNDLES */
+          isRestrictedInward ? (
+            <div className="glass-card rounded-xl shadow-xs border border-slate-200/90 overflow-hidden">
+              <div className="p-2.5 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between gap-2">
+                <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                  <span>MY INWARDED CLASS IDS</span>
+                  <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-mono text-[9px]">
+                    {myClassSummaries.length}
+                  </span>
+                </h2>
+
+                <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded font-tabular">
+                  {myTotalInwardedCount} Scripts
                 </span>
-              </h2>
+              </div>
 
-              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded font-tabular">
-                {myTotalInwardedCount} Scripts
-              </span>
+              <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto p-1.5 space-y-1.5">
+                {myClassSummaries.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-[#64748B]">
+                    <ScanIcon className="h-5 w-5 text-slate-300 mx-auto mb-1" />
+                    <div className="font-semibold text-slate-600 text-[11px]">No inwarded Class IDs recorded yet by you.</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">Scan a Class ID barcode above using camera to open a bundle.</div>
+                  </div>
+                ) : (
+                  myClassSummaries.map(summary => {
+                    const isExpanded = Boolean(expandedClassIds[summary.classId]);
+                    const isComplete = summary.status === 'COMPLETED';
+
+                    return (
+                      <div
+                        key={summary.classId}
+                        className={`p-2.5 rounded-lg border transition-all ${
+                          isComplete
+                            ? 'bg-emerald-50/40 border-emerald-200'
+                            : 'bg-white border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-mono font-black text-xs text-[#172033]">
+                            Class ID: <strong className="text-[#1565D8]">{summary.classId}</strong>
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.2 text-[8px] font-bold uppercase rounded border ${
+                              isComplete
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : 'bg-blue-100 text-blue-800 border-blue-300'
+                            }`}
+                          >
+                            {summary.status}
+                          </span>
+                        </div>
+
+                        <div className="flex items-baseline justify-between text-xs font-mono font-bold text-[#172033] mb-1 font-tabular">
+                          <div>
+                            <span className={isComplete ? 'text-emerald-700' : 'text-[#1565D8]'}>
+                              {summary.inwardedCount}
+                            </span>
+                            <span className="text-slate-400"> / </span>
+                            <span>{summary.expectedCount}</span>
+                            <span className="text-[10px] font-sans font-medium text-slate-500 ml-1 lowercase">
+                              inwarded
+                            </span>
+                          </div>
+                          <span className="text-slate-500 font-tabular text-[10px]">
+                            {summary.progressPercentage}%
+                          </span>
+                        </div>
+
+                        {/* Progress Bar */}
+                        <div className="w-full h-1 bg-slate-200 rounded-full overflow-hidden mb-2">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              isComplete ? 'bg-emerald-600' : 'bg-blue-600'
+                            }`}
+                            style={{ width: `${Math.min(100, Math.max(summary.progressPercentage > 0 ? 5 : 0, summary.progressPercentage))}%` }}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                          <button
+                            type="button"
+                            onClick={() => openClassBundle(summary.classId)}
+                            className="flex-1 py-1 bg-[#1565D8] hover:bg-blue-700 text-white text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors text-center cursor-pointer shadow-2xs"
+                          >
+                            Open Class ID {summary.classId}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpandClass(summary.classId)}
+                            className="px-2 py-1 bg-slate-50 border border-slate-200 text-slate-600 text-[9px] font-bold rounded-md hover:bg-slate-100 cursor-pointer"
+                          >
+                            {isExpanded ? 'Hide ▲' : `${summary.inwardedCount} Scripts ▼`}
+                          </button>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="mt-1.5 pt-1.5 border-t border-dashed border-slate-200 max-h-[140px] overflow-y-auto divide-y divide-slate-100 text-[10px] font-mono">
+                            {summary.records.map((rec, idx) => (
+                              <div key={rec.id || idx} className="py-1 flex items-center justify-between">
+                                <span className="font-bold text-[#172033]">{rec.member_id}</span>
+                                <span className="text-slate-400">
+                                  {rec.scanned_at ? new Date(rec.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Saved'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Admin View: Full Imported Class Bundles Directory */
+            <div className="glass-card rounded-xl shadow-xs border border-slate-200/90 overflow-hidden">
+              <div className="p-2.5 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between gap-2">
+                <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5 text-[#1565D8]" />
+                  <span>IMPORTED CLASS ID BUNDLES</span>
+                  <span className="px-1.5 py-0.2 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[9px]">
+                    {bundles.length}
+                  </span>
+                </h2>
+
+                <input
+                  type="text"
+                  value={classFilter}
+                  onChange={e => setClassFilter(e.target.value)}
+                  placeholder="Filter Class ID..."
+                  className="px-2 py-1 text-xs border border-slate-200 rounded-lg bg-white w-28 text-slate-800"
+                />
+              </div>
+
+              <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
+                {bundles.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-[#64748B]">
+                    No imported Class IDs available.
+                  </div>
+                ) : (
+                  bundles
+                    .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
+                    .map(b => {
+                      let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
+                      if (b.status === 'COMPLETED') {
+                        badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
+                      } else if (b.status === 'IN PROGRESS') {
+                        badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
+                      }
+
+                      return (
+                        <div
+                          key={b.classId}
+                          onClick={() => openClassBundle(b.classId)}
+                          className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-black text-sm text-[#172033]">
+                                Class ID: {b.classId}
+                              </span>
+                              <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
+                                {b.status}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
+                              <span>Expected: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
+                              <span>•</span>
+                              <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
+                              <span>•</span>
+                              <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-[#16A34A]">
+                              {b.progressPercentage}%
+                            </span>
+                            <ArrowRight className="h-4 w-4 text-[#1565D8]" />
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+          )
+        ) : (
+          /* STAGE 2: MEMBER TABS (INWARDED / PENDING / ALL) FOR ACTIVE CLASS (Stitch Design) */
+          <div className="glass-card rounded-xl p-2.5 shadow-xs border border-slate-200/90 overflow-hidden">
+            {/* Segmented Member Tabs */}
+            <div className="flex border-b border-slate-200 pb-1.5 gap-1" role="tablist">
+              <button
+                type="button"
+                onClick={() => setMemberTab('inwarded')}
+                className={`flex-1 py-1 text-center text-xs transition cursor-pointer ${
+                  memberTab === 'inwarded'
+                    ? 'font-black text-[#1565D8] border-b-2 border-[#1565D8]'
+                    : 'font-bold text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                INWARDED ({inwardedListCount})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMemberTab('not_inwarded')}
+                className={`flex-1 py-1 text-center text-xs transition cursor-pointer ${
+                  memberTab === 'not_inwarded'
+                    ? 'font-black text-rose-600 border-b-2 border-rose-600'
+                    : 'font-bold text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                PENDING ({notInwardedListCount})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMemberTab('all')}
+                className={`flex-1 py-1 text-center text-xs transition cursor-pointer ${
+                  memberTab === 'all'
+                    ? 'font-black text-blue-600 border-b-2 border-blue-600'
+                    : 'font-bold text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                ALL ({bundleRecords.length})
+              </button>
             </div>
 
-            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto p-2 space-y-2">
-              {myClassSummaries.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#64748B]">
-                  <ScanIcon className="h-6 w-6 text-slate-300 mx-auto mb-1" />
-                  <div className="font-semibold text-slate-600">No inwarded classes recorded yet by you.</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">Scan a Class ID barcode above using camera to open a bundle.</div>
+            {/* Live Search Field */}
+            <div className="mt-2 relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+              <input
+                type="text"
+                value={memberSearch}
+                onChange={e => setMemberSearch(e.target.value)}
+                placeholder="Search member ID or barcode..."
+                className="w-full pl-8 pr-2.5 py-1 text-xs rounded-lg border border-slate-200 bg-slate-50/90 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-[#1565D8] transition"
+              />
+            </div>
+
+            {/* Member List */}
+            <div className="mt-2 space-y-1.5 max-h-[380px] overflow-y-auto pr-0.5 no-scrollbar">
+              {filteredMemberRecords.length === 0 ? (
+                <div className="p-6 text-center text-xs text-[#64748B]">
+                  No members found in this view.
                 </div>
               ) : (
-                myClassSummaries.map(summary => {
-                  const isExpanded = Boolean(expandedClassIds[summary.classId]);
-                  const isComplete = summary.status === 'COMPLETED';
+                filteredMemberRecords.map(r => {
+                  const isInwarded = r.scan_status === 'saved' || r.scan_status === 'pending_save';
+                  const isManual = r.scanned_by?.includes('Manual') || r.saved_by?.includes('Manual');
 
                   return (
                     <div
-                      key={summary.classId}
-                      className={`p-3.5 rounded-xl border transition-all ${
-                        isComplete
-                          ? 'bg-emerald-50/40 border-emerald-200'
-                          : 'bg-white border-slate-200'
-                      }`}
+                      key={r.id}
+                      className="p-2 rounded-lg border border-slate-200 bg-white hover:border-blue-300 transition-all flex items-center justify-between shadow-2xs"
                     >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-mono font-black text-sm text-[#172033]">
-                          Class ID: <strong className="text-[#1565D8]">{summary.classId}</strong>
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded border ${
-                            isComplete
-                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : 'bg-blue-100 text-blue-800 border-blue-300'
-                          }`}
-                        >
-                          {summary.status}
-                        </span>
-                      </div>
-
-                      {/* e.g. "0020 scripts 35/35 inwarded" */}
-                      <div className="flex items-baseline justify-between text-xs font-mono font-bold text-[#172033] mb-1.5 font-tabular">
-                        <div>
-                          <span className={isComplete ? 'text-emerald-700' : 'text-[#1565D8]'}>
-                            {summary.inwardedCount}
-                          </span>
-                          <span className="text-slate-400"> / </span>
-                          <span>{summary.expectedCount}</span>
-                          <span className="text-[11px] font-sans font-medium text-slate-500 ml-1.5 lowercase">
-                            inwarded
-                          </span>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="font-extrabold text-xs text-slate-900 font-mono tracking-wide">
+                            {r.member_id}
+                          </h4>
+                          {isManual && (
+                            <span className="text-[8px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded font-sans font-bold border border-amber-300">
+                              Manual
+                            </span>
+                          )}
                         </div>
-                        <span className="text-slate-500 font-tabular text-[11px]">
-                          {summary.progressPercentage}%
-                        </span>
+                        {r.barcode && (
+                          <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                            Barcode: <span className="text-slate-700">{r.barcode}</span>
+                          </p>
+                        )}
+                        {isInwarded && (r.scanned_by || r.saved_by) && (
+                          <p className="text-[9px] text-slate-400 font-medium">
+                            By: <strong className="text-slate-600">{r.scanned_by || r.saved_by}</strong>
+                            {r.scanned_at && <span> • {new Date(r.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                          </p>
+                        )}
                       </div>
 
-                      {/* Progress Bar */}
-                      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden mb-2.5">
-                        <div
-                          className={`h-full rounded-full transition-all ${
-                            isComplete ? 'bg-emerald-600' : 'bg-blue-600'
-                          }`}
-                          style={{ width: `${Math.min(100, Math.max(summary.progressPercentage > 0 ? 5 : 0, summary.progressPercentage))}%` }}
-                        />
+                      <div className="shrink-0">
+                        {isInwarded ? (
+                          <div className="flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-300 px-2 py-0.5 rounded-full text-[10px] font-bold shadow-2xs">
+                            <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
+                            <span>INWARDED</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 bg-slate-100 text-slate-600 border border-slate-300 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                            <span>PENDING</span>
+                          </div>
+                        )}
                       </div>
-
-                      <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-                        <button
-                          type="button"
-                          onClick={() => openClassBundle(summary.classId)}
-                          className="flex-1 py-1.5 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors text-center cursor-pointer shadow-xs"
-                        >
-                          Open Class {summary.classId}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleExpandClass(summary.classId)}
-                          className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-100 cursor-pointer"
-                        >
-                          {isExpanded ? 'Hide ▲' : `${summary.inwardedCount} Scripts ▼`}
-                        </button>
-                      </div>
-
-                      {isExpanded && (
-                        <div className="mt-2 pt-2 border-t border-dashed border-slate-200 max-h-[140px] overflow-y-auto divide-y divide-slate-100 text-[10px] font-mono">
-                          {summary.records.map((rec, idx) => (
-                            <div key={rec.id || idx} className="py-1.5 flex items-center justify-between">
-                              <span className="font-bold text-[#172033]">{rec.member_id}</span>
-                              <span className="text-slate-400">
-                                {rec.scanned_at ? new Date(rec.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Saved'}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   );
                 })
               )}
             </div>
           </div>
-        ) : (
-          /* Admin View: Full Imported Class Bundles Directory */
-          <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-            <div className="p-3 bg-[#F1F5F9] border-b border-[#E2E8F0] flex items-center justify-between gap-2">
-              <h2 className="text-xs font-black uppercase tracking-wider text-[#172033] flex items-center gap-1.5">
-                <Layers className="h-4 w-4 text-[#1565D8]" />
-                <span>IMPORTED CLASS ID BUNDLES</span>
-                <span className="px-1.5 py-0.5 bg-blue-50 text-[#1565D8] border border-blue-200 rounded font-mono text-[10px]">
-                  {bundles.length}
-                </span>
-              </h2>
-
-              {/* Quick Class Filter */}
-              <input
-                type="text"
-                value={classFilter}
-                onChange={e => setClassFilter(e.target.value)}
-                placeholder="Filter Class ID..."
-                className="px-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white w-28 text-[#172033]"
-              />
-            </div>
-
-            <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto">
-              {bundles.length === 0 ? (
-                <div className="p-6 text-center text-xs text-[#64748B]">
-                  No imported Class IDs available.
-                </div>
-              ) : (
-                bundles
-                  .filter(b => !classFilter.trim() || b.classId.toLowerCase().includes(classFilter.trim().toLowerCase()))
-                  .map(b => {
-                    let badgeColor = 'bg-slate-100 text-slate-700 border-slate-300';
-                    if (b.status === 'COMPLETED') {
-                      badgeColor = 'bg-[#DCFCE7] text-[#166534] border-[#86EFAC]';
-                    } else if (b.status === 'IN PROGRESS') {
-                      badgeColor = 'bg-[#EFF6FF] text-[#1D4ED8] border-[#93C5FD]';
-                    }
-
-                    return (
-                      <div
-                        key={b.classId}
-                        onClick={() => openClassBundle(b.classId)}
-                        className="p-3 hover:bg-blue-50/50 transition-colors cursor-pointer flex items-center justify-between gap-2"
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-black text-sm text-[#172033]">
-                              Class ID: {b.classId}
-                            </span>
-                            <span className={`px-1.5 py-0.2 text-[9px] font-bold uppercase rounded border ${badgeColor}`}>
-                              {b.status}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-[#64748B] mt-1 flex items-center gap-2 font-tabular">
-                            <span>Expected: <strong className="text-[#172033]">{b.expectedCount}</strong></span>
-                            <span>•</span>
-                            <span>Inwarded: <strong className="text-[#16A34A]">{b.savedCount + b.pendingCount}</strong></span>
-                            <span>•</span>
-                            <span>Pending: <strong className="text-[#DC2626]">{b.missingCount}</strong></span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-xs text-[#16A34A]">
-                            {b.progressPercentage}%
-                          </span>
-                          <ArrowRight className="h-4 w-4 text-[#1565D8]" />
-                        </div>
-                      </div>
-                    );
-                  })
-              )}
-            </div>
-          </div>
-        )
-      ) : (
-        /* STAGE 2: MEMBER TABS (INWARDED / NOT INWARDED) FOR ACTIVE CLASS */
-        <div className="bg-white border border-[#CBD5E1] rounded-xl shadow-xs overflow-hidden">
-          {/* Member Tabs */}
-          <div className="flex items-center border-b border-[#CBD5E1] bg-[#F8FAFC] px-2 pt-1 gap-1">
-            <button
-              type="button"
-              onClick={() => setMemberTab('inwarded')}
-              className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
-                memberTab === 'inwarded'
-                  ? 'border-[#16A34A] text-[#16A34A] bg-white'
-                  : 'border-transparent text-[#64748B]'
-              }`}
-            >
-              Inwarded ({inwardedListCount})
-            </button>
-
-            {!isRestrictedInward && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setMemberTab('not_inwarded')}
-                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
-                    memberTab === 'not_inwarded'
-                      ? 'border-[#DC2626] text-[#DC2626] bg-white'
-                      : 'border-transparent text-[#64748B]'
-                  }`}
-                >
-                  Not Inwarded ({notInwardedListCount})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMemberTab('all')}
-                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 shrink-0 ${
-                    memberTab === 'all'
-                      ? 'border-[#1565D8] text-[#1565D8] bg-white'
-                      : 'border-transparent text-[#64748B]'
-                  }`}
-                >
-                  All ({bundleRecords.length})
-                </button>
-              </>
-            )}
-          </div>
-
-          {/* Search bar inside tab */}
-          <div className="p-2 border-b border-slate-100 bg-white">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-[#64748B]" />
-              <input
-                type="text"
-                value={memberSearch}
-                onChange={e => setMemberSearch(e.target.value)}
-                placeholder="Search member..."
-                className="w-full pl-8 pr-2 py-1 text-xs border border-[#CBD5E1] rounded-lg bg-white text-[#172033]"
-              />
-            </div>
-          </div>
-
-          {/* Member List */}
-          <div className="divide-y divide-slate-100 max-h-[360px] overflow-y-auto">
-            {filteredMemberRecords.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[#64748B]">
-                No members found in this view.
-              </div>
-            ) : (
-              filteredMemberRecords.map(r => {
-                const isInwarded = r.scan_status === 'saved' || r.scan_status === 'pending_save';
-                const isManual = r.scanned_by?.includes('Manual') || r.saved_by?.includes('Manual');
-
-                return (
-                  <div key={r.id} className="p-2.5 hover:bg-slate-50 flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-mono font-bold text-[#172033] flex items-center gap-1.5">
-                        <span>{r.member_id}</span>
-                        {isManual && (
-                          <span className="text-[9px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded font-sans font-bold border border-amber-300">
-                            Manual Inward
-                          </span>
-                        )}
-                      </div>
-                      {r.barcode && (
-                        <div className="text-[10px] font-mono text-[#64748B]">
-                          Barcode: {r.barcode}
-                        </div>
-                      )}
-                      {isInwarded && (r.scanned_by || r.saved_by) && (
-                        <div className="text-[9px] text-slate-500 font-medium mt-0.5">
-                          By: <strong className="text-slate-700">{r.scanned_by || r.saved_by}</strong>
-                          {r.scanned_at && <span> • {new Date(r.scanned_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="text-right">
-                      {isInwarded ? (
-                        <span className="px-2 py-0.5 bg-[#DCFCE7] text-[#166534] border border-[#86EFAC] rounded-full text-[10px] font-bold uppercase inline-block">
-                          ✓ Inwarded
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-300 rounded-full text-[10px] font-bold uppercase inline-block">
-                          Pending
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* CONFIRMATION POPUP MODAL (Requirement 2): Shown when user clicks SAVE and Not Inward > 0 */}
       {showSaveConfirmModal && saveConfirmData && (

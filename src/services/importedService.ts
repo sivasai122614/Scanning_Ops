@@ -367,37 +367,48 @@ export function isRecordInwardedByUser(
   if (!op) return false;
   const opLower = op.toLowerCase();
 
-  const userTokens: string[] = [
+  // Distinct identity tokens (exclude raw UUID or raw email domain from loose matching)
+  const identityTokens: string[] = [
     user.username,
     user.full_name,
-    user.email?.split('@')[0],
-    user.email,
-    user.id,
     user.badge_number,
+    user.email ? user.email.split('@')[0] : null,
   ]
     .filter((t): t is string => Boolean(t && String(t).trim()))
     .map(t => String(t).trim().toLowerCase());
 
-  // 1. Direct match (case-insensitive)
-  if (userTokens.includes(opLower)) return true;
+  // 1. Exact string match against operator username, full name, badge number, or email handle
+  if (identityTokens.includes(opLower)) return true;
 
-  // 2. Numeric equivalence (e.g. operator "001" equals user "1", or "01" equals "1")
+  // 2. Exact UUID match if record explicitly logged the user's UUID
+  if (user.id && user.id.toLowerCase() === opLower) return true;
+
+  // 3. Strict numeric equivalence (e.g. operator "3" equals user badge/username "3" or "03")
   const opDigits = opLower.replace(/\D/g, '');
   if (opDigits) {
     const opNum = parseInt(opDigits, 10);
-    for (const token of userTokens) {
+    for (const token of identityTokens) {
       const tokenDigits = token.replace(/\D/g, '');
       if (tokenDigits && parseInt(tokenDigits, 10) === opNum) {
-        return true;
+        // Must be a recognized operator format, e.g. "3", "03", "Operator 3", "Inward 3", "Op 3"
+        if (
+          /^\d+$/.test(opLower) ||
+          opLower.includes('operator') ||
+          opLower.includes('inward') ||
+          opLower.includes('op') ||
+          opLower.includes('user')
+        ) {
+          return true;
+        }
       }
     }
   }
 
-  // 3. Substring matching (e.g. "Operator 1" or "inward1" matching user "1")
-  for (const token of userTokens) {
-    if (token.length >= 2 && (opLower.includes(token) || token.includes(opLower))) {
-      return true;
-    }
+  // 4. Clean alphanumeric match (e.g. "operator 3" vs "operator3")
+  const cleanOp = opLower.replace(/[^a-z0-9]/g, '');
+  for (const token of identityTokens) {
+    const cleanToken = token.replace(/[^a-z0-9]/g, '');
+    if (cleanOp === cleanToken) return true;
   }
 
   return false;
