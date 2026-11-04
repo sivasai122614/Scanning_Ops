@@ -41,6 +41,7 @@ import {
   ExamDateFilter,
 } from '../../services/importedService';
 import { ManualInwardModal } from './ManualInwardModal';
+import { AdminInwardRollbackModal } from './AdminInwardRollbackModal';
 import { exportScanningStatusOverviewToExcel } from '../../utils/excelExport';
 
 interface DashboardViewProps {
@@ -333,6 +334,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   // Manual Inward Modal State (Requirement 5 & 6)
   const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
   const [manualRecords, setManualRecords] = useState<ManualInwardedRecord[]>([]);
+
+  // Admin Inward Rollback Modal State (Safe Revert from saved_scanned_data back to yet_to_be_inward)
+  const [isRollbackModalOpen, setIsRollbackModalOpen] = useState<boolean>(false);
+  const [rollbackTargetClassId, setRollbackTargetClassId] = useState<string>('');
 
   // Delete Class State
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
@@ -969,16 +974,28 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </div>
           </div>
 
-          {/* Action button to open separate table */}
-          <button
-            type="button"
-            onClick={() => setIsManualModalOpen(true)}
-            className="flex items-center gap-2 px-3.5 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-xs cursor-pointer self-start sm:self-auto active:scale-95"
-            title="Open Dedicated Manual Inward Table"
-          >
-            <FileSpreadsheet className="h-4 w-4" />
-            <span>Open Manual Table ({manualRecords.length})</span>
-          </button>
+          {/* Action buttons */}
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => { setRollbackTargetClassId(''); setIsRollbackModalOpen(true); }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95"
+              title="Admin Inward Rollback & Safe Revert Station"
+            >
+              <RotateCcw className="h-3.5 w-3.5 text-amber-700" />
+              <span>Inward Rollback Station</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsManualModalOpen(true)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-xs cursor-pointer active:scale-95"
+              title="Open Dedicated Manual Inward Table"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Open Manual Table ({manualRecords.length})</span>
+            </button>
+          </div>
         </div>
 
         {/* Progress Bar for Manual Entries vs Total Inwards */}
@@ -1317,6 +1334,16 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
                         {b.status}
                       </span>
+                      {b.receivedCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => { setRollbackTargetClassId(b.classId); setIsRollbackModalOpen(true); }}
+                          className="p-1 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded transition-colors cursor-pointer"
+                          title={`Manage & Revert Inwarded Scripts for Class ID ${b.classId}`}
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setClassToDelete(b.classId)}
@@ -1434,14 +1461,26 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => setClassToDelete(b.classId)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                            title={`Delete Class / SH ID ${b.classId} and saved scan records`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="flex items-center justify-end gap-1">
+                            {b.receivedCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => { setRollbackTargetClassId(b.classId); setIsRollbackModalOpen(true); }}
+                                className="p-1.5 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded transition-colors cursor-pointer"
+                                title={`Manage & Revert Inwarded Scripts for Class ID ${b.classId}`}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setClassToDelete(b.classId)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                              title={`Delete Class / SH ID ${b.classId} and saved scan records`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1458,6 +1497,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       <ManualInwardModal
         isOpen={isManualModalOpen}
         onClose={() => setIsManualModalOpen(false)}
+      />
+
+      {/* 8. Dedicated Admin Inward Rollback & Saved Records Management Modal */}
+      <AdminInwardRollbackModal
+        isOpen={isRollbackModalOpen}
+        onClose={() => setIsRollbackModalOpen(false)}
+        initialClassId={rollbackTargetClassId}
       />
 
       {/* Delete Class Confirmation Modal */}

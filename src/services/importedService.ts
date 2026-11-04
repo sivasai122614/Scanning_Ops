@@ -1485,7 +1485,7 @@ class ImportedService {
 
               // Insert into Supabase yet_to_be_inward in chunks of 500
               const seedRows = pendingToSeed.map(p => ({
-                id: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id) ? p.id : undefined,
+                id: (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)) ? p.id : generateUUID(),
                 import_session_id: p.import_session_id || 'default_session',
                 university_name: p.university_name || p.college_name || 'VIT',
                 college_name: p.college_name || p.university_name || 'VIT',
@@ -1499,7 +1499,11 @@ class ImportedService {
               (async () => {
                 try {
                   for (let i = 0; i < seedRows.length; i += 500) {
-                    await supabase.from('yet_to_be_inward').insert(seedRows.slice(i, i + 500));
+                    const chunk = seedRows.slice(i, i + 500);
+                    const { error: seedErr } = await supabase.from('yet_to_be_inward').insert(chunk);
+                    if (seedErr) {
+                      console.error('[ImportedService] yet_to_be_inward auto-seed error:', seedErr);
+                    }
                   }
                   console.log(`[ImportedService] Auto-seeded ${seedRows.length} rows into yet_to_be_inward in Supabase`);
                 } catch (autoErr) {
@@ -5143,6 +5147,240 @@ class ImportedService {
       bundle: updatedBundle || undefined,
       message: `Inwarded Member ${resolvedMemberId} in Class ${activeClassId}`,
     };
+  }
+
+  /**
+   * ADMIN ONLY INWARD ROLLBACK / REVERT:
+   * Reverts an inwarded script from saved_scanned_data back to yet_to_be_inward.
+   * STRICT SAFETY RULES:
+   * 1. Never invoked automatically by the app.
+   * 2. Only triggered by explicit Admin action in the Admin Dashboard.
+   * 3. Removes from saved_scanned_data (and manual_inward_data).
+   * 4. Restores record back to yet_to_be_inward (Pending scripts pool).
+   * 5. Does NOT delete from imported_inward_data (permanent deletion only happens when master import is deleted).
+   * 6. Updates live counts: Inwarded -1, Pending +1.
+   */
+  public async adminRevertInward(
+    classId: string,
+    memberId: string,
+    adminInfo?: { name?: string; email?: string }
+  ): Promise<{ success: boolean; message: string; error?: string }> {
+    const cleanCid = normalizeIdentifier(classId);
+    const cleanMid = normalizeIdentifier(memberId);
+    if (!cleanCid || !cleanMid) {
+      return { success: false, message: 'Class ID and Member ID are required.', error: 'Invalid parameters' };
+    }
+
+    const cidLower = cleanCid.toLowerCase();
+    const midLower = cleanMid.toLowerCase();
+
+    // 1. Locate existing inwarded record in savedScanned or manualInwarded
+    const existingSaved = this.savedScanned.find(
+      s => normalizeIdentifier(s.class_id).toLowerCase() === cidLower &&
+           normalizeIdentifier(s.member_id).toLowerCase() === midLower
+    );
+    const existingManual = this.manualInwarded.find(
+      m => normalizeIdentifier(m.class_id).toLowerCase() === cidLower &&
+           normalizeIdentifier(m.member_id || m.roll_number || '').toLowerCase() === midLower
+    );
+
+    if (!existingSaved && !existingManual) {
+      return { success: false, message: `Member ${cleanMid} is not currently in inwarded records.`, error: 'NOT_FOUND' };
+    }
+
+    // 2. Locate master reference in imported_inward_data
+    const masterRecord = this.importInwarded.find(
+      r => normalizeIdentifier(r.class_id).toLowerCase() === cidLower &&
+           normalizeIdentifier(r.member_id).toLowerCase() === midLower
+    );
+
+    // 3. Remove from savedScanned in memory
+    this.savedScanned = this.savedScanned.filter(
+      s => !(normalizeIdentifier(s.class_id).toLowerCase() === cidLower &&
+             normalizeIdentifier(s.member_id).toLowerCase() === midLower)
+    );
+
+    // 4. Remove from manualInwarded in memory
+    this.manualInwarded = this.manualInwarded.filter(
+      m => !(normalizeIdentifier(m.class_id).toLowerCase() === cidLower &&
+             normalizeIdentifier(m.member_id || m.roll_number || '').toLowerCase() === midLower)
+    );
+
+    // 5. Remove from scanItems in memory
+    this.scanItems = this.scanItems.filter(
+      i => !(normalizeIdentifier(i.class_id).toLowerCase() === cidLower &&
+             normalizeIdentifier(i.member_id).toLowerCase() === midLower)
+    );
+
+    // 6. Restore back into yetToBeInward (Pending pool)
+    const alreadyInYet = this.yetToBeInward.some(
+      y => normalizeIdentifier(y.class_id).toLowerCase() === cidLower &&
+           normalizeIdentifier(y.member_id).toLowerCase() === midLower
+    );
+
+    const now = new Date().toISOString();
+    const barcodeVal = masterRecord?.barcode || existingSaved?.barcode || existingManual?.booklet_barcode || cleanMid;
+    const examDateVal = masterRecord?.exam_date || existingSaved?.exam_date || existingManual?.exam_date || undefined;
+    const collegeVal = masterRecord?.college_name || existingSaved?.college_name || this.activeUniversity || 'VIT';
+    const uniVal = masterRecord?.university_name || this.activeUniversity || collegeVal;
+
+    if (!alreadyInYet) {
+      const restoredYetRecord: ImportInwardedRecord = {
+        id: masterRecord?.id || generateUUID(),
+        import_session_id: masterRecord?.import_session_id || 'default_session',
+        college_name: collegeVal,
+        university_name: uniVal,
+        class_id: cleanCid,
+        sch_id: masterRecord?.sch_id || existingSaved?.sch_id || undefined,
+        member_id: cleanMid,
+        barcode: barcodeVal,
+        exam_date: examDateVal,
+        created_by: masterRecord?.created_by || 'Admin Reverted',
+        created_at: now,
+      };
+      this.yetToBeInward.push(restoredYetRecord);
+    }
+
+    // 7. Update live counts
+    this.backendReceivedCount = this.savedScanned.length;
+    this.backendPendingCount = this.yetToBeInward.length;
+
+    // 8. Persist to Supabase
+    if (isSupabaseConfigured) {
+      try {
+        const deleteSavedPromise = supabase
+          .from('saved_scanned_data')
+          .delete()
+        // 1. Delete from saved_scanned_data
+        const delSavedPromise = supabase
+          .from('saved_scanned_data')
+          .delete()
+          .ilike('class_id', cleanCid)
+          .ilike('member_id', cleanMid);
+
+        // 2. Delete from manual_inward_data
+        const delManualPromise = supabase
+          .from('manual_inward_data')
+          .delete()
+          .ilike('class_id', cleanCid)
+          .or(`member_id.ilike.${cleanMid},roll_number.ilike.${cleanMid}`);
+
+        // 3. Update scan status in imported_inward_data
+        const updImportPromise = supabase
+          .from('imported_inward_data')
+          .update({ scan_status: 'not_started', scanned_at: null })
+          .ilike('class_id', cleanCid)
+          .ilike('member_id', cleanMid);
+
+        // 4. In yet_to_be_inward: first clear any matching row to prevent duplicates
+        const delYetPromise = supabase
+          .from('yet_to_be_inward')
+          .delete()
+          .ilike('class_id', cleanCid)
+          .ilike('member_id', cleanMid);
+
+        await Promise.allSettled([
+          delSavedPromise,
+          delManualPromise,
+          updImportPromise,
+          delYetPromise,
+        ]);
+
+        // 5. Insert directly into yet_to_be_inward with guaranteed RFC 4122 UUID
+        const newYetUuid = generateUUID();
+        const yetInsertPayload = {
+          id: newYetUuid,
+          import_session_id: masterRecord?.import_session_id || 'default_session',
+          university_name: uniVal,
+          college_name: collegeVal,
+          class_id: cleanCid,
+          sch_id: masterRecord?.sch_id || null,
+          member_id: cleanMid,
+          barcode: barcodeVal || cleanMid,
+          created_at: now,
+        };
+
+        const { data: yetData, error: yetErr } = await supabase
+          .from('yet_to_be_inward')
+          .insert([yetInsertPayload]);
+
+        if (yetErr) {
+          console.error('[adminRevertInward] Supabase yet_to_be_inward insert error:', yetErr);
+        } else {
+          console.log(`[adminRevertInward] ✓ Successfully inserted Member ${cleanMid} in Class ${cleanCid} into yet_to_be_inward in Supabase:`, yetData);
+        }
+      } catch (dbErr) {
+        console.warn('[adminRevertInward] Supabase persistence notice:', dbErr);
+      }
+    }
+
+    this.saveToLocalStorage();
+    this.notify();
+
+    return {
+      success: true,
+      message: `Member ID ${cleanMid} for Class ${cleanCid} has been safely reverted from Saved Scanned Data back to Yet to Be Inward (Pending).`,
+    };
+  }
+
+  /**
+   * Dedicated Sync method:
+   * Scans all records from imported_inward_data that are NOT currently in saved_scanned_data,
+   * and populates public.yet_to_be_inward in Supabase with guaranteed valid UUIDs.
+   */
+  public async syncPendingToYetToBeInward(): Promise<{ count: number; error?: string }> {
+    if (!isSupabaseConfigured) return { count: this.yetToBeInward.length };
+
+    try {
+      const savedKeySet = new Set(
+        this.savedScanned.map(s => `${normalizeIdentifier(s.class_id).toLowerCase()}::${normalizeIdentifier(s.member_id).toLowerCase()}`)
+      );
+
+      const pendingRecords = this.importInwarded.filter(
+        i => !savedKeySet.has(`${normalizeIdentifier(i.class_id).toLowerCase()}::${normalizeIdentifier(i.member_id).toLowerCase()}`)
+      );
+
+      console.log(`[syncPendingToYetToBeInward] Populating ${pendingRecords.length} pending records to yet_to_be_inward in Supabase...`);
+
+      // Clear existing yet_to_be_inward rows to avoid duplication
+      try {
+        await supabase.from('yet_to_be_inward').delete().neq('class_id', '__NEVER_MATCH__');
+      } catch (delErr) {
+        console.warn('[syncPendingToYetToBeInward] Clear note:', delErr);
+      }
+
+      if (pendingRecords.length > 0) {
+        const seedRows = pendingRecords.map(p => ({
+          id: generateUUID(),
+          import_session_id: p.import_session_id || 'default_session',
+          university_name: p.university_name || p.college_name || this.activeUniversity || 'VIT',
+          college_name: p.college_name || p.university_name || this.activeUniversity || 'VIT',
+          class_id: p.class_id,
+          sch_id: p.sch_id || null,
+          member_id: p.member_id,
+          barcode: p.barcode || p.member_id,
+          created_at: new Date().toISOString(),
+        }));
+
+        for (let i = 0; i < seedRows.length; i += 500) {
+          const chunk = seedRows.slice(i, i + 500);
+          const { error: insErr } = await supabase.from('yet_to_be_inward').insert(chunk);
+          if (insErr) {
+            console.error('[syncPendingToYetToBeInward] Insert error:', insErr);
+          }
+        }
+      }
+
+      this.yetToBeInward = pendingRecords;
+      this.backendPendingCount = this.yetToBeInward.length;
+      this.saveToLocalStorage();
+      this.notify();
+
+      return { count: pendingRecords.length };
+    } catch (err: any) {
+      console.warn('[syncPendingToYetToBeInward] Exception:', err);
+      return { count: 0, error: err?.message || 'Sync failed' };
+    }
   }
 
   /**
