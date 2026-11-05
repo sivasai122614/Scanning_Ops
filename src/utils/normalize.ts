@@ -219,3 +219,38 @@ export function formatExamDate(isoDate?: string | null): string {
   return clean;
 }
 
+/**
+ * Detects whether a string or value represents a calendar date rather than a Class ID.
+ * Returns true for:
+ * - JavaScript Date instances
+ * - Numeric Excel date codes (e.g. 40000 - 65000)
+ * - Date patterns like "25-08-2026", "2026-08-25", "9/3/26", "9/1/26", "28-08-2026", "01/11/2026"
+ * Returns false for Class IDs like "0020", "CS101", "A1", "BATCH-01", "24BAR0087"
+ */
+export function isDateLikeString(val: unknown): boolean {
+  if (val === null || val === undefined) return false;
+  if (val instanceof Date) return true;
+  const s = String(val).trim();
+  if (!s) return false;
+
+  // Excel numeric date code (40000 to 60000)
+  if (/^\d{5}$/.test(s)) {
+    const num = Number(s);
+    if (num >= 40000 && num <= 60000) return true;
+  }
+
+  // Any date pattern with separators - or / or . between numbers:
+  // e.g. 25-08-2026, 9/3/26, 2026-08-25, 01-11-2026, 9/1/26
+  if (/^\d{1,4}[-/\.]\d{1,2}[-/\.]\d{2,4}$/.test(s)) return true;
+
+  // Month text format e.g. 25-Aug-2026, Aug 25 2026
+  if (/^\d{1,2}[-/\. ](?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[-/\. ]\d{2,4}$/i.test(s)) return true;
+
+  // If normalizeExamDate successfully parsed it into a valid ISO date
+  const norm = normalizeExamDate(s);
+  if (norm && /^\d{4}-\d{2}-\d{2}$/.test(norm)) {
+    return true;
+  }
+
+  return false;
+}

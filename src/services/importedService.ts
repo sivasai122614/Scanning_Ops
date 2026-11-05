@@ -11,9 +11,9 @@
 import * as XLSX from 'xlsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { enterpriseStore } from './store';
-import { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate } from '../utils/normalize';
+import { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate, isDateLikeString } from '../utils/normalize';
 
-export { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate };
+export { normalizeIdentifier, sanitizeBarcode, normalizeExamDate, formatExamDate, isDateLikeString };
 
 
 /**
@@ -5512,6 +5512,24 @@ class ImportedService {
       deletedCount: deletedImpCount,
       deletedScansCount: deletedSavedCount,
     };
+  }
+
+  /**
+   * Safely purges any imported classes that mistakenly contain date strings as Class IDs
+   * (e.g. "25-08-2026", "9/3/26", "9/1/26", "28-08-2026") from imported_inward_data and yet_to_be_inward.
+   */
+  public async purgeCorruptedDateClasses(): Promise<{ purgedCount: number; purgedClasses: string[] }> {
+    const corruptedClassSet = new Set<string>();
+    for (const r of this.importInwarded) {
+      if (r.class_id && isDateLikeString(r.class_id)) {
+        corruptedClassSet.add(r.class_id);
+      }
+    }
+    const classList = Array.from(corruptedClassSet);
+    for (const cid of classList) {
+      await this.deleteClassBundle(cid);
+    }
+    return { purgedCount: classList.length, purgedClasses: classList };
   }
 
   /**

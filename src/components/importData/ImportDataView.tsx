@@ -34,7 +34,7 @@ import {
   ChevronUp,
   Calendar,
 } from 'lucide-react';
-import { importedService, ClassBundle, normalizeExamDate, formatExamDate, isRecordMatchingDateFilter } from '../../services/importedService';
+import { importedService, ClassBundle, normalizeExamDate, formatExamDate, isRecordMatchingDateFilter, isDateLikeString } from '../../services/importedService';
 
 interface ParsedRow {
   rowNumber: number;
@@ -206,8 +206,36 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
   const [showClearAllModal, setShowClearAllModal] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
-  // Option to replace existing data or append: DEFAULT IS FALSE (Append / accumulate bulk excels)
   const [replaceExistingData, setReplaceExistingData] = useState<boolean>(false);
+
+  // Column Mapping state for uploaded Excel files
+  const [detectedColumnMapping, setDetectedColumnMapping] = useState<{
+    dateCol: number;
+    classCol: number;
+    memberCol: number;
+    barcodeCol: number;
+    headers: string[];
+    dateColumns: number[];
+  } | null>(null);
+
+  const [isPurgingCorrupt, setIsPurgingCorrupt] = useState<boolean>(false);
+  const corruptedDateClasses = React.useMemo(() => {
+    return existingBundles.filter(b => isDateLikeString(b.classId));
+  }, [existingBundles]);
+
+  const handlePurgeCorruptedClasses = async () => {
+    if (isPurgingCorrupt) return;
+    setIsPurgingCorrupt(true);
+    try {
+      await importedService.purgeCorruptedDateClasses();
+      const updated = importedService.getClassBundles();
+      setExistingBundles(updated);
+    } catch (err) {
+      console.warn('Purge error:', err);
+    } finally {
+      setIsPurgingCorrupt(false);
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -228,8 +256,18 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     };
   }, []);
 
-  // Parse a single Excel file into rows
-  const parseSingleExcelFile = (file: File): Promise<{ fileName: string; fileSize: number; rows: ParsedRow[] }> => {
+  // Parse a single Excel file into rows with content-aware column detection
+  const parseSingleExcelFile = (
+    file: File,
+    overrideMapping?: { dateCol: number; classCol: number; memberCol: number; barcodeCol: number }
+  ): Promise<{
+    fileName: string;
+    fileSize: number;
+    rows: ParsedRow[];
+    headers: string[];
+    mapping: { dateCol: number; classCol: number; memberCol: number; barcodeCol: number };
+    dateColumns: number[];
+  }> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = evt => {
@@ -245,110 +283,235 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             throw new Error(`File "${file.name}" is empty or does not contain data rows.`);
           }
 
-          const headerRow = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
+          // 1. Identify Header Row (scan first 6 rows)
+          let headerRowIndex = 0;
+          let bestHeaderScore = -1;
 
-          // Mandatory Date Column Detection:
-          let dateColIdx = headerRow.findIndex(
-            (h: string) => {
-              const clean = h.replace(/[^a-z0-9]/g, '');
-              return (
-                h.includes('date') ||
-                h.includes('exam_date') ||
-                h.includes('exam date') ||
-                h.includes('time') ||
-                clean === 'date' ||
-                clean === 'examdate' ||
-                clean === 'datetime' ||
-                clean === 'dateandtime' ||
-                clean === 'sessiondate' ||
-                clean === 'examdt' ||
-                clean === 'dt' ||
-                clean === 'testdate' ||
-                clean === 'scheduledate'
-              );
+          for (let r = 0; r < Math.min(rawJson.length, 6); r++) {
+            const row = rawJson[r];
+            if (!row || !Array.isArray(row)) continue;
+            let score = 0;
+            for (const cell of row) {
+              const text = String(cell || '').trim().toLowerCase();
+              const clean = text.replace(/[^a-z0-9]/g, '');
+              if (text.includes('date') || clean === 'dt' || clean === 'examdate') score += 5;
+              if (text.includes('class') || clean === 'cls' || clean === 'batch' || clean === 'bundle' || clean === 'shid' || clean === 'sh') score += 5;
+              if (text.includes('member') || clean === 'unqid' || text.includes('roll') || text.includes('student') || clean === 'regno') score += 5;
+              if (text.includes('barcode') || clean === 'qr') score += 5;
             }
-          );
+            if (score > bestHeaderScore) {
+              bestHeaderScore = score;
+              headerRowIndex = r;
+            }
+          }
+
+          const rawHeaderRow: string[] = (rawJson[headerRowIndex] || []).map((h: any) => String(h || '').trim());
+          const headerRow: string[] = rawHeaderRow.map((h: string) => h.toLowerCase());
+          const numCols = headerRow.length;
+
+          // 2. Sample data cells per column across first 35 data rows
+          const dateColumns: number[] = [];
+          const colAnalysis: Array<{
+            index: number;
+            header: string;
+            dateRatio: number;
+            isPrimarilyDates: boolean;
+            dateScore: number;
+            classScore: number;
+            memberScore: number;
+            barcodeScore: number;
+          }> = [];
+
+          for (let c = 0; c < numCols; c++) {
+            const h = headerRow[c] || '';
+            const clean = h.replace(/[^a-z0-9]/g, '');
+
+            const sampleVals: string[] = [];
+            for (let r = headerRowIndex + 1; r < Math.min(rawJson.length, headerRowIndex + 35); r++) {
+              const val = rawJson[r]?.[c];
+              if (val !== undefined && val !== null) {
+                const s = String(val).trim();
+                if (s) sampleVals.push(s);
+              }
+            }
+
+            const dateMatchCount = sampleVals.filter(isDateLikeString).length;
+            const dateRatio = sampleVals.length > 0 ? dateMatchCount / sampleVals.length : 0;
+            const isPrimarilyDates = dateRatio >= 0.5;
+            if (isPrimarilyDates) {
+              dateColumns.push(c);
+            }
+
+            // Roll number / member ID regex: e.g. 24BAR0087, 25MMI0034, 24BCM0266, 23BMM0008
+            const memberMatchCount = sampleVals.filter(s => /^[0-9]{2}[A-Za-z]{2,5}[0-9]{3,5}$/i.test(s) || /^[A-Za-z0-9]{7,18}$/.test(s)).length;
+            const memberRatio = sampleVals.length > 0 ? memberMatchCount / sampleVals.length : 0;
+
+            let dateScore = 0;
+            let classScore = 0;
+            let memberScore = 0;
+            let barcodeScore = 0;
+
+            // Date Scoring
+            if (clean === 'date' || clean === 'examdate' || clean === 'sessiondate' || clean === 'testdate' || h === 'exam date' || h === 'date of exam') {
+              dateScore += 100;
+            } else if (h.includes('date') || clean === 'datetime' || clean === 'scheduledate') {
+              dateScore += 50;
+            } else if (clean === 'dt' || clean === 'examdt') {
+              dateScore += 30;
+            }
+            if (isPrimarilyDates) {
+              dateScore += 50;
+            } else if (sampleVals.length > 0 && dateRatio < 0.1) {
+              dateScore -= 100; // Cannot be a date column if content has no dates!
+            }
+
+            // Class ID Scoring
+            // CRITICAL RULE: A column that contains DATES can NEVER be a Class ID!
+            if (isPrimarilyDates) {
+              classScore = -9999;
+            } else {
+              if (clean === 'class' || clean === 'classid' || clean === 'cls' || clean === 'clsid' || h === 'class id' || h === 'class_id' || h === 'class no' || h === 'class_no' || clean === 'classno') {
+                classScore += 100;
+              } else if (clean === 'shid' || clean === 'sh' || clean === 'schid' || clean === 'schoolid' || h === 'sh id' || h === 'sh_id' || h === 'school id') {
+                classScore += 90;
+              } else if (clean === 'batch' || clean === 'batchid' || h === 'batch id' || h === 'batch no' || clean === 'bundle' || clean === 'bundleid' || h === 'bundle id') {
+                classScore += 80;
+              } else if (h.includes('class') || h.includes('cls') || h.includes('batch') || h.includes('bundle') || h.includes('room') || h.includes('hall') || h.includes('section') || clean === 'sec' || clean === 'course' || clean === 'subject') {
+                classScore += 50;
+              } else if (!h.includes('member') && !h.includes('student') && !h.includes('roll') && !h.includes('unq') && !h.includes('barcode')) {
+                // Short codes, not member, not barcode
+                classScore += 15;
+              }
+            }
+
+            // Member ID Scoring
+            if (isPrimarilyDates) {
+              memberScore = -9999;
+            } else {
+              if (clean === 'unqid' || clean === 'unq' || clean === 'memberid' || clean === 'member' || h === 'member id' || h === 'member_id' || h === 'unq id' || h === 'unq_id') {
+                memberScore += 100;
+              } else if (clean === 'rollno' || clean === 'roll' || clean === 'studentid' || clean === 'student' || h === 'roll no' || h === 'roll number' || h === 'student id' || h === 'reg no' || clean === 'regno' || clean === 'registrationno' || clean === 'hallticket') {
+                memberScore += 90;
+              } else if (h.includes('member') || h.includes('unq') || h.includes('student') || h.includes('roll') || h.includes('reg') || (h.includes('id') && !h.includes('class') && !h.includes('sh') && !h.includes('date'))) {
+                memberScore += 50;
+              }
+              if (memberRatio > 0.4) {
+                memberScore += 25;
+              }
+            }
+
+            // Barcode Scoring
+            if (h.includes('barcode') || h.includes('bar_code') || clean === 'barcode' || clean === 'qr' || clean === 'code') {
+              barcodeScore += 60;
+            }
+
+            colAnalysis.push({
+              index: c,
+              header: rawHeaderRow[c] || `Column ${c + 1}`,
+              dateRatio,
+              isPrimarilyDates,
+              dateScore,
+              classScore,
+              memberScore,
+              barcodeScore,
+            });
+          }
+
+          // 3. Resolve Column Indexes
+          let dateColIdx = overrideMapping ? overrideMapping.dateCol : -1;
+          let classColIdx = overrideMapping ? overrideMapping.classCol : -1;
+          let memberColIdx = overrideMapping ? overrideMapping.memberCol : -1;
+          let barcodeColIdx = overrideMapping ? overrideMapping.barcodeCol : -1;
+
+          if (!overrideMapping) {
+            // Auto-detect Date Column
+            let bestDateScore = 0;
+            for (const col of colAnalysis) {
+              if (col.dateScore > bestDateScore) {
+                bestDateScore = col.dateScore;
+                dateColIdx = col.index;
+              }
+            }
+            if (dateColIdx === -1) {
+              const dateCol = colAnalysis.find(c => c.isPrimarilyDates);
+              if (dateCol) dateColIdx = dateCol.index;
+            }
+
+            // Auto-detect Class ID Column (STRICT: Cannot be dateColIdx, and CANNOT contain dates!)
+            let bestClassScore = 0;
+            for (const col of colAnalysis) {
+              if (col.index === dateColIdx) continue;
+              if (col.isPrimarilyDates) continue;
+              if (col.classScore > bestClassScore) {
+                bestClassScore = col.classScore;
+                classColIdx = col.index;
+              }
+            }
+
+            // Auto-detect Member ID Column
+            let bestMemberScore = 0;
+            for (const col of colAnalysis) {
+              if (col.index === dateColIdx || col.index === classColIdx) continue;
+              if (col.isPrimarilyDates) continue;
+              if (col.memberScore > bestMemberScore) {
+                bestMemberScore = col.memberScore;
+                memberColIdx = col.index;
+              }
+            }
+
+            // Auto-detect Barcode Column
+            let bestBarcodeScore = 0;
+            for (const col of colAnalysis) {
+              if (col.index === dateColIdx || col.index === classColIdx || col.index === memberColIdx) continue;
+              if (col.barcodeScore > bestBarcodeScore) {
+                bestBarcodeScore = col.barcodeScore;
+                barcodeColIdx = col.index;
+              }
+            }
+
+            // Fallback for remaining columns
+            if (classColIdx === -1) {
+              const availClass = colAnalysis.find(c => c.index !== dateColIdx && c.index !== memberColIdx && c.index !== barcodeColIdx && !c.isPrimarilyDates);
+              if (availClass) classColIdx = availClass.index;
+            }
+
+            if (memberColIdx === -1) {
+              const availMember = colAnalysis.find(c => c.index !== dateColIdx && c.index !== classColIdx && !c.isPrimarilyDates);
+              if (availMember) memberColIdx = availMember.index;
+            }
+
+            // ABSOLUTE INTEGRITY CHECK:
+            // Under NO condition can classColIdx ever be equal to dateColIdx or contain date values!
+            if (classColIdx === dateColIdx || (classColIdx >= 0 && colAnalysis[classColIdx]?.isPrimarilyDates)) {
+              console.warn(`[COLUMN DETECTION] classColIdx (${classColIdx}) collided with Date column or contains dates! Disconnecting classColIdx.`);
+              classColIdx = -1;
+              const nonDateCol = colAnalysis.find(c => c.index !== dateColIdx && !c.isPrimarilyDates);
+              if (nonDateCol) classColIdx = nonDateCol.index;
+            }
+          }
 
           if (dateColIdx === -1) {
-            throw new Error(`MANDATORY DATE COLUMN MISSING: The uploaded file "${file.name}" does not contain a "Date" or "Exam Date" column. Please ensure your Excel file contains a Date column (e.g. "Date" with values like 01-11-2026) and re-upload.`);
+            throw new Error(`MANDATORY DATE COLUMN MISSING: The uploaded file "${file.name}" does not contain a recognizable Date column. Please ensure your Excel file contains a Date column (e.g. "Date" with values like 01-11-2026) and re-upload.`);
           }
 
-          // Header Detection for Class ID / SH ID:
-          let classColIdx = headerRow.findIndex(
-            (h: string) => {
-              const clean = h.replace(/[^a-z0-9]/g, '');
-              return (
-                h.includes('class') ||
-                h.includes('batch') ||
-                h.includes('cls') ||
-                h.includes('bundle') ||
-                clean === 'sh' ||
-                clean === 'shid' ||
-                clean === 'clsid' ||
-                clean === 'schoolid' ||
-                clean === 'scheduleid' ||
-                clean === 'schedule' ||
-                h.includes('schedule') ||
-                h.includes('sh id') ||
-                h.includes('sh_id') ||
-                h.includes('school id')
-              );
-            }
-          );
-
-          let barcodeColIdx = headerRow.findIndex(
-            (h: string, idx: number) =>
-              idx !== classColIdx &&
-              idx !== dateColIdx &&
-              (h.includes('barcode') ||
-               h.includes('bar_code') ||
-               h.includes('bar code') ||
-               h.includes('barcode value') ||
-               h.includes('barcode_value') ||
-               h.includes('qr') ||
-               h.includes('code'))
-          );
-
-          let memberColIdx = headerRow.findIndex(
-            (h: string, idx: number) =>
-              idx !== classColIdx &&
-              idx !== barcodeColIdx &&
-              idx !== dateColIdx &&
-              (h.includes('unqid') ||
-               h.includes('unq') ||
-               h.includes('member') ||
-               h.includes('student') ||
-               h.includes('roll') ||
-               (h.includes('id') && !h.includes('class') && !h.includes('barcode') && !h.includes('sh') && !h.includes('date')))
-          );
-
-          if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx === -1 && headerRow.length >= 3) {
-            dateColIdx = 0;
-            classColIdx = 1;
-            memberColIdx = 2;
-            if (headerRow.length >= 4) {
-              barcodeColIdx = 3;
-            }
-          } else if (classColIdx === -1 && memberColIdx === -1 && barcodeColIdx >= 0) {
-            // Barcode only column: Class and Member will be extracted from hyphenated values
-          } else if (classColIdx === -1 && memberColIdx !== -1) {
-            classColIdx = memberColIdx === 0 ? 1 : 0;
-          } else if (memberColIdx === -1 && classColIdx !== -1) {
-            memberColIdx = classColIdx === 0 ? 1 : 0;
-          }
-
+          // 4. Parse rows
           const fileRows: ParsedRow[] = [];
           const seenInThisFile = new Set<string>();
 
-          for (let i = 1; i < rawJson.length; i++) {
+          for (let i = headerRowIndex + 1; i < rawJson.length; i++) {
             const rowData = rawJson[i];
             if (!rowData || rowData.length === 0) continue;
 
-            // Pure string extraction to preserve leading zeros e.g. 0020
             let rawClass = classColIdx >= 0 ? String(rowData[classColIdx] ?? '').trim() : '';
             let rawMember = memberColIdx >= 0 ? String(rowData[memberColIdx] ?? '').trim() : '';
             let rawBarcode = barcodeColIdx >= 0 ? String(rowData[barcodeColIdx] ?? '').trim() : '';
             let rawDate = dateColIdx >= 0 ? String(rowData[dateColIdx] ?? '').trim() : '';
+
+            // CRITICAL SANITIZATION:
+            // If rawClass is a date (e.g. "25-08-2026", "9/3/26"), REJECT it from being a Class ID!
+            if (rawClass && isDateLikeString(rawClass)) {
+              rawClass = '';
+            }
 
             // Extract authoritative exam date directly from cell object or string
             let normDate = '';
@@ -356,15 +519,12 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               const cellAddress = XLSX.utils.encode_cell({ r: i, c: dateColIdx });
               const cell = worksheet[cellAddress];
               if (cell) {
-                // Priority 1: Check formatted text string in cell.w (e.g. "3-11-26") or rawDate
                 const textCandidate = (typeof cell.w === 'string' && cell.w.trim()) ||
                                       (typeof rawDate === 'string' && rawDate.trim()) ||
                                       (typeof cell.v === 'string' && cell.v.trim());
                 if (textCandidate) {
                   normDate = normalizeExamDate(textCandidate);
                 }
-
-                // Priority 2: If numeric Excel date code (e.g. 46329 for 3-Nov-2026)
                 if (!normDate && typeof cell.v === 'number' && cell.v > 30000 && cell.v < 75000) {
                   if ((XLSX as any).SSF && typeof (XLSX as any).SSF.parse_date_code === 'function') {
                     const parsed = (XLSX as any).SSF.parse_date_code(cell.v);
@@ -379,8 +539,6 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                     normDate = normalizeExamDate(cell.v);
                   }
                 }
-
-                // Priority 3: If Date instance
                 if (!normDate && cell.v instanceof Date && !isNaN(cell.v.getTime())) {
                   normDate = normalizeExamDate(cell.v);
                 }
@@ -396,7 +554,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               const dashIdx = rawBarcode.indexOf('-');
               const partLeft = rawBarcode.substring(0, dashIdx).trim();
               const partRight = rawBarcode.substring(dashIdx + 1).trim();
-              if (!rawClass && partLeft) rawClass = partLeft;
+              if (!rawClass && partLeft && !isDateLikeString(partLeft)) rawClass = partLeft;
               if (!rawMember && partRight) rawMember = partRight;
             }
 
@@ -404,21 +562,21 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
               const dashIdx = rawMember.indexOf('-');
               const partLeft = rawMember.substring(0, dashIdx).trim();
               const partRight = rawMember.substring(dashIdx + 1).trim();
-              if (partLeft && partRight) {
+              if (partLeft && partRight && !isDateLikeString(partLeft)) {
                 if (!rawBarcode) rawBarcode = rawMember;
                 rawClass = partLeft;
                 rawMember = partRight;
               }
             }
 
-            if (rawClass && !rawMember && rawClass.includes('-')) {
-              const dashIdx = rawClass.indexOf('-');
-              const partLeft = rawClass.substring(0, dashIdx).trim();
-              const partRight = rawClass.substring(dashIdx + 1).trim();
-              if (partLeft && partRight) {
-                if (!rawBarcode) rawBarcode = rawClass;
-                rawClass = partLeft;
-                rawMember = partRight;
+            // Fallback: If rawClass is still missing (e.g. 2-column Excel with only Date and Member ID):
+            // Derive Class ID from member ID prefix (e.g. "24BAR" from "24BAR0087"), NEVER A DATE!
+            if (!rawClass && rawMember) {
+              const prefixMatch = rawMember.match(/^([0-9]{2}[A-Za-z]{2,5})/i);
+              if (prefixMatch) {
+                rawClass = prefixMatch[1].toUpperCase();
+              } else {
+                rawClass = 'CLASS-01';
               }
             }
 
@@ -493,6 +651,14 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
             fileName: file.name,
             fileSize: file.size,
             rows: fileRows,
+            headers: rawHeaderRow,
+            mapping: {
+              dateCol: dateColIdx,
+              classCol: classColIdx,
+              memberCol: memberColIdx,
+              barcodeCol: barcodeColIdx,
+            },
+            dateColumns,
           });
         } catch (err) {
           reject(err);
@@ -505,7 +671,11 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
   };
 
   // Process multiple Excel files simultaneously or append to existing list
-  const processExcelFiles = async (files: File[], appendToExisting: boolean = false) => {
+  const processExcelFiles = async (
+    files: File[],
+    appendToExisting: boolean = false,
+    overrideMapping?: { dateCol: number; classCol: number; memberCol: number; barcodeCol: number }
+  ) => {
     // SECTION 13: COLLEGE / UNIVERSITY REQUIRED CHECK BEFORE PARSING/IMPORTING
     if (!universityName.trim()) {
       setUniversityRequiredError(true);
@@ -524,7 +694,18 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         (f, idx, arr) => arr.findIndex(x => x.name === f.name && x.size === f.size) === idx
       );
 
-      const parsedResults = await Promise.all(uniqueFiles.map(f => parseSingleExcelFile(f)));
+      const parsedResults = await Promise.all(uniqueFiles.map(f => parseSingleExcelFile(f, overrideMapping)));
+
+      if (parsedResults.length > 0 && parsedResults[0].headers) {
+        setDetectedColumnMapping({
+          dateCol: parsedResults[0].mapping.dateCol,
+          classCol: parsedResults[0].mapping.classCol,
+          memberCol: parsedResults[0].mapping.memberCol,
+          barcodeCol: parsedResults[0].mapping.barcodeCol,
+          headers: parsedResults[0].headers,
+          dateColumns: parsedResults[0].dateColumns,
+        });
+      }
 
       const combinedRows: ParsedRow[] = [];
       const summaries: FileSummary[] = [];
@@ -622,6 +803,24 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     }
   };
 
+  const handleUpdateColumnMapping = async (
+    field: 'dateCol' | 'classCol' | 'memberCol' | 'barcodeCol',
+    colIdx: number
+  ) => {
+    if (!detectedColumnMapping || selectedFiles.length === 0) return;
+    const newMapping = {
+      dateCol: field === 'dateCol' ? colIdx : detectedColumnMapping.dateCol,
+      classCol: field === 'classCol' ? colIdx : detectedColumnMapping.classCol,
+      memberCol: field === 'memberCol' ? colIdx : detectedColumnMapping.memberCol,
+      barcodeCol: field === 'barcodeCol' ? colIdx : detectedColumnMapping.barcodeCol,
+    };
+    setDetectedColumnMapping({
+      ...detectedColumnMapping,
+      ...newMapping,
+    });
+    await processExcelFiles(selectedFiles, false, newMapping);
+  };
+
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -683,6 +882,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
       setParsedRows([]);
       setClassGroups([]);
       setDetectedDates([]);
+      setDetectedColumnMapping(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } else {
       processExcelFiles(updated, false);
@@ -761,6 +961,14 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     setImportProgress({ processed: 0, total: totalCount, percentage: 0 });
 
     try {
+      // Mandatory Integrity Guard: Verify NO class_id is a Date
+      const corruptedItems = itemsToInsert.filter(i => isDateLikeString(i.class_id));
+      if (corruptedItems.length > 0) {
+        throw new Error(
+          `CRITICAL SAFETY STOP: Detected ${corruptedItems.length} records where Class ID is a Date (e.g. "${corruptedItems[0].class_id}"). Please verify that the "Class ID / SH ID" column dropdown is mapped to the actual Class column and NOT the Date column.`
+        );
+      }
+
       const fileNamesList = selectedFiles.map(f => f.name).join(', ') || 'bulk_import.xlsx';
       setProcessingStep(`PREPARING ${totalCount.toLocaleString()} CANDIDATE RECORDS...`);
       await new Promise(r => setTimeout(r, 200));
@@ -1121,6 +1329,87 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
           {/* 3. CLASS ID WISE IMPORT CARDS */}
           {classGroups.length > 0 && !isParsing && (
             <div className="space-y-4 pt-2 border-t border-[#E2E8F0]">
+              {/* Interactive Detected Column Mapping Bar */}
+              {detectedColumnMapping && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5 shadow-2xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <Layers className="h-4 w-4 text-[#1565D8]" />
+                      <span className="text-xs font-black uppercase tracking-wider text-[#172033]">
+                        Excel Column Mapping:
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <Check className="h-3 w-3" />
+                        <span>Class ID Protected (Dates Isolated)</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {/* Exam Date Column */}
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        📅 Exam Date Column
+                      </label>
+                      <select
+                        value={detectedColumnMapping.dateCol}
+                        onChange={e => handleUpdateColumnMapping('dateCol', Number(e.target.value))}
+                        className="w-full text-xs font-bold text-[#172033] bg-slate-50 border border-slate-200 rounded-md p-1.5 focus:outline-none focus:border-[#1565D8] cursor-pointer"
+                      >
+                        {detectedColumnMapping.headers.map((h, idx) => (
+                          <option key={idx} value={idx}>
+                            Col {idx + 1}: {h || `Column ${idx + 1}`} {detectedColumnMapping.dateColumns.includes(idx) ? ' (Dates)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Class ID Column */}
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        🏫 Class ID / SH ID Column
+                      </label>
+                      <select
+                        value={detectedColumnMapping.classCol}
+                        onChange={e => handleUpdateColumnMapping('classCol', Number(e.target.value))}
+                        className="w-full text-xs font-bold text-[#1565D8] bg-slate-50 border border-slate-200 rounded-md p-1.5 focus:outline-none focus:border-[#1565D8] cursor-pointer"
+                      >
+                        <option value="-1">Auto-Detect / Extract from Member ID</option>
+                        {detectedColumnMapping.headers.map((h, idx) => (
+                          <option
+                            key={idx}
+                            value={idx}
+                            disabled={detectedColumnMapping.dateColumns.includes(idx)}
+                          >
+                            Col {idx + 1}: {h || `Column ${idx + 1}`} {detectedColumnMapping.dateColumns.includes(idx) ? ' ⛔ (Date Column)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Member ID Column */}
+                    <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        👤 Member ID / unqid Column
+                      </label>
+                      <select
+                        value={detectedColumnMapping.memberCol}
+                        onChange={e => handleUpdateColumnMapping('memberCol', Number(e.target.value))}
+                        className="w-full text-xs font-bold text-[#172033] bg-slate-50 border border-slate-200 rounded-md p-1.5 focus:outline-none focus:border-[#1565D8] cursor-pointer"
+                      >
+                        {detectedColumnMapping.headers.map((h, idx) => (
+                          <option key={idx} value={idx}>
+                            Col {idx + 1}: {h || `Column ${idx + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
                   <div className="text-[10px] font-bold text-[#64748B] uppercase">Total Files</div>
@@ -1826,6 +2115,36 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   )}
                 </div>
               </div>
+
+              {/* Corrupted Date Classes Alert Banner */}
+              {corruptedDateClasses.length > 0 && (
+                <div className="p-3.5 bg-amber-50 border-2 border-amber-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-xs font-black text-amber-900 uppercase tracking-wide">
+                        Notice: {corruptedDateClasses.length} Corrupted Date Class IDs in Database
+                      </div>
+                      <div className="text-[11px] text-amber-700 mt-0.5">
+                        Some records in Supabase were saved with dates as Class IDs (e.g.{' '}
+                        <span className="font-mono font-bold">
+                          {corruptedDateClasses.slice(0, 4).map(c => c.classId).join(', ')}
+                        </span>
+                        ). Click Clean to purge them so you can re-import cleanly.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handlePurgeCorruptedClasses}
+                    disabled={isPurgingCorrupt}
+                    className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>{isPurgingCorrupt ? 'Cleaning...' : `Clean ${corruptedDateClasses.length} Corrupted Classes`}</span>
+                  </button>
+                </div>
+              )}
 
               {/* Date Filter for Existing Bundles */}
               {availableExistingDates.length > 0 && (
