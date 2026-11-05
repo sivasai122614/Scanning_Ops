@@ -1381,9 +1381,9 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                           <option
                             key={idx}
                             value={idx}
-                            disabled={detectedColumnMapping.dateColumns.includes(idx)}
+                            disabled={idx === detectedColumnMapping.dateCol}
                           >
-                            Col {idx + 1}: {h || `Column ${idx + 1}`} {detectedColumnMapping.dateColumns.includes(idx) ? ' ⛔ (Date Column)' : ''}
+                            Col {idx + 1}: {h || `Column ${idx + 1}`} {idx === detectedColumnMapping.dateCol ? ' (Selected as Date)' : ''}
                           </option>
                         ))}
                       </select>

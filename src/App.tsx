@@ -26,6 +26,7 @@ import { UserProfileView } from './components/profile/UserProfileView';
 import { CreateUserModal } from './components/users/CreateUserModal';
 import { MobileScanningView } from './components/scanner/MobileScanningView';
 import { DesktopInwardStation } from './components/dashboard/DesktopInwardStation';
+import { ExcelDateMapperView } from './components/dateMapper/ExcelDateMapperView';
 import { useIsMobile } from './utils/useIsMobile';
 import { PageContainer } from './components/ui/Elements';
 import { ScanLine, LogOut, ShieldAlert } from 'lucide-react';
@@ -33,6 +34,7 @@ import { ScanLine, LogOut, ShieldAlert } from 'lucide-react';
 type ActiveView =
   | 'home'
   | 'import-data'
+  | 'date-mapper'
   | 'sessions'
   | 'scan'
   | 'reports'
@@ -48,6 +50,8 @@ const PATH_TO_VIEW_MAP: Record<string, ActiveView> = {
   '/admin/dashboard': 'home',
   '/admin/import': 'import-data',
   '/import': 'import-data',
+  '/admin/date-mapper': 'date-mapper',
+  '/date-mapper': 'date-mapper',
   '/admin/sessions': 'sessions',
   '/sessions': 'sessions',
   '/admin/scan': 'scan',
@@ -72,6 +76,7 @@ const PATH_TO_VIEW_MAP: Record<string, ActiveView> = {
 const VIEW_TO_PATH_MAP: Record<ActiveView, string> = {
   'home': '/admin/dashboard',
   'import-data': '/admin/import',
+  'date-mapper': '/admin/date-mapper',
   'sessions': '/admin/sessions',
   'scan': '/admin/scan',
   'reports': '/admin/reports',
@@ -203,6 +208,7 @@ const AuthenticatedAdminApp: React.FC = () => {
       const validViews: ActiveView[] = [
         'home',
         'import-data',
+        'date-mapper',
         'sessions',
         'scan',
         'reports',
@@ -269,6 +275,8 @@ const AuthenticatedAdminApp: React.FC = () => {
         return { title: 'Admin Dashboard', isRoot: true };
       case 'import-data':
         return { title: 'Import Data', isRoot: true };
+      case 'date-mapper':
+        return { title: 'Excel Date Mapper', isRoot: true };
       case 'sessions':
         return { title: 'Manual Inwarding', isRoot: true };
       case 'scan':
@@ -354,6 +362,9 @@ const AuthenticatedAdminApp: React.FC = () => {
                 onNavigateToDashboard={() => navigateTo('home')}
               />
             )}
+
+            {/* FRAME 2B: EXCEL DATE MAPPER */}
+            {activeView === 'date-mapper' && <ExcelDateMapperView />}
 
             {/* FRAME 3: EXAM SESSIONS & MANUAL INWARD INTAKE */}
             {activeView === 'sessions' && (

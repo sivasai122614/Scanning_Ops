@@ -11,11 +11,13 @@ import {
   BarChart2,
   FileSpreadsheet,
   CheckCircle2,
+  CalendarDays,
 } from 'lucide-react';
 
 export type DesktopNavTarget =
   | 'home'
   | 'import-data'
+  | 'date-mapper'
   | 'sessions'
   | 'scan'
   | 'reports'
@@ -36,6 +38,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
   const primaryNav = [
     { id: 'home' as const, label: 'Dashboard', icon: Home, badge: 'Overview' },
     { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet, badge: 'Excel' },
+    { id: 'date-mapper' as const, label: 'Excel Date Mapper', icon: CalendarDays, badge: 'Match' },
     { id: 'scan' as const, label: 'Scanning Dashboard', icon: Scan, badge: 'Live Gun' },
     { id: 'sessions' as const, label: 'Manual Inward', icon: Package, badge: 'Manual' },
     { id: 'reports' as const, label: 'Reports & Export', icon: BarChart2, badge: 'Audit' },

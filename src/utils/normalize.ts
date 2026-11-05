@@ -168,7 +168,11 @@ export function normalizeExamDate(raw: unknown): string {
     return `2026-11-${d}`;
   }
 
-  // 9. Fallback standard parse
+  // 9. Fallback standard parse: only if str contains separators or is not a plain number
+  if (/^\d{1,4}$/.test(dateOnlyPart)) {
+    return '';
+  }
+
   try {
     const parsed = new Date(str);
     if (!isNaN(parsed.getTime())) {
@@ -225,13 +229,22 @@ export function formatExamDate(isoDate?: string | null): string {
  * - JavaScript Date instances
  * - Numeric Excel date codes (e.g. 40000 - 65000)
  * - Date patterns like "25-08-2026", "2026-08-25", "9/3/26", "9/1/26", "28-08-2026", "01/11/2026"
- * Returns false for Class IDs like "0020", "CS101", "A1", "BATCH-01", "24BAR0087"
+ * Returns false for Class IDs like "2031", "2040", "0020", "0865", "CS101", "A1", "BATCH-01", "24BAR0087"
  */
 export function isDateLikeString(val: unknown): boolean {
   if (val === null || val === undefined) return false;
   if (val instanceof Date) return true;
   const s = String(val).trim();
   if (!s) return false;
+
+  // Plain numbers with 1 to 4 digits (e.g. "2031", "2040", "0020", "0865", "101", "2026")
+  // are Class IDs / Bundle IDs / Room numbers, NEVER full calendar dates!
+  if (/^\d{1,4}$/.test(s)) return false;
+
+  // Standard alphanumeric class identifiers without date separators:
+  if (/^[A-Za-z0-9_-]{1,8}$/.test(s) && !s.includes('-') && !s.includes('/') && !s.includes('.')) {
+    return false;
+  }
 
   // Excel numeric date code (40000 to 60000)
   if (/^\d{5}$/.test(s)) {
@@ -245,12 +258,6 @@ export function isDateLikeString(val: unknown): boolean {
 
   // Month text format e.g. 25-Aug-2026, Aug 25 2026
   if (/^\d{1,2}[-/\. ](?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[-/\. ]\d{2,4}$/i.test(s)) return true;
-
-  // If normalizeExamDate successfully parsed it into a valid ISO date
-  const norm = normalizeExamDate(s);
-  if (norm && /^\d{4}-\d{2}-\d{2}$/.test(norm)) {
-    return true;
-  }
 
   return false;
 }
