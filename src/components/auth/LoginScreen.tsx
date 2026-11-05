@@ -33,12 +33,6 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  const handleQuickFill = (demoEmail: string, demoPass: string) => {
-    setEmail(demoEmail);
-    setPassword(demoPass);
-    setErrorMessage('');
-  };
-
   return (
     <div className="min-h-screen w-full bg-[#EBF2FA] flex items-center justify-center p-4 sm:p-6 lg:p-8 relative selection:bg-[#0D6EFD] selection:text-white font-sans overflow-x-hidden">
       {/* Background ambient lighting for depth */}
@@ -254,25 +248,6 @@ export const LoginScreen: React.FC = () => {
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
-              </div>
-
-              {/* Quick Fill Demo Credentials (Convenient for testing) */}
-              <div className="pt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                <span className="font-medium text-slate-400">Quick Fill:</span>
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('admin1@examscan.org', 'Admin@12345')}
-                  className="px-2 py-0.5 rounded-md bg-blue-50 hover:bg-blue-100 text-[#0D6EFD] font-semibold border border-blue-200 transition-colors cursor-pointer"
-                >
-                  Admin
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('inward1@examscan.org', 'Inward@12345')}
-                  className="px-2 py-0.5 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold border border-emerald-200 transition-colors cursor-pointer"
-                >
-                  Inward Operator
-                </button>
               </div>
 
               {/* Main Submit Button - Matching exact blue button with arrow */}

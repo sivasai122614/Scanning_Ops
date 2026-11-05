@@ -268,6 +268,7 @@ export async function exportScanningStatusOverviewToExcel(
 
   // Data rows
   bundles.forEach((b, idx) => {
+    const rowNumber = idx + 4; // Headers are rows 1, 2, 3. Data starts at row 4
     const row = worksheet.addRow({
       sno: idx + 1,
       class_id: b.classId,
@@ -276,13 +277,19 @@ export async function exportScanningStatusOverviewToExcel(
       expected: b.expectedCount,
       received: b.receivedCount,
       pending: b.missingCount,
-      progress: `${b.progressPercentage}%`,
+      progress: b.expectedCount > 0 ? b.receivedCount / b.expectedCount : 0,
       started_by: b.startedBy || '—',
       saved_by: b.savedBy || '—',
       last_activity: b.lastActivityAt ? new Date(b.lastActivityAt).toLocaleString() : '—',
       saved_at: b.savedAt ? new Date(b.savedAt).toLocaleString() : '—',
     });
     row.height = STANDARD_ROW_HEIGHT;
+
+    // Attach dynamic Excel formulas:
+    row.getCell('pending').value = { formula: `MAX(0, E${rowNumber}-F${rowNumber})`, result: b.missingCount };
+    row.getCell('progress').value = { formula: `IF(E${rowNumber}>0, F${rowNumber}/E${rowNumber}, 0)`, result: b.expectedCount > 0 ? b.receivedCount / b.expectedCount : 0 };
+    row.getCell('progress').numFmt = '0%';
+    row.getCell('status').value = { formula: `IF(F${rowNumber}>=E${rowNumber}, "COMPLETED", IF(F${rowNumber}>0, "IN PROGRESS", "NOT STARTED"))`, result: b.status };
 
     // Status styling colors
     const statusCell = row.getCell('status');
@@ -320,12 +327,17 @@ export async function exportScanningStatusOverviewToExcel(
     expTotal,
     recTotal,
     penTotal,
-    expTotal > 0 ? `${Math.round((recTotal / expTotal) * 100)}%` : '0%',
+    expTotal > 0 ? recTotal / expTotal : 0,
     '',
     '',
     '',
     '',
   ];
+  totalRow.getCell(5).value = { formula: `SUM(E4:E${totalRowIndex - 1})`, result: expTotal };
+  totalRow.getCell(6).value = { formula: `SUM(F4:F${totalRowIndex - 1})`, result: recTotal };
+  totalRow.getCell(7).value = { formula: `MAX(0, E${totalRowIndex}-F${totalRowIndex})`, result: penTotal };
+  totalRow.getCell(8).value = { formula: `IF(E${totalRowIndex}>0, F${totalRowIndex}/E${totalRowIndex}, 0)`, result: expTotal > 0 ? recTotal / expTotal : 0 };
+  totalRow.getCell(8).numFmt = '0%';
   totalRow.height = 24;
   totalRow.eachCell(cell => {
     cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF0F172A' } };

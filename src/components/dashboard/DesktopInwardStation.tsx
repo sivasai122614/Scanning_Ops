@@ -121,6 +121,8 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   // Saving state
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+  const [showSaveConfirmModal, setShowSaveConfirmModal] = useState<boolean>(false);
+  const [saveConfirmChecked, setSaveConfirmChecked] = useState<boolean>(false);
 
   // Recent Inward Stream
   interface RecentScanItem {
@@ -167,6 +169,20 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     return importedService.getAvailableExamDates();
   }, [bundles, hasImportedData]);
 
+  const isAllDatesSelected = !activeExamDate || activeExamDate === 'ALL' || activeExamDate === 'all' || activeExamDate === '';
+
+  const allDatesTotalScripts = useMemo(() => {
+    return availableDates.reduce((sum, d) => sum + d.totalRecords, 0);
+  }, [availableDates]);
+
+  const allDatesTotalClasses = useMemo(() => {
+    const classSet = new Set<string>();
+    for (const r of importedService.getImportInwardedRecords()) {
+      if (r.class_id) classSet.add(normalizeIdentifier(r.class_id).toLowerCase());
+    }
+    return classSet.size || bundles.length;
+  }, [availableDates, bundles]);
+
   const hasInitializedDateRef = useRef<boolean>(false);
   // Auto-select the active exam date from imported dataset on initial mount only
   useEffect(() => {
@@ -185,17 +201,23 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
 
   const handleSelectExamDate = useCallback((date: string) => {
     setActiveExamDate(date);
-    importedService.setActiveExamDate(date);
+    importedService.setActiveExamDate(date || null);
   }, []);
 
   // Load imported datasets and bundles scoped to active exam date
   const loadData = useCallback(() => {
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const curDate = activeExamDate || importedService.getActiveExamDate() || undefined;
-    const bList = importedService.getClassBundles(curDate || undefined);
-    const sum = importedService.getSessionSummary(curDate || undefined);
-    const allSaved = importedService.getSavedScannedRecords(undefined, curDate || undefined);
+    const svcDate = importedService.getActiveExamDate() || '';
+    if (svcDate !== activeExamDate) {
+      setActiveExamDate(svcDate);
+    }
+    const currentActive = svcDate || activeExamDate;
+    const isAll = !currentActive || currentActive === 'ALL' || currentActive === 'all';
+    const filterToUse = isAll ? null : currentActive;
+    const bList = importedService.getClassBundles(filterToUse);
+    const sum = importedService.getSessionSummary(filterToUse);
+    const allSaved = importedService.getSavedScannedRecords(undefined, filterToUse || undefined);
     setBundles(bList);
     setSessionSummary(sum);
     setAllCampRecords(allSaved);
@@ -209,7 +231,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         try { localStorage.removeItem('examscan_desktop_selected_class_id'); } catch {}
       }
     }
-  }, [selectedClassId, activeExamDate]);
+  }, [selectedClassId, activeExamDate, isAllDatesSelected]);
 
   useEffect(() => {
     loadData();
@@ -220,17 +242,17 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   // Load records for currently selected class scoped to date & user role
   useEffect(() => {
     if (selectedClassId) {
-      const curDate = activeExamDate || importedService.getActiveExamDate() || undefined;
+      const filterToUse = isAllDatesSelected ? null : (activeExamDate || importedService.getActiveExamDate() || undefined);
       const recs = importedService.getBundleRecordViews(
         selectedClassId,
-        curDate || undefined,
+        filterToUse,
         isInwardRole ? user : undefined
       );
       setRecords(recs);
     } else {
       setRecords([]);
     }
-  }, [selectedClassId, bundles, activeExamDate, isInwardRole, user]);
+  }, [selectedClassId, bundles, activeExamDate, isAllDatesSelected, isInwardRole, user]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -337,7 +359,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         const classRes = await importedService.resolveClassFromBarcode(barcode);
         if (classRes.exists && classRes.classId) {
           const resolvedCid = normalizeIdentifier(classRes.classId);
-          if (activeExamDate && activeExamDate !== 'ALL') {
+          if (!isAllDatesSelected && activeExamDate && activeExamDate !== 'ALL' && activeExamDate !== 'all') {
             const bundleForActive = importedService.getClassBundle(resolvedCid, activeExamDate);
             if (!bundleForActive || bundleForActive.expectedCount === 0) {
               const classDate = importedService.getClassExamDate(resolvedCid);
@@ -374,7 +396,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         const valRes = await importedService.validateClassId(barcode);
         if (valRes.exists && valRes.classId) {
           const resolvedCid = normalizeIdentifier(valRes.classId);
-          if (activeExamDate && activeExamDate !== 'ALL') {
+          if (!isAllDatesSelected && activeExamDate && activeExamDate !== 'ALL' && activeExamDate !== 'all') {
             const bundleForActive = importedService.getClassBundle(resolvedCid, activeExamDate);
             if (!bundleForActive || bundleForActive.expectedCount === 0) {
               const classDate = importedService.getClassExamDate(resolvedCid);
@@ -463,7 +485,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         const cleanCid = normalizeIdentifier(targetClassId);
 
         // 1. Validation check against imported_inward_data
-        const validation = await importedService.validateMemberForClass(cleanCid, cleanMid, activeExamDate || undefined);
+        const validation = await importedService.validateMemberForClass(cleanCid, cleanMid, isAllDatesSelected ? 'ALL' : activeExamDate);
 
         if (validation.status === 'DATE_MISMATCH') {
           if (soundEnabled) playScanWarningSound();
@@ -545,10 +567,19 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         // 2. Duplicate Check
         if (importedService.isMemberAlreadyInwarded(cleanCid, canonicalMemberId)) {
           if (soundEnabled) playScanWarningSound();
+          const savedRec = importedService.getSavedScannedRecords(cleanCid).find(
+            s => normalizeIdentifier(s.member_id).toLowerCase() === canonicalMemberId.toLowerCase()
+          );
+          const inOp = savedRec?.saved_by || savedRec?.scanned_by || '';
+          const dupTitle = inOp ? `ALREADY INWARDED BY ${inOp.toUpperCase()}` : 'ALREADY INWARDED';
+          const dupSubtitle = inOp
+            ? `Booklet ${canonicalMemberId} was already inwarded by Operator ${inOp}.`
+            : `Booklet ${canonicalMemberId} was already inwarded for Class ${targetClassId}.`;
+
           triggerHudFlash({
             type: 'duplicate',
-            title: 'ALREADY INWARDED',
-            subtitle: `Booklet ${canonicalMemberId} was already inwarded for Class ${targetClassId}.`,
+            title: dupTitle,
+            subtitle: dupSubtitle,
             barcode,
             classId: targetClassId,
             memberId: canonicalMemberId,
@@ -563,7 +594,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
               classId: targetClassId,
               timestamp: new Date(),
               status: 'duplicate',
-              message: 'Duplicate manual inward (Already saved in database)',
+              message: inOp ? `Already Inwarded by ${inOp}` : 'Duplicate manual inward (Already saved in database)',
             },
             ...prev.slice(0, 19),
           ]);
@@ -670,11 +701,11 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         targetClassId,
         barcode,
         currentOperator,
-        activeExamDate || undefined
+        isAllDatesSelected ? 'ALL' : (activeExamDate || undefined)
       );
 
       // Handle Case: Date Mismatch - Inward blocked for wrong date schedule!
-      if (result.isDateMismatch) {
+      if (result.isDateMismatch && !isAllDatesSelected) {
         if (soundEnabled) playScanWarningSound();
         setDateMismatchModal({
           isOpen: true,
@@ -698,10 +729,16 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
       // Handle Case: Duplicate Inward
       if (result.isDuplicate) {
         if (soundEnabled) playScanWarningSound();
+        const inwardedBy = result.inwardedBy || '';
+        const dupTitle = inwardedBy ? `ALREADY INWARDED BY ${inwardedBy.toUpperCase()}` : 'ALREADY INWARDED';
+        const dupSubtitle = inwardedBy
+          ? `Booklet ${result.member_id || barcode} was already inwarded by Operator ${inwardedBy}.`
+          : `Booklet ${result.member_id || barcode} was already inwarded for Class ${targetClassId}.`;
+
         triggerHudFlash({
           type: 'duplicate',
-          title: 'ALREADY INWARDED',
-          subtitle: `Booklet ${result.member_id || barcode} was already inwarded for Class ${targetClassId}.`,
+          title: dupTitle,
+          subtitle: dupSubtitle,
           barcode,
           classId: targetClassId,
           memberId: result.member_id,
@@ -716,7 +753,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
             classId: targetClassId,
             timestamp: new Date(),
             status: 'duplicate',
-            message: 'Duplicate inward (Already saved in backend)',
+            message: inwardedBy ? `Already Inwarded by ${inwardedBy}` : 'Duplicate inward (Already saved in backend)',
           },
           ...prev.slice(0, 19),
         ]);
@@ -924,6 +961,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
         if (soundEnabled) playScanSuccessSound();
         setSaveSuccessMessage(`✓ Saved ${res.savedCount} booklets permanently into database! Ready for next Class ID.`);
         setTimeout(() => setSaveSuccessMessage(null), 4000);
+        setShowSaveConfirmModal(false);
         loadData();
         // Return to Stage 1 so operator can scan next Class ID immediately
         setTimeout(() => {
@@ -943,6 +981,34 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const onSaveButtonClick = () => {
+    if (!selectedClassId || isSaving) return;
+    const curBundle = importedService.getClassBundle(selectedClassId);
+    const inwarded = curBundle ? ((curBundle.savedCount || 0) + (curBundle.pendingCount || 0)) : 0;
+    const notInwarded = curBundle ? (curBundle.missingCount || 0) : 0;
+
+    if (inwarded === 0) {
+      if (soundEnabled) playScanWarningSound();
+      showToast({
+        type: 'warning',
+        title: '⚠ No Booklets Inwarded',
+        subtitle: 'Scan at least 1 booklet before saving',
+        duration: 2500,
+      });
+      return;
+    }
+
+    // If all scripts inwarded (0 missing), save directly
+    if (notInwarded === 0) {
+      handleSaveActiveBundle();
+      return;
+    }
+
+    // If partial scripts inwarded (missing > 0), open confirmation modal
+    setSaveConfirmChecked(false);
+    setShowSaveConfirmModal(true);
   };
 
   const handleManualFormSubmit = (e: React.FormEvent) => {
@@ -1169,7 +1235,7 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                 onChange={(e) => handleSelectExamDate(e.target.value)}
                 className="bg-transparent text-xs font-black text-[#1565D8] cursor-pointer focus:outline-none"
               >
-                <option value="">All Dates ({sessionSummary?.totalExpected || 0} scripts • {sessionSummary?.totalClasses || bundles.length} classes)</option>
+                <option value="">All Dates ({allDatesTotalScripts} scripts • {allDatesTotalClasses} classes)</option>
                 {availableDates.map(d => (
                   <option key={d.date} value={d.date}>
                     {d.displayDate} ({d.totalRecords} scripts • {d.totalClasses} classes)
@@ -1708,16 +1774,26 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                   )}
                   <button
                     type="button"
-                    disabled={activePending === 0 || isSaving}
-                    onClick={handleSaveActiveBundle}
+                    disabled={activeReceived === 0 || isSaving}
+                    onClick={onSaveButtonClick}
                     className={`w-full py-3 px-4 rounded-xl text-xs font-black uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-xs cursor-pointer ${
-                      activePending > 0
+                      activeReceived === 0
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                        : activeMissing > 0
                         ? 'bg-[#1565D8] hover:bg-[#0D47A1] text-white'
-                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
                     }`}
                   >
                     <Save className="h-4 w-4" />
-                    <span>{isSaving ? 'SAVING...' : `SAVE BUNDLE (${activePending} PENDING)`}</span>
+                    <span>
+                      {isSaving
+                        ? 'SAVING...'
+                        : activeReceived === 0
+                        ? 'SAVE BUNDLE (0 INWARDED)'
+                        : activeMissing > 0
+                        ? `SAVE BUNDLE (${activeReceived}/${activeExpected} • PARTIAL)`
+                        : `SAVE BUNDLE (${activeReceived}/${activeExpected} COMPLETE)`}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -2176,6 +2252,91 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
                 className="w-full sm:w-auto py-3 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
               >
                 Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PARTIAL SAVE CONFIRMATION MODAL */}
+      {showSaveConfirmModal && selectedClassId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl border-2 border-[#1565D8] shadow-2xl max-w-md w-full p-6 text-[#172033] relative">
+            <button
+              onClick={() => setShowSaveConfirmModal(false)}
+              className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#1565D8] shrink-0 shadow-xs">
+                <Save className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                  Confirm Partial Bundle Save
+                </h3>
+                <p className="text-xs text-slate-500 font-mono mt-0.5">
+                  Class ID: <span className="font-bold text-[#1565D8]">{selectedClassId}</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Script counts badge summary */}
+            <div className="grid grid-cols-2 gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200 mb-4">
+              <div className="bg-white p-2.5 rounded-lg border border-emerald-200 text-center shadow-2xs">
+                <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Inwarded</div>
+                <div className="text-xl font-black text-emerald-700 font-tabular">
+                  {activeReceived} <span className="text-xs text-slate-400 font-normal">scripts</span>
+                </div>
+              </div>
+              <div className="bg-white p-2.5 rounded-lg border border-amber-200 text-center shadow-2xs">
+                <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Pending (Missing)</div>
+                <div className="text-xl font-black text-amber-700 font-tabular">
+                  {activeMissing} <span className="text-xs text-slate-400 font-normal">scripts</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Explanation */}
+            <p className="text-xs text-slate-600 leading-relaxed mb-4">
+              Are you sure you want to save this bundle with partial intake? Currently{' '}
+              <strong className="text-slate-900">{activeReceived}</strong> of{' '}
+              <strong className="text-slate-900">{activeExpected}</strong> expected scripts are inwarded, and{' '}
+              <strong className="text-amber-700">{activeMissing}</strong> scripts remain pending.
+            </p>
+
+            {/* Mandatory Checkbox */}
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/80 border border-amber-200 cursor-pointer select-none transition-colors hover:bg-amber-100/60 mb-5">
+              <input
+                type="checkbox"
+                checked={saveConfirmChecked}
+                onChange={(e) => setSaveConfirmChecked(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded text-[#1565D8] focus:ring-[#1565D8] border-slate-300 cursor-pointer"
+              />
+              <span className="text-xs font-bold text-slate-800 leading-snug">
+                I confirm partial save for Class ID {selectedClassId} with {activeReceived} scripts inwarded and {activeMissing} pending scripts.
+              </span>
+            </label>
+
+            {/* Actions */}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSaveConfirmModal(false)}
+                className="flex-1 py-3 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 active:scale-98 rounded-xl transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!saveConfirmChecked || isSaving}
+                onClick={handleSaveActiveBundle}
+                className="flex-1 py-3 text-xs font-black uppercase tracking-wider text-white bg-[#1565D8] hover:bg-[#0D47A1] active:scale-98 rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Check className="h-4 w-4" />
+                <span>{isSaving ? 'Saving...' : 'Confirm & Save Partial'}</span>
               </button>
             </div>
           </div>

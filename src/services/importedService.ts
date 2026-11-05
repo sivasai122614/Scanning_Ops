@@ -342,6 +342,7 @@ export interface ScanResult {
   isDateMismatch?: boolean;
   expectedDate?: string;
   activeDate?: string;
+  inwardedBy?: string;
 }
 
 export interface UserClassInwardSummary {
@@ -1687,9 +1688,9 @@ class ImportedService {
   }
 
   public getSessionSummary(dateFilter?: ExamDateFilter): SessionSummary {
-    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === null;
-    const isFiltered = Boolean(!isExplicitlyAll && dateFilter !== undefined && dateFilter !== '');
-    const targetFilter = isFiltered ? dateFilter : (!isExplicitlyAll ? (this.activeExamDate || null) : null);
+    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === 'all' || dateFilter === '' || dateFilter === null;
+    const isFiltered = Boolean(!isExplicitlyAll && dateFilter !== undefined);
+    const targetFilter = isFiltered ? dateFilter : null;
 
     const bundles = this.getClassBundles(targetFilter !== null ? targetFilter : null);
     const uni = this.activeUniversity;
@@ -1751,9 +1752,9 @@ class ImportedService {
   // ==============================================================================
   public getClassBundles(dateFilter?: ExamDateFilter): ClassBundle[] {
     const uni = this.activeUniversity;
-    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === null;
-    const isFiltering = Boolean(!isExplicitlyAll && dateFilter !== undefined && dateFilter !== '');
-    const targetFilter = isFiltering ? dateFilter : (!isExplicitlyAll ? (this.activeExamDate || null) : null);
+    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === 'all' || dateFilter === '' || dateFilter === null;
+    const isFiltering = Boolean(!isExplicitlyAll && dateFilter !== undefined);
+    const targetFilter = isFiltering ? dateFilter : null;
 
     // Filter candidate records if date filter is active (e.g. 15,000 count on 1-11-26 or date range)
     const candidateRecords = Boolean(targetFilter)
@@ -4079,6 +4080,47 @@ class ImportedService {
     }
 
     const wsClassWise = XLSX.utils.aoa_to_sheet(classWiseSheetRows);
+
+    // Apply genuine Excel formulas to Class Wise Data:
+    // D{r}: =MAX(0, B{r}-C{r}) (Not Scanned)
+    // E{r}: =IF(B{r}>0, C{r}/B{r}, 0) formatted as 0% (Progress percentage)
+    // F{r}: =IF(C{r}>=B{r}, "COMPLETED", IF(C{r}>0, "IN PROGRESS", "NOT STARTED")) (Status)
+    if (classSet.length > 0) {
+      classSet.forEach((cid, idx) => {
+        const r = idx + 2; // Row 1 is headers, data begins at row 2
+        const expCount = uniExpected.filter(rec => rec.class_id === cid).length;
+        const scnCount = uniSaved.filter(s => s.class_id === cid).length;
+        const notScnCount = Math.max(0, expCount - scnCount);
+        const ratio = expCount > 0 ? scnCount / expCount : 0;
+        let st = 'NOT STARTED';
+        if (scnCount >= expCount && expCount > 0) st = 'COMPLETED';
+        else if (scnCount > 0) st = 'IN PROGRESS';
+
+        wsClassWise[`B${r}`] = { t: 'n', v: expCount };
+        wsClassWise[`C${r}`] = { t: 'n', v: scnCount };
+        wsClassWise[`D${r}`] = { t: 'n', f: `MAX(0, B${r}-C${r})`, v: notScnCount };
+        wsClassWise[`E${r}`] = { t: 'n', f: `IF(B${r}>0, C${r}/B${r}, 0)`, v: ratio, z: '0%' };
+        wsClassWise[`F${r}`] = { t: 's', f: `IF(C${r}>=B${r}, "COMPLETED", IF(C${r}>0, "IN PROGRESS", "NOT STARTED"))`, v: st };
+      });
+
+      // Append Total Row with SUM formulas and overall progress percentage formula
+      const totalR = classSet.length + 2;
+      const totalExp = uniExpected.length;
+      const totalScn = uniSaved.length;
+      const totalNotScn = Math.max(0, totalExp - totalScn);
+      const totalRatio = totalExp > 0 ? totalScn / totalExp : 0;
+      const totalSt = totalScn >= totalExp && totalExp > 0 ? 'COMPLETED' : (totalScn > 0 ? 'IN PROGRESS' : 'NOT STARTED');
+
+      wsClassWise[`A${totalR}`] = { t: 's', v: 'TOTAL' };
+      wsClassWise[`B${totalR}`] = { t: 'n', f: `SUM(B2:B${totalR - 1})`, v: totalExp };
+      wsClassWise[`C${totalR}`] = { t: 'n', f: `SUM(C2:C${totalR - 1})`, v: totalScn };
+      wsClassWise[`D${totalR}`] = { t: 'n', f: `MAX(0, B${totalR}-C${totalR})`, v: totalNotScn };
+      wsClassWise[`E${totalR}`] = { t: 'n', f: `IF(B${totalR}>0, C${totalR}/B${totalR}, 0)`, v: totalRatio, z: '0%' };
+      wsClassWise[`F${totalR}`] = { t: 's', f: `IF(C${totalR}>=B${totalR}, "COMPLETED", IF(C${totalR}>0, "IN PROGRESS", "NOT STARTED"))`, v: totalSt };
+
+      wsClassWise['!ref'] = XLSX.utils.encode_range({ s: { c: 0, r: 0 }, e: { c: 5, r: totalR - 1 } });
+    }
+
     wsClassWise['!cols'] = [
       { wch: 14 },
       { wch: 14 },
@@ -4454,8 +4496,14 @@ class ImportedService {
     const importedClassId = foundRecord.class_id;
 
     // Check date mismatch if date filtering is active
-    const activeDateFilter = expectedExamDate || this.activeExamDate;
-    if (activeDateFilter && activeDateFilter !== 'ALL' && foundRecord.exam_date) {
+    const activeDateFilter = expectedExamDate !== undefined ? expectedExamDate : this.activeExamDate;
+    if (
+      activeDateFilter &&
+      activeDateFilter !== 'ALL' &&
+      activeDateFilter !== 'all' &&
+      activeDateFilter !== '' &&
+      foundRecord.exam_date
+    ) {
       if (!isRecordMatchingDateFilter(foundRecord.exam_date, activeDateFilter)) {
         const actualDmy = formatExamDate(foundRecord.exam_date) || foundRecord.exam_date;
         const currentDmy = formatExamDate(activeDateFilter) || activeDateFilter;
@@ -4899,8 +4947,14 @@ class ImportedService {
     const resolvedBarcode = importedRow.barcode || normalized;
 
     // STEP 4b: Verify exam date matches active station date if date filtering is active
-    const activeDateFilter = expectedExamDate || this.activeExamDate;
-    if (activeDateFilter && activeDateFilter !== 'ALL' && importedRow.exam_date) {
+    const activeDateFilter = expectedExamDate !== undefined ? expectedExamDate : this.activeExamDate;
+    if (
+      activeDateFilter &&
+      activeDateFilter !== 'ALL' &&
+      activeDateFilter !== 'all' &&
+      activeDateFilter !== '' &&
+      importedRow.exam_date
+    ) {
       if (!isRecordMatchingDateFilter(importedRow.exam_date, activeDateFilter)) {
         const actualDmy = formatExamDate(importedRow.exam_date) || importedRow.exam_date;
         const currentDmy = formatExamDate(activeDateFilter) || activeDateFilter;
@@ -4959,44 +5013,41 @@ class ImportedService {
       return normalizeIdentifier(i.member_id).toLowerCase() === resolvedMemberId.toLowerCase();
     }) || null;
 
-    // Only fallback to Supabase query if service has never been initialized
-    if (!this.isInitialized && isSupabaseConfigured) {
-      if (!savedScannedResult) {
-        try {
-          let q = supabase
-            .from('saved_scanned_data')
-            .select('*')
-            .eq('class_id', cleanActiveCid)
-            .eq('member_id', resolvedMemberId);
-          if (this.activeUniversity) {
-            q = q.eq('college_name', this.activeUniversity);
-          }
-          const { data: svData } = await q.limit(1);
-          if (svData && svData.length > 0) savedScannedResult = svData[0];
-        } catch {}
-      }
+    // Check Supabase directly if not found in memory (in case concurrent operator inwarded on another device)
+    if (isSupabaseConfigured && !savedScannedResult && !manualInwardResult) {
+      try {
+        const { data: dbSavedRows } = await supabase
+          .from('saved_scanned_data')
+          .select('id, class_id, member_id, saved_by, scanned_by')
+          .eq('class_id', cleanActiveCid)
+          .eq('member_id', resolvedMemberId)
+          .limit(1);
 
-      if (!manualInwardResult) {
-        try {
-          let qm = supabase
-            .from('manual_inward_data')
-            .select('*')
-            .eq('class_id', cleanActiveCid)
-            .or(`roll_number.eq.${resolvedMemberId},member_id.eq.${resolvedMemberId}`);
-          if (this.activeUniversity) {
-            qm = qm.eq('college_name', this.activeUniversity);
-          }
-          const { data: manData } = await qm.limit(1);
-          if (manData && manData.length > 0) manualInwardResult = manData[0];
-        } catch {}
+        if (dbSavedRows && dbSavedRows.length > 0) {
+          savedScannedResult = dbSavedRows[0];
+        }
+      } catch (dbCheckErr) {
+        console.warn('[MEMBER SCAN] Supabase concurrent check note:', dbCheckErr);
       }
     }
 
     const alreadyInwarded = Boolean(savedScannedResult || manualInwardResult || pendingResult);
 
     if (alreadyInwarded) {
-      console.log('[MEMBER SCAN] Inward status:', 'Already inwarded');
-      console.log('[MEMBER SCAN] Final result:', 'Member already inwarded');
+      const existingOp =
+        savedScannedResult?.saved_by ||
+        savedScannedResult?.scanned_by ||
+        manualInwardResult?.inwarded_by ||
+        manualInwardResult?.scanned_by ||
+        pendingResult?.detected_by ||
+        '';
+
+      const opDisplay = existingOp ? resolveOperatorName(existingOp) : '';
+      const displayMsg = opDisplay
+        ? `Already Inwarded by ${opDisplay}`
+        : 'Already Inwarded';
+
+      console.log('[MEMBER SCAN] Inward status:', 'Already inwarded by', opDisplay || 'another operator');
 
       return {
         success: false,
@@ -5004,7 +5055,8 @@ class ImportedService {
         class_id: activeClassId,
         member_id: resolvedMemberId,
         barcode: normalized,
-        message: 'Member already inwarded',
+        inwardedBy: opDisplay || undefined,
+        message: displayMsg,
       };
     }
 

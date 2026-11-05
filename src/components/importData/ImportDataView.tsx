@@ -34,7 +34,7 @@ import {
   ChevronUp,
   Calendar,
 } from 'lucide-react';
-import { importedService, ClassBundle, normalizeExamDate, formatExamDate } from '../../services/importedService';
+import { importedService, ClassBundle, normalizeExamDate, formatExamDate, isRecordMatchingDateFilter } from '../../services/importedService';
 
 interface ParsedRow {
   rowNumber: number;
@@ -92,23 +92,42 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
   // Filtered Class Groups respecting both Class search and selectedFilterDate
   const displayedClassGroups = React.useMemo(() => {
-    return classGroups.filter(cg => {
-      if (classSearch.trim() && !cg.classId.toLowerCase().includes(classSearch.trim().toLowerCase())) {
+    // 1. Filter rows by selectedFilterDate and classSearch
+    const matchingRows = parsedRows.filter(r => {
+      if (r.status !== 'valid') return false;
+      if (selectedFilterDate && !isRecordMatchingDateFilter(r.examDate, selectedFilterDate)) {
         return false;
       }
-      if (selectedFilterDate) {
-        return parsedRows.some(
-          r => r.classId.toLowerCase() === cg.classId.toLowerCase() && r.examDate === selectedFilterDate && r.status === 'valid'
-        );
+      if (classSearch.trim() && !r.classId.toLowerCase().includes(classSearch.trim().toLowerCase())) {
+        return false;
       }
       return true;
     });
-  }, [classGroups, classSearch, selectedFilterDate, parsedRows]);
+
+    // 2. Dynamically group into class cards with exact counts and member IDs strictly for the selected date
+    const classMap = new Map<string, string[]>();
+    for (const r of matchingRows) {
+      if (!classMap.has(r.classId)) {
+        classMap.set(r.classId, []);
+      }
+      classMap.get(r.classId)!.push(r.unqid);
+    }
+
+    return Array.from(classMap.entries())
+      .map(([classId, members]) => ({
+        classId,
+        members,
+        count: members.length,
+      }))
+      .sort((a, b) => a.classId.localeCompare(b.classId, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [parsedRows, selectedFilterDate, classSearch]);
 
   // Filtered Parsed Rows respecting both unqid/class search and selectedFilterDate
   const displayedParsedRows = React.useMemo(() => {
     return parsedRows.filter(r => {
-      if (selectedFilterDate && r.examDate !== selectedFilterDate) return false;
+      if (selectedFilterDate && !isRecordMatchingDateFilter(r.examDate, selectedFilterDate)) {
+        return false;
+      }
       if (!recordSearch.trim()) return true;
       const q = recordSearch.trim().toLowerCase();
       return (
@@ -151,12 +170,24 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
 
   // Existing imported bundles in the system
   const [existingBundles, setExistingBundles] = useState<ClassBundle[]>([]);
+  const [existingDateFilter, setExistingDateFilter] = useState<string | null>(null);
+
+  const availableExistingDates = React.useMemo(() => {
+    return importedService.getAvailableExamDates();
+  }, [existingBundles]);
+
+  const displayedExistingBundles = React.useMemo(() => {
+    if (!existingDateFilter) return existingBundles;
+    return existingBundles.filter(b => isRecordMatchingDateFilter(b.examDate, existingDateFilter));
+  }, [existingBundles, existingDateFilter]);
 
   // View Members Modal for Class Card
-  const [activeMembersModal, setActiveMembersModal] = useState<{
+  const setActiveMembersModalState = useState<{
     classId: string;
     members: string[];
   } | null>(null);
+  const activeMembersModal = setActiveMembersModalState[0];
+  const setActiveMembersModal = setActiveMembersModalState[1];
 
   // Duplicate Records Modal
   const [duplicateModalData, setDuplicateModalData] = useState<{
@@ -1796,8 +1827,53 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                 </div>
               </div>
 
+              {/* Date Filter for Existing Bundles */}
+              {availableExistingDates.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 p-2.5 bg-blue-50/70 border border-blue-200 rounded-xl">
+                  <span className="text-xs font-bold text-blue-900 flex items-center gap-1 mr-1">
+                    <Calendar className="h-3.5 w-3.5 text-[#1565D8]" />
+                    Filter by Exam Date:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExistingDateFilter(null)}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                      !existingDateFilter
+                        ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-xs'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    All Dates ({existingBundles.length} Classes)
+                  </button>
+                  {availableExistingDates.map(d => {
+                    const isSelected = existingDateFilter === d.date;
+                    const countForDate = existingBundles.filter(b => isRecordMatchingDateFilter(b.examDate, d.date)).length;
+                    return (
+                      <button
+                        key={d.date}
+                        type="button"
+                        onClick={() => setExistingDateFilter(isSelected ? null : d.date)}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono transition-all cursor-pointer border ${
+                          isSelected
+                            ? 'bg-[#1565D8] text-white border-[#1565D8] shadow-xs'
+                            : 'bg-white hover:bg-blue-50/80 text-slate-800 border-blue-200 shadow-2xs'
+                        }`}
+                      >
+                        <span className={`font-bold ${isSelected ? 'text-white' : 'text-[#1565D8]'}`}>
+                          {d.displayDate}
+                        </span>
+                        <span className="text-slate-300 font-sans">|</span>
+                        <span className={`font-semibold ${isSelected ? 'text-blue-100' : 'text-slate-600'}`}>
+                          {countForDate} Classes ({d.totalRecords.toLocaleString()} scripts)
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-4 gap-4 sm:gap-5">
-                {existingBundles.slice(0, 16).map(b => (
+                {displayedExistingBundles.slice(0, 32).map(b => (
                   <div
                     key={b.classId}
                     className="p-5 bg-white border border-[#CBD5E1] rounded-2xl shadow-xs hover:border-[#1565D8] hover:shadow-md transition-all duration-200 flex flex-col justify-between hover:-translate-y-0.5"

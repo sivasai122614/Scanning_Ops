@@ -297,17 +297,32 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Status Filter & Sorting for Live Monitoring (Requirement 4)
+function getTodayDdMmYyyy(): string {
+  const today = new Date();
+  const d = String(today.getDate()).padStart(2, '0');
+  const m = String(today.getMonth() + 1).padStart(2, '0');
+  const y = today.getFullYear();
+  return `${d}-${m}-${y}`;
+}
+
+function getTomorrowDdMmYyyy(): string {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const d = String(tomorrow.getDate()).padStart(2, '0');
+  const m = String(tomorrow.getMonth() + 1).padStart(2, '0');
+  const y = tomorrow.getFullYear();
+  return `${d}-${m}-${y}`;
+}
+
   const [statusFilter, setStatusFilter] = useState<StatusFilterType>('ALL');
   const [sortBy, setSortBy] = useState<SortByType>('default');
 
-  // Top Date Range Inputs (Requirement: From Date & To Date selection strictly in DD-MM-YYYY)
+  // Top Date Range Inputs: Default From Date = Today (DD-MM-YYYY) and To Date = Tomorrow (DD-MM-YYYY)
   const [filterStartDate, setFilterStartDate] = useState<string>(() => {
-    const act = importedService.getActiveExamDate();
-    return act ? formatExamDate(act) : '';
+    return getTodayDdMmYyyy();
   });
   const [filterEndDate, setFilterEndDate] = useState<string>(() => {
-    const act = importedService.getActiveExamDate();
-    return act ? formatExamDate(act) : '';
+    return getTomorrowDdMmYyyy();
   });
   const [openPickerType, setOpenPickerType] = useState<'from' | 'to' | null>(null);
 
@@ -321,13 +336,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     setFilterEndDate(formatted);
   };
 
-  // Track if user has fetched date data (Do not show data until correct date is fetched)
-  const [hasFetchedData, setHasFetchedData] = useState<boolean>(() => {
-    return Boolean(importedService.getActiveExamDate());
-  });
+  // Track if user has fetched date data (Initializes true for today-tomorrow range)
+  const [hasFetchedData, setHasFetchedData] = useState<boolean>(true);
   const [fetchedRange, setFetchedRange] = useState<{ startDate: string; endDate: string } | null>(() => {
-    const act = importedService.getActiveExamDate();
-    return act ? { startDate: act, endDate: act } : null;
+    const sIso = normalizeExamDate(getTodayDdMmYyyy()) || getTodayDdMmYyyy();
+    const eIso = normalizeExamDate(getTomorrowDdMmYyyy()) || getTomorrowDdMmYyyy();
+    return { startDate: sIso, endDate: eIso };
   });
   const [isFetching, setIsFetching] = useState<boolean>(false);
 
@@ -338,6 +352,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   // Admin Inward Rollback Modal State (Safe Revert from saved_scanned_data back to yet_to_be_inward)
   const [isRollbackModalOpen, setIsRollbackModalOpen] = useState<boolean>(false);
   const [rollbackTargetClassId, setRollbackTargetClassId] = useState<string>('');
+  const [rollbackTargetExamDate, setRollbackTargetExamDate] = useState<string>('');
 
   // Delete Class State
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
@@ -363,8 +378,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     }
   };
 
-  const activeFilterRef = useRef<ExamDateFilter>(importedService.getActiveExamDate() || null);
-  const hasFetchedDataRef = useRef<boolean>(Boolean(importedService.getActiveExamDate()));
+  const initialStartIso = normalizeExamDate(getTodayDdMmYyyy()) || getTodayDdMmYyyy();
+  const initialEndIso = normalizeExamDate(getTomorrowDdMmYyyy()) || getTomorrowDdMmYyyy();
+  const activeFilterRef = useRef<ExamDateFilter>({ startDate: initialStartIso, endDate: initialEndIso });
+  const hasFetchedDataRef = useRef<boolean>(true);
 
   // Load and subscribe to live data scoped to fetched date range
   const loadData = useCallback((explicitFilter?: ExamDateFilter) => {
@@ -423,34 +440,43 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       : { startDate: startIso, endDate: endIso };
 
     activeFilterRef.current = filterToUse;
-    if (typeof filterToUse === 'string') {
-      importedService.setActiveExamDate(filterToUse);
-    }
+    // Always sync active station exam date so inward operations stay synchronized
+    importedService.setActiveExamDate(startIso);
     loadData(filterToUse);
     setIsFetching(false);
   };
 
   const handleClearDateFilter = () => {
-    setFilterStartDate('');
-    setFilterEndDate('');
-    setFetchedRange(null);
-    hasFetchedDataRef.current = false;
-    setHasFetchedData(false);
-    activeFilterRef.current = null;
-    importedService.setActiveExamDate(null);
-    setBundles([]);
-    setSessionSummary(null);
+    const today = getTodayDdMmYyyy();
+    const tomorrow = getTomorrowDdMmYyyy();
+    setFilterStartDate(today);
+    setFilterEndDate(tomorrow);
+    handleFetchData(today, tomorrow);
   };
 
   useEffect(() => {
-    loadData();
+    // Auto-fetch data for initial today-to-tomorrow range on mount
+    handleFetchData(getTodayDdMmYyyy(), getTomorrowDdMmYyyy());
+
     const unsub = importedService.subscribe(() => {
       loadData();
     });
     return () => {
       unsub();
     };
-  }, [loadData]);
+  }, []);
+
+  // Realtime periodic background auto-refresh & Supabase synchronization (every 5 seconds)
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        await importedService.syncFromSupabase();
+      } catch (err) {
+        console.warn('[REALTIME AUTO-REFRESH] Background sync error:', err);
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleConfirmDeleteClass = async () => {
     if (!classToDelete) return;
@@ -1049,85 +1075,85 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         ) : (
           /* Active State After First Valid Booklet */
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 sm:gap-4">
             <button
               type="button"
               onClick={() => setStatusFilter(prev => prev === 'NOT_STARTED' ? 'ALL' : 'NOT_STARTED')}
-              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+              className={`p-4 sm:p-5 border-2 rounded-xl sm:rounded-2xl text-left transition-all cursor-pointer shadow-xs hover:shadow-md active:scale-[0.99] ${
                 statusFilter === 'NOT_STARTED'
-                  ? 'bg-slate-100 border-[#64748B] ring-2 ring-slate-400 shadow-xs'
-                  : 'bg-[#F8FAFC] border-[#E2E8F0] hover:bg-slate-100/70'
+                  ? 'bg-slate-100 border-[#64748B] ring-2 ring-slate-400'
+                  : 'bg-[#F8FAFC] border-[#CBD5E1] hover:bg-slate-100/70'
               }`}
               title="Click to filter by Not Started classes"
             >
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] flex items-center justify-between">
+              <div className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#64748B] flex items-center justify-between">
                 <span>Not Started</span>
                 {statusFilter === 'NOT_STARTED' && (
-                  <span className="text-[9px] bg-[#64748B] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                  <span className="text-[10px] bg-[#64748B] text-white px-2 py-0.5 rounded font-sans font-bold">ACTIVE</span>
                 )}
               </div>
-              <div className="text-xl font-bold font-tabular text-[#475569] mt-0.5">{notStartedCount}</div>
-              <div className="text-[10px] text-[#64748B] mt-0.5">Classes pending intake</div>
+              <div className="text-2xl sm:text-4xl lg:text-5xl font-black font-tabular text-[#475569] mt-2 sm:mt-2.5">{notStartedCount}</div>
+              <div className="text-xs text-[#64748B] mt-1 font-semibold">Classes pending intake</div>
             </button>
 
             <button
               type="button"
               onClick={() => setStatusFilter(prev => prev === 'IN_PROGRESS' ? 'ALL' : 'IN_PROGRESS')}
-              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+              className={`p-4 sm:p-5 border-2 rounded-xl sm:rounded-2xl text-left transition-all cursor-pointer shadow-xs hover:shadow-md active:scale-[0.99] ${
                 statusFilter === 'IN_PROGRESS'
-                  ? 'bg-[#EFF6FF] border-[#1D4ED8] ring-2 ring-[#93C5FD] shadow-xs'
+                  ? 'bg-[#EFF6FF] border-[#1D4ED8] ring-2 ring-[#93C5FD]'
                   : 'bg-[#EFF6FF] border-[#BFDBFE] hover:bg-[#DBEAFE]/70'
               }`}
               title="Click to filter by In Progress classes"
             >
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#1D4ED8] flex items-center justify-between">
+              <div className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#1D4ED8] flex items-center justify-between">
                 <span>In Progress</span>
                 {statusFilter === 'IN_PROGRESS' && (
-                  <span className="text-[9px] bg-[#1D4ED8] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                  <span className="text-[10px] bg-[#1D4ED8] text-white px-2 py-0.5 rounded font-sans font-bold">ACTIVE</span>
                 )}
               </div>
-              <div className="text-xl font-bold font-tabular text-[#1565D8] mt-0.5">{inProgressCount}</div>
-              <div className="text-[10px] text-[#1E40AF] mt-0.5">Currently inwarding</div>
+              <div className="text-2xl sm:text-4xl lg:text-5xl font-black font-tabular text-[#1565D8] mt-2 sm:mt-2.5">{inProgressCount}</div>
+              <div className="text-xs text-[#1E40AF] mt-1 font-semibold">Currently inwarding</div>
             </button>
 
             <button
               type="button"
               onClick={() => setStatusFilter(prev => prev === 'PARTIAL' ? 'ALL' : 'PARTIAL')}
-              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+              className={`p-4 sm:p-5 border-2 rounded-xl sm:rounded-2xl text-left transition-all cursor-pointer shadow-xs hover:shadow-md active:scale-[0.99] ${
                 statusFilter === 'PARTIAL'
-                  ? 'bg-[#FEF3C7] border-[#B45309] ring-2 ring-[#FDE68A] shadow-xs'
+                  ? 'bg-[#FEF3C7] border-[#B45309] ring-2 ring-[#FDE68A]'
                   : 'bg-[#FEF3C7] border-[#FDE68A] hover:bg-[#FDE68A]/70'
               }`}
               title="Click to filter by Partial / Saved classes"
             >
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#B45309] flex items-center justify-between">
+              <div className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#B45309] flex items-center justify-between">
                 <span>Partial / Saved</span>
                 {statusFilter === 'PARTIAL' && (
-                  <span className="text-[9px] bg-[#B45309] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                  <span className="text-[10px] bg-[#B45309] text-white px-2 py-0.5 rounded font-sans font-bold">ACTIVE</span>
                 )}
               </div>
-              <div className="text-xl font-bold font-tabular text-[#B45309] mt-0.5">{partialSavedCount}</div>
-              <div className="text-[10px] text-[#92400E] mt-0.5">Inwarded with pending</div>
+              <div className="text-2xl sm:text-4xl lg:text-5xl font-black font-tabular text-[#B45309] mt-2 sm:mt-2.5">{partialSavedCount}</div>
+              <div className="text-xs text-[#92400E] mt-1 font-semibold">Inwarded with pending</div>
             </button>
 
             <button
               type="button"
               onClick={() => setStatusFilter(prev => prev === 'COMPLETED' ? 'ALL' : 'COMPLETED')}
-              className={`p-3 border rounded-lg text-left transition-all cursor-pointer ${
+              className={`p-4 sm:p-5 border-2 rounded-xl sm:rounded-2xl text-left transition-all cursor-pointer shadow-xs hover:shadow-md active:scale-[0.99] ${
                 statusFilter === 'COMPLETED'
-                  ? 'bg-[#DCFCE7] border-[#15803D] ring-2 ring-[#BBF7D0] shadow-xs'
+                  ? 'bg-[#DCFCE7] border-[#15803D] ring-2 ring-[#BBF7D0]'
                   : 'bg-[#DCFCE7] border-[#BBF7D0] hover:bg-[#BBF7D0]/70'
               }`}
               title="Click to filter by Completed classes"
             >
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#15803D] flex items-center justify-between">
+              <div className="text-xs sm:text-sm font-black uppercase tracking-wider text-[#15803D] flex items-center justify-between">
                 <span>Completed</span>
                 {statusFilter === 'COMPLETED' && (
-                  <span className="text-[9px] bg-[#15803D] text-white px-1.5 py-0.2 rounded font-sans font-bold">ACTIVE</span>
+                  <span className="text-[10px] bg-[#15803D] text-white px-2 py-0.5 rounded font-sans font-bold">ACTIVE</span>
                 )}
               </div>
-              <div className="text-xl font-bold font-tabular text-[#16A34A] mt-0.5">{completedCount}</div>
-              <div className="text-[10px] text-[#166534] mt-0.5">All booklets verified</div>
+              <div className="text-2xl sm:text-4xl lg:text-5xl font-black font-tabular text-[#16A34A] mt-2 sm:mt-2.5">{completedCount}</div>
+              <div className="text-xs text-[#166534] mt-1 font-semibold">All booklets verified</div>
             </button>
           </div>
         )}
@@ -1337,7 +1363,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       {b.receivedCount > 0 && (
                         <button
                           type="button"
-                          onClick={() => { setRollbackTargetClassId(b.classId); setIsRollbackModalOpen(true); }}
+                          onClick={() => {
+                            setRollbackTargetClassId(b.classId);
+                            setRollbackTargetExamDate(b.examDate || (fetchedRange ? fetchedRange.startDate : ''));
+                            setIsRollbackModalOpen(true);
+                          }}
                           className="p-1 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded transition-colors cursor-pointer"
                           title={`Manage & Revert Inwarded Scripts for Class ID ${b.classId}`}
                         >
@@ -1465,7 +1495,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                             {b.receivedCount > 0 && (
                               <button
                                 type="button"
-                                onClick={() => { setRollbackTargetClassId(b.classId); setIsRollbackModalOpen(true); }}
+                                onClick={() => {
+                                  setRollbackTargetClassId(b.classId);
+                                  setRollbackTargetExamDate(b.examDate || (fetchedRange ? fetchedRange.startDate : ''));
+                                  setIsRollbackModalOpen(true);
+                                }}
                                 className="p-1.5 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded transition-colors cursor-pointer"
                                 title={`Manage & Revert Inwarded Scripts for Class ID ${b.classId}`}
                               >
@@ -1504,6 +1538,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         isOpen={isRollbackModalOpen}
         onClose={() => setIsRollbackModalOpen(false)}
         initialClassId={rollbackTargetClassId}
+        initialExamDate={rollbackTargetExamDate || (fetchedRange ? fetchedRange.startDate : '')}
       />
 
       {/* Delete Class Confirmation Modal */}

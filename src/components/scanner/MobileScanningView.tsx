@@ -121,6 +121,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     return importedService.getAvailableExamDates();
   }, [bundles, sessionSummary]);
 
+  const allDatesTotalScripts = React.useMemo(() => {
+    return availableDates.reduce((sum, d) => sum + d.totalRecords, 0);
+  }, [availableDates]);
+
+  const isAllDates = !activeExamDate || activeExamDate === 'ALL' || activeExamDate.toLowerCase() === 'all';
+
   const handleSelectExamDate = useCallback((date: string) => {
     setActiveExamDate(date);
     importedService.setActiveExamDate(date);
@@ -586,7 +592,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
     if (res.exists && res.classId) {
       const cleanCid = normalizeIdentifier(res.classId);
-      if (activeExamDate && activeExamDate !== 'ALL') {
+      if (!isAllDates && activeExamDate && activeExamDate !== 'ALL') {
         const bundleForActive = importedService.getClassBundle(cleanCid, activeExamDate);
         if (!bundleForActive || bundleForActive.expectedCount === 0) {
           const classDate = importedService.getClassExamDate(cleanCid);
@@ -653,10 +659,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
 
     try {
       // 1. Validate strictly against active class and entered member ID
-      const validation = await importedService.validateMemberForClass(cleanCid, enteredMid, activeExamDate || undefined);
+      const validation = await importedService.validateMemberForClass(cleanCid, enteredMid, isAllDates ? 'ALL' : (activeExamDate || undefined));
       console.log('[MANUAL INWARD FLOW] Validation result: ', validation.status);
 
-      if (validation.status === 'DATE_MISMATCH') {
+      if (validation.status === 'DATE_MISMATCH' && !isAllDates) {
         playScanWarningSound();
         setDateMismatchModal({
           isOpen: true,
@@ -819,10 +825,10 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         activeCid,
         code,
         operatorName,
-        activeExamDate || undefined
+        isAllDates ? 'ALL' : (activeExamDate || undefined)
       );
 
-      if (res.isDateMismatch) {
+      if (res.isDateMismatch && !isAllDates) {
         playScanWarningSound();
         setDateMismatchModal({
           isOpen: true,
@@ -876,11 +882,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
         }
 
         playScanWarningSound();
+        const inwardedByMsg = res.inwardedBy ? ` by ${res.inwardedBy}` : '';
         showToast({
           type: 'warning',
-          title: '⚠ Already Inwarded',
-          subtitle: res.member_id || code,
-          duration: 2000,
+          title: `⚠ Already Inwarded${inwardedByMsg}`,
+          subtitle: `${res.member_id || code}${res.inwardedBy ? ` (Operator: ${res.inwardedBy})` : ''}`,
+          duration: 3000,
         });
         return false;
       }
@@ -1335,7 +1342,7 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
                   onChange={(e) => handleSelectExamDate(e.target.value)}
                   className="bg-white font-medium text-xs text-slate-800 pl-2 pr-6 py-0.5 rounded-md border border-slate-200 shadow-2xs focus:outline-hidden focus:ring-1 focus:ring-[#1565D8] cursor-pointer"
                 >
-                  <option value="">All Dates ({sessionSummary?.totalExpected || 0} scripts)</option>
+                  <option value="">All Dates ({allDatesTotalScripts} scripts)</option>
                   {availableDates.map(d => (
                     <option key={d.date} value={d.date}>
                       {d.displayDate} ({d.totalRecords.toLocaleString()} scripts)

@@ -30,32 +30,42 @@ import {
   formatExamDate,
   resolveOperatorName,
   getCurrentUser,
+  isRecordMatchingDateFilter,
 } from '../../services/importedService';
 
 interface AdminInwardRollbackModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialClassId?: string;
+  initialExamDate?: string;
 }
 
 export const AdminInwardRollbackModal: React.FC<AdminInwardRollbackModalProps> = ({
   isOpen,
   onClose,
   initialClassId = '',
+  initialExamDate = '',
 }) => {
   const [records, setRecords] = useState<SavedScannedRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedClassId, setSelectedClassId] = useState<string>(initialClassId);
+  const [selectedExamDate, setSelectedExamDate] = useState<string>(initialExamDate);
   const [revertingTarget, setRevertingTarget] = useState<SavedScannedRecord | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [feedbackMessage, setFeedbackMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Sync initialClassId if provided
+  // Sync initialClassId and initialExamDate if provided
   useEffect(() => {
     if (initialClassId) {
       setSelectedClassId(initialClassId);
     }
   }, [initialClassId]);
+
+  useEffect(() => {
+    if (initialExamDate !== undefined) {
+      setSelectedExamDate(initialExamDate);
+    }
+  }, [initialExamDate]);
 
   const [isSyncingPending, setIsSyncingPending] = useState<boolean>(false);
 
@@ -100,6 +110,11 @@ export const AdminInwardRollbackModal: React.FC<AdminInwardRollbackModalProps> =
     return Array.from(set).sort();
   }, [records]);
 
+  // List of available exam dates
+  const availableExamDates = useMemo(() => {
+    return importedService.getAvailableExamDates();
+  }, [records]);
+
   // Filtered list
   const filteredRecords = useMemo(() => {
     let list = [...records];
@@ -107,6 +122,10 @@ export const AdminInwardRollbackModal: React.FC<AdminInwardRollbackModalProps> =
     if (selectedClassId && selectedClassId !== 'ALL') {
       const target = selectedClassId.trim().toLowerCase();
       list = list.filter(r => (r.class_id || '').trim().toLowerCase() === target);
+    }
+
+    if (selectedExamDate && selectedExamDate !== 'ALL' && selectedExamDate !== '') {
+      list = list.filter(r => isRecordMatchingDateFilter(r.exam_date || '', selectedExamDate));
     }
 
     if (searchQuery.trim()) {
@@ -128,7 +147,7 @@ export const AdminInwardRollbackModal: React.FC<AdminInwardRollbackModalProps> =
     });
 
     return list;
-  }, [records, selectedClassId, searchQuery]);
+  }, [records, selectedClassId, selectedExamDate, searchQuery]);
 
   const handleConfirmRevert = async () => {
     if (!revertingTarget) return;
@@ -251,23 +270,46 @@ export const AdminInwardRollbackModal: React.FC<AdminInwardRollbackModalProps> =
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-600 flex items-center gap-1">
-              <Filter className="h-3 w-3" />
-              Class ID:
-            </span>
-            <select
-              value={selectedClassId}
-              onChange={e => setSelectedClassId(e.target.value)}
-              className="py-1.5 px-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-hidden cursor-pointer"
-            >
-              <option value="">All Scanned Classes ({records.length})</option>
-              {availableClassIds.map(cid => (
-                <option key={cid} value={cid}>
-                  Class {cid} ({records.filter(r => r.class_id === cid).length})
-                </option>
-              ))}
-            </select>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Exam Date Filter */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-600 flex items-center gap-1">
+                <Calendar className="h-3 w-3 text-slate-400" />
+                Exam Date:
+              </span>
+              <select
+                value={selectedExamDate}
+                onChange={e => setSelectedExamDate(e.target.value)}
+                className="py-1.5 px-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-hidden cursor-pointer"
+              >
+                <option value="">All Dates</option>
+                {availableExamDates.map(d => (
+                  <option key={d.date} value={d.date}>
+                    {d.displayDate}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Class ID Filter */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-600 flex items-center gap-1">
+                <Filter className="h-3 w-3 text-slate-400" />
+                Class ID:
+              </span>
+              <select
+                value={selectedClassId}
+                onChange={e => setSelectedClassId(e.target.value)}
+                className="py-1.5 px-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-hidden cursor-pointer"
+              >
+                <option value="">All Scanned Classes ({records.length})</option>
+                {availableClassIds.map(cid => (
+                  <option key={cid} value={cid}>
+                    Class {cid} ({records.filter(r => r.class_id === cid).length})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
