@@ -6,7 +6,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   CheckCircle2,
-  Trash2,
   AlertTriangle,
   Edit3,
   X,
@@ -106,8 +105,6 @@ const InwardIntakeSection: React.FC<{
   const [newExpectedCountInput, setNewExpectedCountInput] = useState<string>('');
   const [editErrorMsg, setEditErrorMsg] = useState<string>('');
 
-  // In-App Delete Confirmation Modal State (Point 1 Fix)
-  const [scheduleToDelete, setScheduleToDelete] = useState<string | null>(null);
 
   const refreshSchedules = () => {
     setSchedules(examStore.getInwardSchedules());
@@ -198,15 +195,6 @@ const InwardIntakeSection: React.FC<{
     }
   };
 
-  // Point 1: Robust In-App Modal Delete Handler
-  const handleConfirmDelete = () => {
-    if (!scheduleToDelete) return;
-    examStore.deleteInwardEntry(scheduleToDelete);
-    refreshSchedules();
-    setSuccessMsg(`Bundle ${scheduleToDelete} deleted successfully.`);
-    if (showToast) showToast(`Bundle ${scheduleToDelete} deleted.`);
-    setScheduleToDelete(null);
-  };
 
   // Requirement 3: Edit Expected Count logic
   const handleOpenEditExpected = (sch: InwardSchedule) => {
@@ -492,15 +480,7 @@ const InwardIntakeSection: React.FC<{
                         <Edit3 className="h-3.5 w-3.5" />
                       </button>
 
-                      {/* Point 1: Reliable In-App Modal Delete Trigger */}
-                      <button
-                        type="button"
-                        onClick={() => setScheduleToDelete(sch.scheduled_id)}
-                        className="p-1.5 rounded-md hover:bg-[#FEE2E2] text-[#94A3B8] hover:text-[#DC2626] transition-colors cursor-pointer"
-                        title="Remove bundle from log"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+
                     </div>
                   </div>
                 );
@@ -510,43 +490,7 @@ const InwardIntakeSection: React.FC<{
         </div>
       </div>
 
-      {/* Point 1: In-App Delete Confirmation Modal (Guaranteed to work in iframe) */}
-      {scheduleToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs animate-in fade-in">
-          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-full bg-red-100 text-[#DC2626] shrink-0">
-                <Trash2 className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-[#172033]">Delete Inward Bundle</h3>
-                <p className="text-xs text-[#64748B]">Action cannot be undone</p>
-              </div>
-            </div>
 
-            <p className="text-xs text-[#64748B] leading-relaxed">
-              Are you sure you want to delete bundle <strong className="text-[#172033] font-mono">{scheduleToDelete}</strong> from inward schedules? All scanned scripts logged under this bundle will also be removed.
-            </p>
-
-            <div className="flex items-center gap-2 pt-2">
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                className="flex-1 h-10 rounded-lg bg-[#DC2626] text-white text-xs font-bold hover:bg-[#B91C1C] transition-colors shadow-xs cursor-pointer"
-              >
-                Yes, Delete
-              </button>
-              <button
-                type="button"
-                onClick={() => setScheduleToDelete(null)}
-                className="px-4 h-10 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-[#64748B] hover:bg-slate-50 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Requirement 3: Modal to Edit Expected Count and Resume Scanning */}
       {editingSchedule && (

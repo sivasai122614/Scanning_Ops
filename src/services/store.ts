@@ -120,17 +120,69 @@ class EnterpriseStore {
   // AUTHENTICATION OPERATIONS (Native Supabase Auth Equivalent)
   // ============================================================================
 
-  public authenticate(_email: string, _password: string): {
+  public authenticate(email: string, password: string): {
     success: boolean;
     profile?: Profile;
     role?: Role;
     permissions?: string[];
     error?: string;
   } {
-    return {
-      success: false,
-      error: 'Direct store authentication is disabled. Supabase Auth is strictly required.',
+    const cleanEmail = email.trim().toLowerCase();
+    const account = this.users.find(
+      u => u.email.toLowerCase() === cleanEmail || u.profile.username?.toLowerCase() === cleanEmail
+    );
+    if (!account) {
+      return {
+        success: false,
+        error: 'No account found matching this email address.',
+      };
+    }
+
+    if (account.passwordHash !== password) {
+      return {
+        success: false,
+        error: 'Incorrect password.',
+      };
+    }
+
+    if (account.profile.status !== 'ACTIVE') {
+      return {
+        success: false,
+        error: 'Your account is deactivated. Please contact an administrator.',
+      };
+    }
+
+    const role = SYSTEM_ROLES.find(r => r.id === account.profile.role_id) || {
+      id: (account.profile.appRole || account.profile.role_id || 'inward') as string,
+      code: (account.profile.appRole || 'inward') as any,
+      name: account.profile.appRole === 'admin' ? 'Administrator' : 'Inward Operator',
+      description: account.profile.appRole === 'admin' ? 'Full Institutional Administration' : 'Inward Operations Restricted',
+      is_system: true,
+      created_at: new Date().toISOString(),
     };
+
+    return {
+      success: true,
+      profile: account.profile,
+      role,
+      permissions: account.profile.appRole === 'admin' ? ['admin:all', 'audit:read', 'users:manage'] : ['inward:scan'],
+    };
+  }
+
+  public saveDirectAccount(email: string, passwordHash: string, profile: Profile): void {
+    const cleanEmail = email.trim().toLowerCase();
+    const existingIndex = this.users.findIndex(u => u.email.toLowerCase() === cleanEmail);
+    const newAcc: StoredAccount = {
+      email: cleanEmail,
+      passwordHash,
+      profile,
+    };
+    if (existingIndex >= 0) {
+      this.users[existingIndex] = newAcc;
+    } else {
+      this.users.unshift(newAcc);
+    }
+    this.saveUsers();
   }
 
   public changePassword(

@@ -29,7 +29,7 @@ import {
   List,
   Search,
   Copy,
-  Trash2,
+  Sparkles,
   ChevronDown,
   ChevronUp,
   Calendar,
@@ -2094,15 +2094,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
-                  <button
-                    type="button"
-                    onClick={() => setShowClearAllModal(true)}
-                    className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-300 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
-                    title="Clear all imported classes and wipe saved scan data"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    <span>Clear All Inward Data</span>
-                  </button>
+
                   {onNavigateToScan && (
                     <button
                       type="button"
@@ -2140,7 +2132,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                     disabled={isPurgingCorrupt}
                     className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Sparkles className="h-3.5 w-3.5" />
                     <span>{isPurgingCorrupt ? 'Cleaning...' : `Clean ${corruptedDateClasses.length} Corrupted Classes`}</span>
                   </button>
                 </div>
@@ -2229,15 +2221,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
                         <span>Preview ({b.expectedCount})</span>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setClassToDelete(b.classId)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl border border-red-200 transition-colors cursor-pointer"
-                        title={`Delete Class / SH ID ${b.classId} and all its saved scans`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        <span>Delete</span>
-                      </button>
+
                     </div>
                   </div>
                 ))}
@@ -2481,75 +2465,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
         </div>
       )}
 
-      {/* Delete Class Confirmation Modal */}
-      {classToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
-              <Trash2 className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-black uppercase text-[#172033]">
-              Delete Class / SH ID {classToDelete}?
-            </h3>
-            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
-              This will remove class <strong className="text-[#172033] font-mono">{classToDelete}</strong> from imported data and strictly delete all corresponding saved scan records and session history from the database.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => setClassToDelete(null)}
-                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={handleConfirmDeleteClass}
-                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
-              >
-                {isDeleting ? 'Deleting...' : 'Yes, Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Clear All Inward Data Confirmation Modal */}
-      {showClearAllModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
-              <Trash2 className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-black uppercase text-[#172033]">
-              Clear All Inward Data?
-            </h3>
-            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
-              Are you sure you want to permanently clear all imported classes? This will reset all expected booklet records and purge all saved scans so you can start with a fresh batch.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => setShowClearAllModal(false)}
-                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={handleConfirmClearAll}
-                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
-              >
-                {isDeleting ? 'Clearing...' : 'Clear Everything'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

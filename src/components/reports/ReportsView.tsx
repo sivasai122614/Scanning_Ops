@@ -711,29 +711,32 @@ export const ReportsView: React.FC = () => {
         </div>
       )}
 
-      {/* KPI Cards Grid */}
+      {/* KPI Cards Grid with Unified Smooth Hover & Wave Animation */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 sm:gap-6 w-full">
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
+        <div className="group rounded-2xl border border-slate-200 bg-white p-6 sm:p-7 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-blue-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider group-hover:text-[#1565D8] transition-colors">
             TOTAL CLASSES
           </div>
-          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5 group-hover:text-[#1565D8] transition-colors">
             {stats.totalClasses}
           </div>
           <div className="text-xs text-[#64748B] mt-1.5 font-medium">Classes in Audit Scope</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider">
+        <div className="group rounded-2xl border border-slate-200 bg-white p-6 sm:p-7 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-blue-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-xs font-bold text-[#64748B] uppercase tracking-wider group-hover:text-[#1565D8] transition-colors">
             EXPECTED BOOKLETS
           </div>
-          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5">
+          <div className="text-4xl sm:text-5xl font-black text-[#172033] font-tabular mt-2.5 group-hover:text-[#1565D8] transition-colors">
             {stats.expectedBooklets}
           </div>
           <div className="text-xs text-[#64748B] mt-1.5 font-medium">From import_inwarded_data</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border-2 border-blue-400/80 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 hover:-translate-y-0.5 relative overflow-hidden">
+        <div className="group rounded-2xl border-2 border-blue-400/80 bg-white p-6 sm:p-7 shadow-sm hover:-translate-y-1 hover:shadow-lg hover:border-blue-500 transition-all duration-300 ease-out cursor-default relative overflow-hidden bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-100/60 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
           <div className="text-xs font-bold text-[#1565D8] uppercase tracking-wider">
             SCANNED (SAVED)
           </div>
@@ -743,8 +746,9 @@ export const ReportsView: React.FC = () => {
           <div className="text-xs text-[#1565D8] mt-1.5 font-semibold">Strictly in saved_scanned_data</div>
         </div>
 
-        <div className="bg-white p-6 sm:p-7 border border-[#CBD5E1] rounded-2xl shadow-xs hover:shadow-md transition-all duration-200 hover:-translate-y-0.5">
-          <div className="text-xs font-bold text-[#DC2626] uppercase tracking-wider">
+        <div className="group rounded-2xl border border-slate-200 bg-white p-6 sm:p-7 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-rose-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-rose-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-xs font-bold text-[#DC2626] uppercase tracking-wider group-hover:text-rose-600 transition-colors">
             NOT SCANNED
           </div>
           <div className="text-4xl sm:text-5xl font-black text-[#DC2626] font-tabular mt-2.5">

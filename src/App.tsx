@@ -286,7 +286,7 @@ const AuthenticatedAdminApp: React.FC = () => {
       case 'more':
         return { title: 'Settings', isRoot: true };
       case 'users-directory':
-        return { title: 'Staff Registry', isRoot: false };
+        return { title: 'Users', isRoot: true };
       case 'role-permissions':
         return { title: 'Roles & Permissions', isRoot: false };
       case 'audit-logs':

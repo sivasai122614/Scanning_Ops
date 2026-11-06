@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   CalendarDays,
+  Users,
 } from 'lucide-react';
 
 export type DesktopNavTarget =
@@ -34,9 +35,10 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab }) => {
-  // Focused Operational Navigation (Governance & Security items removed per user request)
+  // Operational & User Management Navigation
   const primaryNav = [
     { id: 'home' as const, label: 'Dashboard', icon: Home, badge: 'Overview' },
+    { id: 'users-directory' as const, label: 'Users', icon: Users, badge: 'Staff' },
     { id: 'import-data' as const, label: 'Import Data', icon: FileSpreadsheet, badge: 'Excel' },
     { id: 'date-mapper' as const, label: 'Excel Date Mapper', icon: CalendarDays, badge: 'Match' },
     { id: 'scan' as const, label: 'Scanning Dashboard', icon: Scan, badge: 'Live Gun' },
@@ -51,7 +53,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
         <div>
           <div className="px-3 mb-3 flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-400">
             <span>Operations Hub</span>
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
           </div>
 
           <nav className="space-y-1.5">
@@ -63,21 +65,21 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ currentTab, onSelectTab 
                   key={item.id}
                   type="button"
                   onClick={() => onSelectTab(item.id)}
-                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-[14.5px] font-semibold transition-all duration-150 cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-[14.5px] font-semibold transition-all duration-200 ease-out cursor-pointer group ${
                     isActive
-                      ? 'bg-[#1565D8] text-white shadow-md shadow-blue-500/20 translate-x-0.5'
-                      : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:bg-slate-200/70'
+                      ? 'bg-[#1565D8] text-white shadow-md shadow-blue-500/25 translate-x-1 ring-1 ring-blue-400/30'
+                      : 'text-slate-700 hover:text-slate-900 hover:bg-blue-50/70 hover:translate-x-1.5 active:scale-[0.98]'
                   }`}
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <Icon className={`h-5 w-5 shrink-0 transition-transform ${isActive ? 'text-white' : 'text-slate-500'}`} />
+                    <Icon className={`h-5 w-5 shrink-0 transition-transform duration-200 group-hover:scale-110 ${isActive ? 'text-white' : 'text-slate-500 group-hover:text-[#1565D8]'}`} />
                     <span className="truncate">{item.label}</span>
                   </div>
 
                   {isActive ? (
-                    <span className="h-2 w-2 rounded-full bg-white shrink-0 animate-pulse"></span>
+                    <span className="h-2 w-2 rounded-full bg-white shrink-0 animate-ping"></span>
                   ) : (
-                    <span className="text-[11px] font-medium text-slate-400 shrink-0">
+                    <span className="text-[11px] font-medium text-slate-400 group-hover:text-slate-600 transition-colors shrink-0">
                       {item.badge}
                     </span>
                   )}

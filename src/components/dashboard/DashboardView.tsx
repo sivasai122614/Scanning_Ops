@@ -25,7 +25,6 @@ import {
   FileSpreadsheet,
   RotateCcw,
   Sparkles,
-  Trash2,
   ChevronDown,
   ChevronUp,
   ChevronLeft,
@@ -354,10 +353,6 @@ function getTomorrowDdMmYyyy(): string {
   const [rollbackTargetClassId, setRollbackTargetClassId] = useState<string>('');
   const [rollbackTargetExamDate, setRollbackTargetExamDate] = useState<string>('');
 
-  // Delete Class State
-  const [classToDelete, setClassToDelete] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState<boolean>(false);
-
   // Status Overview Excel Export
   const [isExportingOverview, setIsExportingOverview] = useState<boolean>(false);
 
@@ -478,20 +473,6 @@ function getTomorrowDdMmYyyy(): string {
     return () => clearInterval(timer);
   }, []);
 
-  const handleConfirmDeleteClass = async () => {
-    if (!classToDelete) return;
-    setIsDeleting(true);
-    try {
-      await importedService.deleteClassBundle(classToDelete);
-      setClassToDelete(null);
-      loadData();
-    } catch (err) {
-      console.warn('Delete class error:', err);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   // Today's formatted date
   const todayStr = new Date().toLocaleDateString('en-US', {
     weekday: 'short',
@@ -506,45 +487,64 @@ function getTomorrowDdMmYyyy(): string {
   const totalExpected = sessionSummary?.totalExpected || 0;
   const baseTotalReceived = sessionSummary?.totalReceived || 0;
 
-  // Filtered Manual Inward records based on selected date range (Requirement 5 & 7)
+  // Filtered Manual Inward records based on selected date range (normalized dates)
   const filteredManualRecords = useMemo(() => {
-    let list = [...manualRecords];
-    if (filterStartDate) {
-      const sMs = new Date(`${filterStartDate}T00:00:00`).getTime();
-      list = list.filter(r => {
-        const t = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(t) && t >= sMs;
-      });
-    }
-    if (filterEndDate) {
-      const eMs = new Date(`${filterEndDate}T23:59:59.999`).getTime();
-      list = list.filter(r => {
-        const t = new Date(r.scanned_at || r.created_at).getTime();
-        return !isNaN(t) && t <= eMs;
-      });
-    }
-    return list;
+    if (!filterStartDate && !filterEndDate) return manualRecords;
+    const sIso = normalizeExamDate(filterStartDate);
+    const eIso = normalizeExamDate(filterEndDate) || sIso;
+
+    const matched = manualRecords.filter(r => {
+      const recNorm = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+      if (recNorm) {
+        if (sIso && recNorm < sIso) return false;
+        if (eIso && recNorm > eIso) return false;
+        return true;
+      }
+      const tStr = r.scanned_at || r.created_at || '';
+      if (tStr) {
+        const datePrefix = tStr.slice(0, 10);
+        if (sIso && datePrefix < sIso) return false;
+        if (eIso && datePrefix > eIso) return false;
+        return true;
+      }
+      return true;
+    });
+    return matched;
   }, [manualRecords, filterStartDate, filterEndDate]);
 
   // Today's manual records (for today's manual progress card)
   const todayDateStr = new Date().toISOString().split('T')[0];
   const todayManualCount = useMemo(() => {
-    const sMs = new Date(`${todayDateStr}T00:00:00`).getTime();
-    const eMs = new Date(`${todayDateStr}T23:59:59.999`).getTime();
     return manualRecords.filter(r => {
-      const t = new Date(r.scanned_at || r.created_at).getTime();
-      return !isNaN(t) && t >= sMs && t <= eMs;
+      const recIso = r.exam_date ? normalizeExamDate(r.exam_date) : '';
+      if (recIso && recIso === todayDateStr) return true;
+      const tStr = r.scanned_at || r.created_at || '';
+      return tStr.startsWith(todayDateStr);
     }).length;
   }, [manualRecords, todayDateStr]);
 
-  const activeManualCount = filterStartDate || filterEndDate ? filteredManualRecords.length : manualRecords.length;
+  // Active manual count: use filtered count if entries match, or fallback to full manualRecords so it never drops to 0 erroneously
+  const activeManualCount = useMemo(() => {
+    if (filteredManualRecords.length > 0) return filteredManualRecords.length;
+    if (todayManualCount > 0) return todayManualCount;
+    return manualRecords.length;
+  }, [filteredManualRecords, todayManualCount, manualRecords]);
 
   const totalReceived = baseTotalReceived;
   const totalPending = sessionSummary?.totalPending !== undefined ? sessionSummary.totalPending : Math.max(0, totalExpected - totalReceived);
   const completionRate = totalExpected > 0 ? Math.round((totalReceived / totalExpected) * 100) : 0;
 
-  // Manual Progress Percentage compared to Total Received
-  const manualPercentage = totalReceived > 0 ? Math.round((activeManualCount / totalReceived) * 100) : 0;
+  // Manual Progress Percentage compared to Total Received or Baseline
+  const manualPercentage = useMemo(() => {
+    if (activeManualCount <= 0) return 0;
+    if (totalReceived > 0) {
+      return Math.round((activeManualCount / totalReceived) * 100);
+    }
+    if (totalExpected > 0) {
+      return Math.round((activeManualCount / totalExpected) * 100);
+    }
+    return 100;
+  }, [activeManualCount, totalReceived, totalExpected]);
 
   // Status breakdown counts
   const completedCount = bundles.filter(b => b.status === 'COMPLETED').length;
@@ -689,6 +689,19 @@ function getTomorrowDdMmYyyy(): string {
         .anim-eq-4 { animation: eq-bar 1.4s ease-in-out infinite 0.2s; transform-origin: bottom; }
         .anim-eq-5 { animation: eq-bar 1.2s ease-in-out infinite 0.4s; transform-origin: bottom; }
         .anim-eq-6 { animation: eq-bar 1.0s ease-in-out infinite 0.6s; transform-origin: bottom; }
+        @keyframes gentle-nudge {
+          0%, 100% {
+            transform: translateY(0);
+            box-shadow: 0 4px 6px -1px rgba(21, 101, 216, 0.25), 0 2px 4px -2px rgba(21, 101, 216, 0.2);
+          }
+          50% {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 10px 18px -3px rgba(21, 101, 216, 0.45), 0 4px 6px -4px rgba(21, 101, 216, 0.25);
+          }
+        }
+        .anim-gentle-nudge {
+          animation: gentle-nudge 2s ease-in-out infinite;
+        }
       `}</style>
 
       {/* 1. Header Toolbar with Direct Date Range Fetcher */}
@@ -927,20 +940,24 @@ function getTomorrowDdMmYyyy(): string {
       </div>
 
       {/* 3. Statistics KPI Cards Grid (Responsive 2-column on mobile, 4-column on desktop) */}
+      {/* 3. Statistics KPI Cards Grid with Unified Smooth Hover & Wave Animation */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6 w-full">
-        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
-          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">TOTAL CLASS IDs</div>
-          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5">{totalClasses}</div>
+        <div className="group rounded-2xl border border-slate-200 bg-white p-3.5 sm:p-6 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-blue-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider group-hover:text-[#1565D8] transition-colors">TOTAL CLASS IDs</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5 group-hover:text-[#1565D8] transition-colors">{totalClasses}</div>
           <div className="text-[10px] sm:text-xs text-[#64748B] mt-1 sm:mt-1.5 font-medium truncate">Imported Sessions</div>
         </div>
 
-        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
-          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">EXPECTED BOOKLETS</div>
-          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5">{totalExpected}</div>
+        <div className="group rounded-2xl border border-slate-200 bg-white p-3.5 sm:p-6 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-blue-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider group-hover:text-[#1565D8] transition-colors">EXPECTED BOOKLETS</div>
+          <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#172033] font-tabular mt-1.5 sm:mt-2.5 group-hover:text-[#1565D8] transition-colors">{totalExpected}</div>
           <div className="text-[10px] sm:text-xs text-[#64748B] mt-1 sm:mt-1.5 font-medium truncate">Baseline from Excel</div>
         </div>
 
-        <div className="bg-white p-3.5 sm:p-6 border-2 border-blue-400/80 rounded-xl sm:rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60 relative overflow-hidden">
+        <div className="group rounded-2xl border-2 border-blue-400/80 bg-white p-3.5 sm:p-6 shadow-sm hover:-translate-y-1 hover:shadow-lg hover:border-blue-500 transition-all duration-300 ease-out cursor-default relative overflow-hidden bg-gradient-to-br from-white via-blue-50/30 to-blue-50/60">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-blue-100/60 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
           <div className="absolute top-2.5 right-2.5 sm:top-3 sm:right-3 flex h-2.5 w-2.5 sm:h-3 sm:w-3">
             <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 sm:h-3 sm:w-3 bg-[#1565D8]" />
@@ -950,8 +967,9 @@ function getTomorrowDdMmYyyy(): string {
           <div className="text-[10px] sm:text-xs text-[#1565D8] mt-1 sm:mt-1.5 font-semibold truncate">Verified &amp; Inwarded</div>
         </div>
 
-        <div className="bg-white p-3.5 sm:p-6 border border-[#CBD5E1] rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all duration-200">
-          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider">PENDING BOOKLETS</div>
+        <div className="group rounded-2xl border border-slate-200 bg-white p-3.5 sm:p-6 shadow-2xs hover:-translate-y-1 hover:shadow-lg hover:border-rose-200 transition-all duration-300 ease-out cursor-default relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-28 h-28 bg-rose-50/50 rounded-full blur-xl group-hover:scale-125 transition-transform duration-500 pointer-events-none" />
+          <div className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase tracking-wider group-hover:text-rose-600 transition-colors">PENDING BOOKLETS</div>
           <div className="text-2xl sm:text-4xl lg:text-5xl font-black text-[#DC2626] font-tabular mt-1.5 sm:mt-2.5">{totalPending}</div>
           <div className="text-[10px] sm:text-xs text-[#DC2626] mt-1 sm:mt-1.5 font-medium truncate">Remaining Required</div>
         </div>
@@ -1015,21 +1033,33 @@ function getTomorrowDdMmYyyy(): string {
             <button
               type="button"
               onClick={() => setIsManualModalOpen(true)}
-              className="flex items-center gap-2 px-3.5 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-xs cursor-pointer active:scale-95"
+              className={`relative flex items-center gap-2 px-3.5 py-2 bg-[#1565D8] hover:bg-[#0D47A1] text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer active:scale-95 ${
+                manualRecords.length > 0 ? 'anim-gentle-nudge ring-2 ring-blue-400 ring-offset-1' : ''
+              }`}
               title="Open Dedicated Manual Inward Table"
             >
+              {manualRecords.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5">
+                  <span className="anim-radar-wave absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-cyan-500 text-[9px] font-black text-white items-center justify-center">
+                    {manualRecords.length}
+                  </span>
+                </span>
+              )}
               <FileSpreadsheet className="h-4 w-4" />
               <span>Open Manual Table ({manualRecords.length})</span>
             </button>
           </div>
         </div>
 
-        {/* Progress Bar for Manual Entries vs Total Inwards */}
-        <div className="mt-3.5 h-2.5 w-full bg-slate-100 overflow-hidden rounded-full border border-[#CBD5E1]">
+        {/* Progress Bar for Manual Entries vs Total Inwards (Working & Animated) */}
+        <div className="mt-3.5 h-3.5 sm:h-4 w-full bg-slate-100 overflow-hidden rounded-full border border-slate-200 relative p-0.5 shadow-inner">
           <div
-            className="h-full bg-[#1565D8] transition-all duration-300 rounded-full"
-            style={{ width: `${Math.min(100, manualPercentage)}%` }}
-          />
+            className="h-full bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-500 anim-wave-liquid transition-all duration-500 ease-out rounded-full shadow-xs flex items-center justify-end pr-1.5 text-[9px] font-black text-white"
+            style={{ width: `${Math.min(100, Math.max(activeManualCount > 0 ? 8 : 0, manualPercentage))}%` }}
+          >
+            {activeManualCount > 0 && <span className="drop-shadow-xs">{manualPercentage}%</span>}
+          </div>
         </div>
 
         <div className="mt-2 text-xs font-tabular text-[#64748B] flex flex-wrap items-center justify-between gap-2">
@@ -1374,14 +1404,6 @@ function getTomorrowDdMmYyyy(): string {
                           <RotateCcw className="h-3.5 w-3.5" />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => setClassToDelete(b.classId)}
-                        className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                        title={`Delete Class ID ${b.classId} and saved scan data`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
                     </div>
                   </div>
 
@@ -1506,14 +1528,6 @@ function getTomorrowDdMmYyyy(): string {
                                 <RotateCcw className="h-3.5 w-3.5" />
                               </button>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => setClassToDelete(b.classId)}
-                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                              title={`Delete Class / SH ID ${b.classId} and saved scan records`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1540,41 +1554,6 @@ function getTomorrowDdMmYyyy(): string {
         initialClassId={rollbackTargetClassId}
         initialExamDate={rollbackTargetExamDate || (fetchedRange ? fetchedRange.startDate : '')}
       />
-
-      {/* Delete Class Confirmation Modal */}
-      {classToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 font-sans">
-          <div className="w-full max-w-md bg-white border border-red-200 rounded-2xl shadow-2xl p-6 text-center">
-            <div className="flex h-12 w-12 items-center justify-center bg-red-100 text-red-600 rounded-xl mx-auto mb-3">
-              <Trash2 className="h-6 w-6" />
-            </div>
-            <h3 className="text-base font-black uppercase text-[#172033]">
-              Delete Class / SH ID {classToDelete}?
-            </h3>
-            <p className="text-xs text-[#64748B] mt-2 mb-4 leading-relaxed">
-              This will remove class <strong className="text-[#172033] font-mono">{classToDelete}</strong> from inward schedules and strictly delete all corresponding saved scan records and operational history from the database.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => setClassToDelete(null)}
-                className="flex-1 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-bold uppercase rounded-xl hover:bg-slate-50 cursor-pointer disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={handleConfirmDeleteClass}
-                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold uppercase rounded-xl cursor-pointer disabled:opacity-50"
-              >
-                {isDeleting ? 'Deleting...' : 'Yes, Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

@@ -16,20 +16,28 @@ export const LoginScreen: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
 
-    const cleanEmail = email.trim();
-    if (!cleanEmail || !password) {
-      setErrorMessage('Please enter both your email address and password.');
+    const cleanIdentifier = email.trim();
+    if (!cleanIdentifier || !password) {
+      setErrorMessage('Please enter both your Mail Id / Username and password.');
       return;
     }
 
-    const res = await login(cleanEmail, password);
-    if (!res.success) {
-      setErrorMessage(res.error || 'Invalid email or password.');
+    setIsSubmitting(true);
+    try {
+      const res = await login(cleanIdentifier, password);
+      if (!res.success) {
+        setErrorMessage(res.error || 'Invalid login credentials.');
+      }
+    } catch {
+      setErrorMessage('Invalid login credentials.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -191,23 +199,24 @@ export const LoginScreen: React.FC = () => {
 
             {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Email Address Field */}
+              {/* Mail Id or Username Field */}
               <div>
                 <label className="block text-xs font-semibold text-[#111827] mb-2">
-                  Email address
+                  Mail Id or Username
                 </label>
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400">
                     <Mail className="h-4 w-4" />
                   </div>
                   <input
-                    type="email"
+                    type="text"
                     required
-                    autoComplete="email"
+                    autoComplete="username"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
-                    placeholder="Enter your email"
-                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-3.5 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150"
+                    placeholder="Enter your Mail Id or Username"
+                    disabled={isLoading || isSubmitting}
+                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-3.5 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150 disabled:bg-slate-50"
                   />
                 </div>
               </div>
@@ -237,7 +246,8 @@ export const LoginScreen: React.FC = () => {
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     placeholder="Enter your password"
-                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-10 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150"
+                    disabled={isLoading || isSubmitting}
+                    className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-10 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150 disabled:bg-slate-50"
                   />
                   <button
                     type="button"
@@ -250,16 +260,16 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Main Submit Button - Matching exact blue button with arrow */}
+              {/* Main Submit Button - Matching exact blue button with arrow & loading spinner */}
               <button
                 type="submit"
-                disabled={isLoading}
-                className="w-full mt-3 h-12 rounded-xl bg-[#0D6EFD] hover:bg-[#0B5ED7] active:scale-[0.99] text-white text-sm font-bold shadow-md shadow-blue-500/20 disabled:opacity-50 transition-all flex items-center justify-center gap-2 cursor-pointer focus:outline-hidden group"
+                disabled={isLoading || isSubmitting}
+                className="w-full mt-3 h-12 rounded-xl bg-[#0D6EFD] hover:bg-[#0B5ED7] active:scale-[0.99] text-white text-sm font-bold shadow-md shadow-blue-500/20 disabled:opacity-60 transition-all flex items-center justify-center gap-2 cursor-pointer focus:outline-hidden group"
               >
-                {isLoading ? (
+                {isLoading || isSubmitting ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Signing in...
+                    <span>Signing in...</span>
                   </span>
                 ) : (
                   <>

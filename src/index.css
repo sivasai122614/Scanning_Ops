@@ -327,3 +327,32 @@
   animation: sheen-sweep 3s ease-in-out infinite;
 }
 
+/* Very smooth hover and ambient wave animations */
+@keyframes smooth-wave-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(21, 101, 216, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(21, 101, 216, 0);
+    transform: scale(1.02);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(21, 101, 216, 0);
+    transform: scale(1);
+  }
+}
+
+.animate-wave-pulse {
+  animation: smooth-wave-pulse 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.hover-smooth-card {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.hover-smooth-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 24px -6px rgba(21, 101, 216, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
+}
+
+
