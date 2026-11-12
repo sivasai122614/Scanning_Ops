@@ -120,7 +120,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                 >
                   <div className="px-3 py-2.5 bg-slate-50 rounded-lg border border-slate-100 mb-1.5">
                     <div className="font-bold text-xs text-slate-800">{user?.full_name || 'Administrator'}</div>
-                    <div className="text-[11px] text-slate-500 truncate">{user?.email || 'admin@inward.in'}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{user?.email || user?.username || ''}</div>
                     <div className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-[#1565D8] uppercase tracking-wider">
                       {role?.name || 'ADMINISTRATOR'}
                     </div>

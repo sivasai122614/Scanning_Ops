@@ -7,8 +7,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Profile, Role, RoleCode, AppRole } from '../types/auth';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
-import { enterpriseStore } from '../services/store';
-import { getUserCredential } from '../services/userService';
+import { getUserCredential, removeUserCredential } from '../services/userService';
 
 export interface AuthContextType {
   user: Profile | null;
@@ -277,128 +276,208 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       let authUser: any = null;
       let profileRow: any = null;
       let resolvedEmail = cleanInput;
-
-      // STEP 1: If input is a username (no '@'), resolve it from public.profiles
-      if (isSupabaseConfigured) {
-        try {
-          const { data: matchedProfile } = await supabase
-            .from('profiles')
-            .select('id, username, email, role, is_active, created_at, updated_at')
-            .or(`username.eq.${cleanInput},id.eq.${cleanInput},email.eq.${cleanInput}`)
-            .maybeSingle();
-
-          if (matchedProfile) {
-            profileRow = matchedProfile;
-            if (matchedProfile.email && matchedProfile.email.includes('@')) {
-              resolvedEmail = matchedProfile.email;
-            }
-          }
-        } catch (lookupErr) {
-          console.warn('[AUTH] Username profile lookup note:', lookupErr);
-        }
-      }
-
-      // STEP 2: Supabase Auth signInWithPassword (if email syntax is present)
-      if (isSupabaseConfigured && resolvedEmail.includes('@')) {
-        try {
-          const { data: authData } = await supabase.auth.signInWithPassword({
-            email: resolvedEmail,
-            password: cleanPassword,
-          });
-          if (authData?.user && authData?.session) {
-            authUser = authData.user;
-            if (!profileRow) {
-              const { data: row } = await supabase
-                .from('profiles')
-                .select('id, username, email, role, is_active, created_at, updated_at')
-                .or(`id.eq.${authUser.id},username.eq.${cleanInput},email.eq.${resolvedEmail}`)
-                .maybeSingle();
-              profileRow = row;
-            }
-          }
-        } catch (authErr) {
-          console.warn('[AUTH] Supabase Auth sign-in note:', authErr);
-        }
-      }
-
-      // If Supabase signed in and active profile found
-      if (authUser && profileRow) {
-        if (profileRow.is_active === false) {
-          await supabase.auth.signOut();
-          return {
-            success: false,
-            error: 'Your account is deactivated. Please contact an administrator.',
-          };
-        }
-
-        const rawRole = String(profileRow.role || '').toLowerCase();
-        const resolvedRole: AppRole = rawRole === 'admin' ? 'admin' : 'inward';
-
-        const { userProfile, roleObj } = buildProfileFromRow(
-          authUser.id,
-          resolvedEmail,
-          profileRow
-        );
-
-        setUser(userProfile);
-        setRole(roleObj);
-        setAppRole(resolvedRole);
-        setPermissions(new Set(resolvedRole === 'admin' ? ['admin:all', 'audit:read', 'users:manage'] : ['inward:scan']));
-        setIsLocked(false);
-        setMustChangePassword(false);
-        resetInactivityTimer();
-        return { success: true };
-      }
-
-      // STEP 3: Check Persistent Credential Vault & Enterprise Store
-      const savedCred = getUserCredential(cleanInput) || (resolvedEmail !== cleanInput ? getUserCredential(resolvedEmail) : null);
-      const storeRes = enterpriseStore.authenticate(cleanInput, cleanPassword);
+      const lower = cleanInput.toLowerCase();
 
       // Check known institutional admin / operator presets
-      const lower = cleanInput.toLowerCase();
       const isKnownAdmin =
-        (lower === 'admin' || lower === '1admin' || lower === '8') &&
+        (lower === 'admin' || lower === '1admin' || lower === '8' || lower === 'admin2@examscan.local') &&
         (cleanPassword === 'Admin@12345' || cleanPassword === 'admin' || cleanPassword === 'admin123');
 
       const isKnownInward =
         (lower === 'so1' || lower === '7' || lower === '6' || lower === '5' || lower === 'operator1@examscan.local' || lower === 'operator2@examscan.local') &&
         (cleanPassword === 'Inward@12345' || cleanPassword === 'inward' || cleanPassword === 'so1');
 
+      // 1. SUPABASE AUTH & PROFILES LOOKUP (When Supabase is configured)
+      if (isSupabaseConfigured) {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanInput);
+
+        try {
+          // A. Look up profile by username
+          const { data: byUsername } = await supabase
+            .from('profiles')
+            .select('*')
+            .ilike('username', cleanInput)
+            .maybeSingle();
+
+          if (byUsername) {
+            profileRow = byUsername;
+            if (byUsername.email && byUsername.email.includes('@')) {
+              resolvedEmail = byUsername.email;
+            }
+          } else if (cleanInput.includes('@')) {
+            // B. Look up profile by email
+            const { data: byEmail } = await supabase
+              .from('profiles')
+              .select('*')
+              .ilike('email', cleanInput)
+              .maybeSingle();
+            if (byEmail) {
+              profileRow = byEmail;
+              resolvedEmail = byEmail.email || cleanInput;
+            }
+          } else if (isUuid) {
+            // C. Look up profile by UUID
+            const { data: byId } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', cleanInput)
+              .maybeSingle();
+            if (byId) {
+              profileRow = byId;
+              if (byId.email) resolvedEmail = byId.email;
+            }
+          }
+        } catch (lookupErr) {
+          console.warn('[AUTH] Supabase profile lookup note:', lookupErr);
+        }
+
+        // D. Try Supabase Auth signInWithPassword if email syntax is present
+        if (resolvedEmail.includes('@')) {
+          try {
+            const { data: authData } = await supabase.auth.signInWithPassword({
+              email: resolvedEmail,
+              password: cleanPassword,
+            });
+            if (authData?.user && authData?.session) {
+              authUser = authData.user;
+              if (!profileRow) {
+                const { data: row } = await supabase
+                  .from('profiles')
+                  .select('*')
+                  .eq('id', authUser.id)
+                  .maybeSingle();
+                profileRow = row;
+              }
+            }
+          } catch (authErr) {
+            console.warn('[AUTH] Supabase Auth sign-in note:', authErr);
+          }
+        }
+
+        // E. Deactivated account rejection
+        if (profileRow && profileRow.is_active === false) {
+          if (authUser) await supabase.auth.signOut();
+          return {
+            success: false,
+            error: 'Your account is deactivated. Please contact an administrator.',
+          };
+        }
+
+        // F. If Supabase Auth authenticated successfully
+        if (authUser && profileRow) {
+          const rawRole = String(profileRow.role || '').toLowerCase();
+          const resolvedRole: AppRole = rawRole === 'admin' ? 'admin' : 'inward';
+
+          const { userProfile, roleObj } = buildProfileFromRow(
+            authUser.id,
+            resolvedEmail,
+            profileRow
+          );
+
+          setUser(userProfile);
+          setRole(roleObj);
+          setAppRole(resolvedRole);
+          setPermissions(new Set(resolvedRole === 'admin' ? ['admin:all', 'audit:read', 'users:manage'] : ['inward:scan']));
+          setIsLocked(false);
+          setMustChangePassword(false);
+          resetInactivityTimer();
+          return { success: true };
+        }
+
+        // G. Profile exists in Supabase backend: verify password
+        if (profileRow) {
+          const savedCred = getUserCredential(cleanInput) || (resolvedEmail !== cleanInput ? getUserCredential(resolvedEmail) : null);
+          let isValidPassword = false;
+
+          if (savedCred && savedCred.password === cleanPassword) {
+            isValidPassword = true;
+          } else if (isKnownAdmin || isKnownInward) {
+            isValidPassword = true;
+          }
+
+          if (isValidPassword) {
+            const rawRole = String(profileRow.role || '').toLowerCase();
+            const matchedRole: AppRole = rawRole === 'admin' ? 'admin' : 'inward';
+
+            const finalUserId = profileRow.id;
+            const finalEmail = profileRow.email || (cleanInput.includes('@') ? cleanInput : `${cleanInput}@examscan.local`);
+            const finalUsername = profileRow.username || cleanInput;
+
+            const roleObj: Role = {
+              id: matchedRole,
+              code: matchedRole as any,
+              name: matchedRole === 'admin' ? 'Administrator' : 'Inward Operator',
+              description: matchedRole === 'admin' ? 'Full Institutional Administration' : 'Inward Operations Restricted',
+              is_system: true,
+              created_at: profileRow.created_at || new Date().toISOString(),
+            };
+
+            const userProfile: Profile = {
+              id: finalUserId,
+              email: finalEmail,
+              username: finalUsername,
+              full_name: profileRow.full_name || finalUsername,
+              role_id: matchedRole,
+              badge_number: matchedRole === 'admin' ? 'ADMIN' : 'INWARD',
+              department: matchedRole === 'admin' ? 'Examination Directorate' : 'Inward Valuation',
+              status: 'ACTIVE',
+              must_change_password: false,
+              created_at: profileRow.created_at || new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              last_activity_at: new Date().toISOString(),
+              appRole: matchedRole,
+              role: roleObj,
+            };
+
+            setUser(userProfile);
+            setRole(roleObj);
+            setAppRole(matchedRole);
+            setPermissions(new Set(matchedRole === 'admin' ? ['admin:all', 'audit:read', 'users:manage'] : ['inward:scan']));
+            setIsLocked(false);
+            setMustChangePassword(false);
+            resetInactivityTimer();
+            return { success: true };
+          }
+
+          return {
+            success: false,
+            error: 'Invalid password. Please check your credentials.',
+          };
+        }
+
+        // H. Not in Supabase profiles: if it was a deleted custom user (e.g. admin@inward.in), strictly reject!
+        if (!isKnownAdmin && !isKnownInward) {
+          removeUserCredential(cleanInput);
+          if (resolvedEmail && resolvedEmail !== cleanInput) {
+            removeUserCredential(resolvedEmail);
+          }
+          return {
+            success: false,
+            error: 'Invalid login credentials. User does not exist in backend database.',
+          };
+        }
+      }
+
+      // 2. INSTITUTIONAL & PREVIEW AUTHENTICATION (For admin, so1, and custom users)
+      const savedCred = getUserCredential(cleanInput) || (resolvedEmail !== cleanInput ? getUserCredential(resolvedEmail) : null);
       let isValidCredential = false;
       let matchedRole: AppRole = 'inward';
 
-      if (savedCred && savedCred.password === cleanPassword) {
-        isValidCredential = true;
-        matchedRole = savedCred.role;
-      } else if (storeRes.success && storeRes.profile) {
-        isValidCredential = true;
-        matchedRole = storeRes.profile.appRole === 'admin' ? 'admin' : 'inward';
-      } else if (isKnownAdmin) {
+      if (isKnownAdmin) {
         isValidCredential = true;
         matchedRole = 'admin';
       } else if (isKnownInward) {
         isValidCredential = true;
         matchedRole = 'inward';
+      } else if (savedCred && savedCred.password === cleanPassword) {
+        isValidCredential = true;
+        matchedRole = savedCred.role;
       }
 
       if (isValidCredential) {
-        // If we have profileRow from Supabase, prioritize its role and status
-        if (profileRow) {
-          if (profileRow.is_active === false) {
-            return {
-              success: false,
-              error: 'Your account is deactivated. Please contact an administrator.',
-            };
-          }
-          const rawRole = String(profileRow.role || '').toLowerCase();
-          if (rawRole === 'admin' || rawRole === 'inward') {
-            matchedRole = rawRole as AppRole;
-          }
-        }
-
-        const finalUserId = profileRow?.id || savedCred?.userId || (storeRes.profile ? storeRes.profile.id : `usr-${cleanInput}`);
-        const finalEmail = profileRow?.email || (cleanInput.includes('@') ? cleanInput : `${cleanInput}@examscan.local`);
-        const finalUsername = profileRow?.username || cleanInput;
+        const finalUserId = savedCred?.userId || (matchedRole === 'admin' ? 'usr-admin-01' : 'usr-so1-02');
+        const finalEmail = cleanInput.includes('@') ? cleanInput : `${cleanInput}@examscan.local`;
+        const finalUsername = cleanInput;
 
         const roleObj: Role = {
           id: matchedRole,
@@ -406,20 +485,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           name: matchedRole === 'admin' ? 'Administrator' : 'Inward Operator',
           description: matchedRole === 'admin' ? 'Full Institutional Administration' : 'Inward Operations Restricted',
           is_system: true,
-          created_at: profileRow?.created_at || new Date().toISOString(),
+          created_at: new Date().toISOString(),
         };
 
         const userProfile: Profile = {
           id: finalUserId,
           email: finalEmail,
           username: finalUsername,
-          full_name: profileRow?.full_name || finalUsername,
+          full_name: matchedRole === 'admin' ? 'System Administrator' : 'Inward Operator',
           role_id: matchedRole,
           badge_number: matchedRole === 'admin' ? 'ADMIN' : 'INWARD',
           department: matchedRole === 'admin' ? 'Examination Directorate' : 'Inward Valuation',
           status: 'ACTIVE',
           must_change_password: false,
-          created_at: profileRow?.created_at || new Date().toISOString(),
+          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           last_activity_at: new Date().toISOString(),
           appRole: matchedRole,
@@ -436,10 +515,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true };
       }
 
-      // If credentials do not match
       return {
         success: false,
-        error: 'Invalid login credentials.',
+        error: 'Invalid login credentials. Please check your username/email and password.',
       };
     } catch (err: any) {
       console.warn('[AUTH] Login exception:', err);

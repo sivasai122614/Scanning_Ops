@@ -23,7 +23,6 @@ import {
   ShieldCheck,
   UserCheck,
   CheckCircle2,
-  Ban,
   AlertCircle,
   Shield,
   KeyRound,
@@ -97,17 +96,6 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     setTimeout(() => setActionFeedback(null), 3500);
   };
 
-  // Toggle user active / inactive in Supabase public.profiles
-  const handleToggleStatus = async (targetUser: Profile) => {
-    const newStatus = targetUser.status === 'ACTIVE' ? false : true;
-    const res = await userService.toggleUserStatus(targetUser.id, targetUser.status);
-    if (res.success) {
-      showNotification(`User status updated to ${newStatus ? 'ACTIVE' : 'DEACTIVATED'}.`);
-      loadData();
-    } else {
-      showNotification(`Error updating status: ${res.error}`);
-    }
-  };
 
   // Update role in Supabase public.profiles
   const handleRoleChange = async (targetUser: Profile, newRole: AppRole) => {
@@ -376,15 +364,12 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                 <th scope="col" className="px-4 py-3.5">
                   Created Date
                 </th>
-                <th scope="col" className="px-5 py-3.5 text-right">
-                  Account Control
-                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={4} className="px-4 py-12 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <RefreshCw className="h-6 w-6 animate-spin text-[#1565D8]" />
                       <span className="font-semibold text-xs text-slate-700">Loading users from Supabase...</span>
@@ -393,7 +378,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                 </tr>
               ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-16 text-center text-slate-500">
+                  <td colSpan={4} className="px-4 py-16 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <AlertCircle className="h-8 w-8 text-slate-400" />
                       <span className="font-bold text-sm text-slate-800">
@@ -515,54 +500,24 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                       </td>
 
                       {/* Account Status */}
-                      <td
-                        className="px-4 py-3.5"
-                        onClick={e => e.stopPropagation()}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => handleToggleStatus(u)}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold cursor-pointer transition-all hover:scale-105 active:scale-95 ${
+                      <td className="px-4 py-3.5">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
                             isActive
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                              : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-rose-50 text-rose-700 border border-rose-200'
                           }`}
-                          title="Click to toggle account status"
                         >
                           <span
-                            className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}
+                            className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-rose-500'}`}
                           />
                           <span>{isActive ? 'ACTIVE' : 'DEACTIVATED'}</span>
-                        </button>
+                        </span>
                       </td>
 
                       {/* Created Date */}
                       <td className="px-4 py-3.5 font-medium text-slate-600 text-xs">
                         {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
-                      </td>
-
-                      {/* Actions */}
-                      <td
-                        className="px-5 py-3.5 text-right"
-                        onClick={e => e.stopPropagation()}
-                      >
-                        <div className="flex items-center justify-end gap-1.5">
-                          {/* Toggle Active / Deactivated */}
-                          {!isCurrentCaller && (
-                            <button
-                              type="button"
-                              onClick={() => handleToggleStatus(u)}
-                              className={`p-1.5 rounded-lg border transition-all duration-150 cursor-pointer hover:scale-110 active:scale-90 ${
-                                isActive
-                                  ? 'border-slate-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300'
-                                  : 'border-slate-200 text-emerald-600 hover:bg-emerald-50 hover:border-emerald-300'
-                              }`}
-                              title={isActive ? 'Deactivate Account' : 'Activate Account'}
-                            >
-                              {isActive ? <Ban className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                            </button>
-                          )}
-                        </div>
                       </td>
                     </tr>
                   );

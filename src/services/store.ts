@@ -39,19 +39,50 @@ class EnterpriseStore {
 
   private initStore() {
     try {
-      // Clear legacy storage keys if present to ensure zero sample data persistence
+      localStorage.removeItem('exam_ops_users_v2');
       localStorage.removeItem('exam_ops_users_v1');
+      localStorage.removeItem('exam_ops_audit_v2');
       localStorage.removeItem('exam_ops_audit_v1');
-
-      const storedUsers = localStorage.getItem(USERS_STORAGE_KEY);
-      if (storedUsers) {
-        const parsed = JSON.parse(storedUsers);
-        this.users = Array.isArray(parsed)
-          ? parsed.filter((u: any) => !u.email?.includes('exam-ops.gov.edu') || u.is_real)
-          : [];
-      } else {
-        this.users = [];
-      }
+      this.users = [
+        {
+          email: 'admin',
+          passwordHash: 'Admin@12345',
+          profile: {
+            id: 'usr-admin-01',
+            email: 'admin@examscan.local',
+            username: 'admin',
+            full_name: 'System Administrator',
+            role_id: 'role-02-admin',
+            badge_number: 'ADMIN',
+            department: 'Examination Directorate',
+            status: 'ACTIVE',
+            must_change_password: false,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            last_activity_at: 'Active',
+            appRole: 'admin',
+          },
+        },
+        {
+          email: 'so1',
+          passwordHash: 'Inward@12345',
+          profile: {
+            id: 'usr-so1-02',
+            email: 'so1@examscan.local',
+            username: 'so1',
+            full_name: 'Inward Staff Officer',
+            role_id: 'role-04-scanner-operator',
+            badge_number: 'INWARD',
+            department: 'Inward Valuation',
+            status: 'ACTIVE',
+            must_change_password: false,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            last_activity_at: 'Active',
+            appRole: 'inward',
+          },
+        },
+      ];
 
       const storedAudit = localStorage.getItem(AUDIT_STORAGE_KEY);
       if (storedAudit) {
