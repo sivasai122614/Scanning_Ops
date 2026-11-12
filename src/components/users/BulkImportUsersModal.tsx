@@ -219,6 +219,11 @@ export const BulkImportUsersModal: React.FC<BulkImportUsersModalProps> = ({
           reason: res.error || 'Failed to provision',
         });
       }
+
+      // 250ms breathing room between API calls to prevent burst rate limits
+      if (i < validRows.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
     }
 
     setImportSummary({
@@ -379,8 +384,8 @@ export const BulkImportUsersModal: React.FC<BulkImportUsersModalProps> = ({
                 </div>
                 {importSummary.errors.map((err, idx) => (
                   <div key={idx} className="flex justify-between font-mono text-[11px] border-b border-rose-100 pb-1">
-                    <span>{err.email}</span>
-                    <span className="text-rose-600">{err.reason}</span>
+                    <span className="font-semibold text-slate-800">{err.email}</span>
+                    <span className="text-rose-600 text-right max-w-[65%]">{err.reason}</span>
                   </div>
                 ))}
               </div>

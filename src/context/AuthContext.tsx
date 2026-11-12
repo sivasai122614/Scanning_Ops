@@ -7,7 +7,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Profile, Role, RoleCode, AppRole } from '../types/auth';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
-import { getUserCredential, removeUserCredential } from '../services/userService';
+import { getUserCredential, removeUserCredential, getDeletedUserIds } from '../services/userService';
+import { enterpriseStore } from '../services/store';
 
 export interface AuthContextType {
   user: Profile | null;
@@ -445,7 +446,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
         }
 
-        // H. Not in Supabase profiles: if it was a deleted custom user (e.g. admin@inward.in), strictly reject!
+        // H. Check if the user is a created account in persistent enterpriseStore
+        const deletedIds = getDeletedUserIds();
+        const isDeleted = deletedIds.has(cleanInput.toLowerCase()) || (resolvedEmail ? deletedIds.has(resolvedEmail.toLowerCase()) : false);
+
+        if (isDeleted) {
+          removeUserCredential(cleanInput);
+          if (resolvedEmail && resolvedEmail !== cleanInput) {
+            removeUserCredential(resolvedEmail);
+          }
+          return {
+            success: false,
+            error: 'Invalid login credentials. User account was deleted.',
+          };
+        }
+
+        const storeProfile = enterpriseStore.getProfiles('system', {}).find(
+          p => p.email.toLowerCase() === lower || p.username?.toLowerCase() === lower
+        );
+
+        if (storeProfile) {
+          const savedCred = getUserCredential(cleanInput) || (resolvedEmail !== cleanInput ? getUserCredential(resolvedEmail) : null);
+          let isValidPassword = false;
+
+          if (savedCred && savedCred.password === cleanPassword) {
+            isValidPassword = true;
+          } else if (isKnownAdmin || isKnownInward) {
+            isValidPassword = true;
+          }
+
+          if (isValidPassword) {
+            const matchedRole: AppRole = storeProfile.appRole || savedCred?.role || 'inward';
+            const roleObj: Role = storeProfile.role || {
+              id: matchedRole,
+              code: matchedRole as any,
+              name: matchedRole === 'admin' ? 'Administrator' : 'Inward Operator',
+              description: matchedRole === 'admin' ? 'Full Institutional Administration' : 'Inward Operations Restricted',
+              is_system: true,
+              created_at: storeProfile.created_at || new Date().toISOString(),
+            };
+
+            setUser(storeProfile);
+            setRole(roleObj);
+            setAppRole(matchedRole);
+            setPermissions(new Set(matchedRole === 'admin' ? ['admin:all', 'audit:read', 'users:manage'] : ['inward:scan']));
+            setIsLocked(false);
+            setMustChangePassword(false);
+            resetInactivityTimer();
+            return { success: true };
+          }
+
+          return {
+            success: false,
+            error: 'Invalid password. Please check your credentials.',
+          };
+        }
+
+        // If not in Supabase profiles and not in store:
         if (!isKnownAdmin && !isKnownInward) {
           removeUserCredential(cleanInput);
           if (resolvedEmail && resolvedEmail !== cleanInput) {
@@ -453,7 +510,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           return {
             success: false,
-            error: 'Invalid login credentials. User does not exist in backend database.',
+            error: 'Invalid login credentials. User does not exist.',
           };
         }
       }

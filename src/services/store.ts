@@ -25,7 +25,7 @@ export interface StoredAccount {
   profile: Profile;
 }
 
-const USERS_STORAGE_KEY = 'exam_ops_users_v2';
+const USERS_STORAGE_KEY = 'exam_ops_users_v3';
 const AUDIT_STORAGE_KEY = 'exam_ops_audit_v2';
 const SESSION_STORAGE_KEY = 'exam_ops_auth_session_v1';
 
@@ -39,11 +39,7 @@ class EnterpriseStore {
 
   private initStore() {
     try {
-      localStorage.removeItem('exam_ops_users_v2');
-      localStorage.removeItem('exam_ops_users_v1');
-      localStorage.removeItem('exam_ops_audit_v2');
-      localStorage.removeItem('exam_ops_audit_v1');
-      this.users = [
+      const defaultUsers: StoredAccount[] = [
         {
           email: 'admin',
           passwordHash: 'Admin@12345',
@@ -84,6 +80,29 @@ class EnterpriseStore {
         },
       ];
 
+      const storedRaw = localStorage.getItem(USERS_STORAGE_KEY);
+      if (storedRaw) {
+        try {
+          const parsed = JSON.parse(storedRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Merge defaults with stored custom users
+            const existingEmails = new Set(parsed.map((u: any) => u.email?.toLowerCase()));
+            for (const d of defaultUsers) {
+              if (!existingEmails.has(d.email.toLowerCase())) {
+                parsed.push(d);
+              }
+            }
+            this.users = parsed;
+          } else {
+            this.users = defaultUsers;
+          }
+        } catch {
+          this.users = defaultUsers;
+        }
+      } else {
+        this.users = defaultUsers;
+      }
+
       const storedAudit = localStorage.getItem(AUDIT_STORAGE_KEY);
       if (storedAudit) {
         const parsed = JSON.parse(storedAudit);
@@ -91,7 +110,6 @@ class EnterpriseStore {
           ? parsed.filter((a: any) => !a.id?.startsWith('aud-00'))
           : [];
       } else {
-        // Absolutely zero initial audit logs
         this.auditLogs = [];
       }
     } catch (e) {
