@@ -229,7 +229,7 @@ export const userService = {
     password: string;
     role: AppRole;
     fullName?: string;
-  }): Promise<{ success: boolean; data?: Profile; error?: string; warning?: string }> {
+  }): Promise<{ success: boolean; data?: Profile; error?: string; warning?: string; backendSaved?: boolean; backendError?: string }> {
     const cleanEmail = payload.email.trim().toLowerCase();
     const cleanPassword = payload.password;
     const cleanRole: AppRole = payload.role === 'admin' ? 'admin' : 'inward';
@@ -261,36 +261,57 @@ export const userService = {
 
     let authUserId = '';
     let isSupabaseAuthId = false;
+    let backendSaved = false;
+    let backendErrorMsg = '';
 
     if (isSupabaseConfigured && supabaseUrl && supabaseAnonKey) {
-      // 1. Try backend Edge Function first
+      // 1. Try public.admin_create_user RPC first (Direct write to auth.users & profiles, no rate limits, pre-confirmed)
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const headers: Record<string, string> = {};
-        if (sessionData?.session?.access_token) {
-          headers['Authorization'] = `Bearer ${sessionData.session.access_token}`;
-        }
-
-        const { data: edgeData, error: edgeErr } = await supabase.functions.invoke('create-user', {
-          headers,
-          body: {
-            email: cleanEmail,
-            password: cleanPassword,
-            role_code: cleanRole,
-            full_name: fullName,
-            badge_number: cleanEmail.split('@')[0],
-            department: cleanRole === 'admin' ? 'Examination Directorate' : 'Inward Valuation',
-          },
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('admin_create_user', {
+          new_email: cleanEmail,
+          new_password: cleanPassword,
+          user_role: cleanRole,
         });
-        if (!edgeErr && edgeData?.success && edgeData?.data?.user?.id) {
-          authUserId = edgeData.data.user.id;
+
+        if (!rpcErr && rpcData?.success && rpcData?.user_id) {
+          authUserId = rpcData.user_id;
           isSupabaseAuthId = true;
+          backendSaved = true;
         }
-      } catch {
-        // Edge function not available, proceed to signUp client
+      } catch (rpcEx) {
+        console.warn('[userService] admin_create_user RPC note:', rpcEx);
       }
 
-      // 2. If not provisioned by edge function, try client signUp
+      // 2. Try backend Edge Function if RPC not deployed
+      if (!authUserId) {
+        try {
+          const { data: sessionData } = await supabase.auth.getSession();
+          const headers: Record<string, string> = {};
+          if (sessionData?.session?.access_token) {
+            headers['Authorization'] = `Bearer ${sessionData.session.access_token}`;
+          }
+
+          const { data: edgeData, error: edgeErr } = await supabase.functions.invoke('create-user', {
+            headers,
+            body: {
+              email: cleanEmail,
+              password: cleanPassword,
+              role_code: cleanRole,
+              full_name: fullName,
+              badge_number: cleanEmail.split('@')[0],
+              department: cleanRole === 'admin' ? 'Examination Directorate' : 'Inward Valuation',
+            },
+          });
+          if (!edgeErr && edgeData?.success && edgeData?.data?.user?.id) {
+            authUserId = edgeData.data.user.id;
+            isSupabaseAuthId = true;
+          }
+        } catch {
+          // Edge function not available, proceed to signUp client
+        }
+      }
+
+      // 3. If not provisioned by edge function or RPC, try client signUp
       if (!authUserId) {
         try {
           const isolatedAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
@@ -336,8 +357,8 @@ export const userService = {
 
     const nowIso = new Date().toISOString();
 
-    // 4. If user was created in auth.users, sync directly to public.profiles table
-    if (isSupabaseConfigured && isSupabaseAuthId && authUserId) {
+    // 4. If not already saved via RPC, sync directly to Supabase public.profiles table
+    if (isSupabaseConfigured && authUserId && !backendSaved) {
       try {
         const profileInsert: any = {
           id: authUserId,
@@ -352,12 +373,25 @@ export const userService = {
           .from('profiles')
           .upsert(profileInsert, { onConflict: 'id' });
 
-        if (upsertErr) {
+        if (!upsertErr) {
+          backendSaved = true;
+        } else {
+          // If error was email column missing, try without email column
           delete profileInsert.email;
-          await supabase.from('profiles').upsert(profileInsert, { onConflict: 'id' });
+          const { error: retryErr } = await supabase
+            .from('profiles')
+            .upsert(profileInsert, { onConflict: 'id' });
+
+          if (!retryErr) {
+            backendSaved = true;
+          } else {
+            backendErrorMsg = retryErr.message;
+            console.warn('[userService] Supabase profile upsert note:', retryErr.message);
+          }
         }
       } catch (e: any) {
-        console.warn('[userService] Supabase profile upsert note:', e);
+        backendErrorMsg = e.message;
+        console.warn('[userService] Supabase profile upsert error:', e);
       }
     }
 
@@ -396,6 +430,94 @@ export const userService = {
     return {
       success: true,
       data: newProfile,
+      backendSaved,
+      backendError: backendErrorMsg || undefined,
+    };
+  },
+
+  /**
+   * Syncs all users stored in enterpriseStore / local store to Supabase backend public.profiles
+   */
+  async syncAllUsersToSupabase(): Promise<{
+    total: number;
+    successCount: number;
+    failedCount: number;
+    errors: string[];
+  }> {
+    const profiles = await this.fetchProfilesFromSupabase();
+    let successCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+    const nowIso = new Date().toISOString();
+
+    for (const p of profiles) {
+      if (!isSupabaseConfigured) break;
+      const cleanEmail = (p.email || p.username || '').toLowerCase();
+      const cleanRole = p.appRole === 'admin' ? 'admin' : 'inward';
+      const savedCred = getUserCredential(cleanEmail);
+
+      let rpcSucceeded = false;
+      if (savedCred?.password) {
+        try {
+          const { data: rpcRes, error: rpcErr } = await supabase.rpc('admin_create_user', {
+            new_email: cleanEmail,
+            new_password: savedCred.password,
+            user_role: cleanRole,
+          });
+          if (!rpcErr && rpcRes?.success) {
+            rpcSucceeded = true;
+            successCount++;
+          }
+        } catch {
+          // Fall back to profiles table upsert
+        }
+      }
+
+      if (rpcSucceeded) continue;
+
+      const profileInsert: any = {
+        id: p.id,
+        username: p.username || cleanEmail,
+        role: cleanRole,
+        is_active: p.status === 'ACTIVE',
+        updated_at: nowIso,
+        email: cleanEmail,
+      };
+
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .upsert(profileInsert, { onConflict: 'id' });
+
+        if (!error) {
+          successCount++;
+        } else {
+          delete profileInsert.email;
+          const { error: retryErr } = await supabase
+            .from('profiles')
+            .upsert(profileInsert, { onConflict: 'id' });
+          if (!retryErr) {
+            successCount++;
+          } else {
+            failedCount++;
+            if (!errors.includes(retryErr.message)) {
+              errors.push(retryErr.message);
+            }
+          }
+        }
+      } catch (err: any) {
+        failedCount++;
+        if (!errors.includes(err.message)) {
+          errors.push(err.message);
+        }
+      }
+    }
+
+    return {
+      total: profiles.length,
+      successCount,
+      failedCount,
+      errors,
     };
   },
 
@@ -612,3 +734,132 @@ export const userService = {
     enterpriseStore.clearAllData();
   },
 };
+
+export const SUPABASE_USERS_SETUP_SQL = `-- ==============================================================================
+-- 1. Auto-Confirm Existing Users (Fixes "Waiting for verification" in Supabase Auth)
+-- ==============================================================================
+UPDATE auth.users
+SET email_confirmed_at = now()
+WHERE email_confirmed_at IS NULL;
+
+-- ==============================================================================
+-- 2. Relax foreign key on profiles table & add email column
+-- ==============================================================================
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email TEXT;
+
+-- ==============================================================================
+-- 3. Row Level Security (RLS) policies allowing front-end to save directly to Table Editor
+-- ==============================================================================
+DROP POLICY IF EXISTS "Allow all profiles insert" ON public.profiles;
+CREATE POLICY "Allow all profiles insert" ON public.profiles FOR INSERT WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow all profiles select" ON public.profiles;
+CREATE POLICY "Allow all profiles select" ON public.profiles FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow all profiles update" ON public.profiles;
+CREATE POLICY "Allow all profiles update" ON public.profiles FOR UPDATE USING (true);
+
+DROP POLICY IF EXISTS "Allow all profiles delete" ON public.profiles;
+CREATE POLICY "Allow all profiles delete" ON public.profiles FOR DELETE USING (true);
+
+-- ==============================================================================
+-- 4. Enable pgcrypto for password hashing
+-- ==============================================================================
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ==============================================================================
+-- 5. FUNCTION: admin_create_user
+-- Directly adds users into Supabase Authentication -> Users table (Pre-confirmed, no rate limits!)
+-- AND also saves into Table Editor -> public.profiles
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.admin_create_user(
+  new_email TEXT,
+  new_password TEXT,
+  user_role TEXT DEFAULT 'inward'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions
+AS $$
+DECLARE
+  v_user_id UUID := gen_random_uuid();
+  clean_email TEXT := lower(trim(new_email));
+  clean_role TEXT := lower(trim(user_role));
+  extracted_username TEXT;
+BEGIN
+  IF clean_role NOT IN ('admin', 'inward') THEN
+    clean_role := 'inward';
+  END IF;
+
+  extracted_username := split_part(clean_email, '@', 1);
+
+  -- A. Check if user already exists in auth.users
+  IF EXISTS (SELECT 1 FROM auth.users WHERE lower(email) = clean_email) THEN
+    -- Update password and confirm user
+    UPDATE auth.users
+    SET encrypted_password = crypt(new_password, gen_salt('bf')),
+        email_confirmed_at = COALESCE(email_confirmed_at, now()),
+        raw_user_meta_data = jsonb_build_object('username', extracted_username, 'role', clean_role, 'email', clean_email),
+        updated_at = now()
+    WHERE lower(email) = clean_email
+    RETURNING id INTO v_user_id;
+  ELSE
+    -- B. Insert directly into auth.users (Appears instantly in Authentication -> Users)
+    INSERT INTO auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at
+    ) VALUES (
+      v_user_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      clean_email,
+      crypt(new_password, gen_salt('bf')),
+      now(),
+      '{"provider": "email", "providers": ["email"]}'::jsonb,
+      jsonb_build_object('username', extracted_username, 'role', clean_role, 'email', clean_email),
+      now(),
+      now()
+    );
+  END IF;
+
+  -- C. Upsert into public.profiles (Appears instantly in Table Editor -> profiles)
+  INSERT INTO public.profiles (id, username, role, is_active, email, created_at, updated_at)
+  VALUES (
+    v_user_id,
+    extracted_username,
+    clean_role,
+    true,
+    clean_email,
+    now(),
+    now()
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    username = EXCLUDED.username,
+    role = EXCLUDED.role,
+    is_active = true,
+    email = EXCLUDED.email,
+    updated_at = now();
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'user_id', v_user_id,
+    'email', clean_email,
+    'role', clean_role
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.admin_create_user(TEXT, TEXT, TEXT) TO anon, authenticated;
+`;

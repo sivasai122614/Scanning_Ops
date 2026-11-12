@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { userService } from '../../services/userService';
+import { userService, SUPABASE_USERS_SETUP_SQL } from '../../services/userService';
 import { Profile, AppRole } from '../../types/auth';
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient';
 import { CreateUserModal } from './CreateUserModal';
@@ -27,6 +27,10 @@ import {
   Shield,
   KeyRound,
   X,
+  Database,
+  CloudUpload,
+  Copy,
+  Check,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -53,6 +57,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const setCreateOpen = controlledSetCreateOpen || setLocalCreateOpen;
 
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
+  const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   const [editingRoleUser, setEditingRoleUser] = useState<Profile | null>(null);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
@@ -107,6 +114,30 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     } else {
       showNotification(`Error updating role: ${res.error}`);
     }
+  };
+
+  // Sync all users directly to Supabase backend profiles Table Editor
+  const handleSyncAllToBackend = async () => {
+    setIsSyncingAll(true);
+    try {
+      const res = await userService.syncAllUsersToSupabase();
+      if (res.successCount > 0) {
+        showNotification(`Synced ${res.successCount} users directly to Supabase Table Editor!`);
+        loadData();
+      } else if (res.errors.length > 0) {
+        showNotification(`Backend sync note: ${res.errors[0]}`);
+      }
+    } catch (e: any) {
+      showNotification(`Sync error: ${e.message}`);
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(SUPABASE_USERS_SETUP_SQL);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
   };
 
   // Direct download clean template with ZERO sample data
@@ -202,6 +233,29 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           >
             <FileSpreadsheet className="h-4 w-4 text-[#1565D8]" />
             <span>Import Excel (Bulk)</span>
+          </button>
+
+          {/* Sync All to Supabase Backend */}
+          <button
+            type="button"
+            onClick={handleSyncAllToBackend}
+            disabled={isSyncingAll}
+            className="flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 transition-all duration-150 cursor-pointer shadow-2xs hover:scale-[1.02] active:scale-95 disabled:opacity-50"
+            title="Sync all current users directly into Supabase Table Editor (public.profiles)"
+          >
+            <CloudUpload className={`h-3.5 w-3.5 text-emerald-700 ${isSyncingAll ? 'animate-spin' : ''}`} />
+            <span>{isSyncingAll ? 'Syncing...' : 'Sync to Backend'}</span>
+          </button>
+
+          {/* Supabase SQL Setup */}
+          <button
+            type="button"
+            onClick={() => setIsSqlModalOpen(true)}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-all duration-150 cursor-pointer shadow-2xs hover:scale-[1.02] active:scale-95"
+            title="View SQL snippet to enable direct saving in Supabase Table Editor"
+          >
+            <Database className="h-3.5 w-3.5 text-slate-500" />
+            <span>Backend SQL</span>
           </button>
 
           {/* Refresh */}
@@ -541,6 +595,97 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
         onClose={() => setIsBulkImportOpen(false)}
         onUsersImported={loadData}
       />
+
+      {/* Supabase Backend SQL Setup Modal */}
+      {isSqlModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl text-slate-800 my-8 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 border border-amber-200 text-amber-600">
+                  <Database className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Supabase Backend Table Editor Setup</h2>
+                  <p className="text-xs text-slate-500">
+                    Run this 1-click SQL in Supabase SQL Editor to save users directly to Table Editor
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSqlModalOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3.5 text-amber-900 space-y-2">
+                <div className="font-bold flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-amber-600" />
+                  <span>Endhuku Backend lo direct ga save avvatledu?</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-800 leading-relaxed">
+                  <li><strong>Supabase RLS Policy:</strong> <code>public.profiles</code> table anon writes ni block chestundi.</li>
+                  <li><strong>Foreign Key Restriction:</strong> <code>profiles.id</code> table auth.users lo id unte ne save avvaniystundi.</li>
+                  <li><strong>Email Rate Limit:</strong> Supabase Free tier 3 emails/hr limit valla bulk creation aagipotundi.</li>
+                </ol>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800">Supabase SQL Editor Query:</span>
+                  <button
+                    type="button"
+                    onClick={handleCopySql}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1565D8] text-white text-xs font-semibold hover:bg-[#0D47A1] transition-colors cursor-pointer"
+                  >
+                    {copiedSql ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                    <span>{copiedSql ? 'Copied to Clipboard!' : 'Copy SQL'}</span>
+                  </button>
+                </div>
+                <pre className="p-3 bg-slate-900 text-emerald-400 rounded-xl font-mono text-[11px] overflow-x-auto max-h-48 border border-slate-800">
+                  {SUPABASE_USERS_SETUP_SQL}
+                </pre>
+              </div>
+
+              <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 text-blue-900 space-y-1.5 text-[11px]">
+                <div className="font-bold text-blue-950">Ela Cheyali (Simple 2 Steps):</div>
+                <p>1. Open <strong>Supabase Dashboard &rarr; SQL Editor</strong> &rarr; Click <strong>New Query</strong> &rarr; Paste &rarr; Click <strong>Run</strong>.</p>
+                <p>2. Open <strong>Supabase Dashboard &rarr; Authentication &rarr; Providers &rarr; Email</strong> &rarr; Toggle <strong>Confirm email: OFF</strong> &rarr; Click <strong>Save</strong>.</p>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setIsSqlModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await handleSyncAllToBackend();
+                    setIsSqlModalOpen(false);
+                  }}
+                  disabled={isSyncingAll}
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  <CloudUpload className={`h-4 w-4 ${isSyncingAll ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingAll ? 'Syncing...' : 'Sync Users to Backend Now'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

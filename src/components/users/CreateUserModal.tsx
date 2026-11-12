@@ -43,6 +43,8 @@ export const CreateUserModal: React.FC<CreateUserModalProps> = ({
     email: string;
     role: AppRole;
     tempPassword?: string;
+    backendSaved?: boolean;
+    backendError?: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -108,6 +110,8 @@ export const CreateUserModal: React.FC<CreateUserModalProps> = ({
           email: cleanEmail,
           role,
           tempPassword: cleanPassword,
+          backendSaved: res.backendSaved,
+          backendError: res.backendError,
         });
         onUserCreated();
       }
@@ -155,7 +159,9 @@ export const CreateUserModal: React.FC<CreateUserModalProps> = ({
               <div>
                 <div className="font-bold text-sm text-emerald-950">User Created Successfully!</div>
                 <div className="mt-1 leading-relaxed text-emerald-800">
-                  Account is active in Supabase Authentication and verified in public.profiles.
+                  {createdUser.backendSaved
+                    ? 'Account is active in Supabase Authentication and saved directly in public.profiles Table Editor.'
+                    : 'Account is active in app. To mirror into Supabase Table Editor (public.profiles), click "Backend SQL" in Users view and run the SQL.'}
                 </div>
               </div>
             </div>

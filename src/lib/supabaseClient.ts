@@ -9,8 +9,8 @@ const globalObj = globalThis as any;
 const envObj: any = typeof import.meta !== 'undefined' && (import.meta as any).env 
   ? (import.meta as any).env 
   : (globalObj.process?.env || {});
-export const supabaseUrl = envObj.VITE_SUPABASE_URL || '';
-export const supabaseAnonKey = envObj.VITE_SUPABASE_ANON_KEY || '';
+export const supabaseUrl = envObj.VITE_SUPABASE_URL || 'https://zgejldfcpllfbasmndrt.supabase.co';
+export const supabaseAnonKey = envObj.VITE_SUPABASE_ANON_KEY || 'sb_publishable_bLMEm-2KqFilsHCaZGpGGg_BRJ0K8Mm';
 
 // Verify that the service role key is NEVER used on frontend
 if (
