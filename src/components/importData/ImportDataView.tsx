@@ -250,6 +250,7 @@ export const ImportDataView: React.FC<ImportDataViewProps> = ({ onNavigateToScan
     };
 
     updateFromService();
+    importedService.syncFromSupabase().catch(() => {});
     const unsub = importedService.subscribe(updateFromService);
     return () => {
       unsub();

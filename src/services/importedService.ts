@@ -605,6 +605,7 @@ class ImportedService {
   private realtimeChannel: any = null;
   public isInitialized: boolean = false;
   private isSyncing: boolean = false;
+  private missingOptionalTables: Set<string> = new Set();
 
   constructor() {
     this.loadFromLocalStorage();
@@ -921,9 +922,11 @@ class ImportedService {
             sch_id: newRecord.sch_id,
             member_id: cleanMid,
             barcode: newRecord.barcode ? normalizeIdentifier(newRecord.barcode) : undefined,
+            exam_date: newRecord.exam_date ? (healInvertedExamDate(newRecord.exam_date) || normalizeExamDate(newRecord.exam_date)) : (newRecord.date ? (healInvertedExamDate(newRecord.date) || normalizeExamDate(newRecord.date)) : undefined),
             created_by: newRecord.created_by,
             created_at: newRecord.created_at || new Date().toISOString(),
           });
+          this.rebuildDateIndex();
           stateChanged = true;
         }
       } else if (eventType === 'DELETE') {
@@ -1157,30 +1160,34 @@ class ImportedService {
         console.warn('[ImportedService] Exact counts query notice:', cntErr);
       }
 
-      // 1. Fetch import sessions
-      try {
-        const { data: sessData, error: sessErr } = await supabase
-          .from('import_sessions')
-          .select('*')
-          .order('created_at', { ascending: false });
+      // 1. Fetch import sessions (optional table)
+      if (!this.missingOptionalTables.has('import_sessions')) {
+        try {
+          const { data: sessData, error: sessErr } = await supabase
+            .from('import_sessions')
+            .select('*')
+            .order('created_at', { ascending: false });
 
-        if (!sessErr && sessData !== null && Array.isArray(sessData)) {
-          this.importSessions = sessData.map((s: any) => ({
-            id: s.id,
-            university_name: s.university_name || s.college_name || '',
-            college_name: s.college_name || s.university_name || '',
-            source_file_name: s.source_file_name || 'import.xlsx',
-            total_records: s.total_records || 0,
-            total_class_ids: s.total_class_ids || 0,
-            created_at: s.created_at || new Date().toISOString(),
-          }));
-          if (this.importSessions.length > 0) {
-            this.activeUniversity = this.importSessions[0].university_name;
-            this.activeSessionId = this.importSessions[0].id;
+          if (sessErr && (sessErr.code === 'PGRST205' || String(sessErr.message || '').includes('Could not find the table'))) {
+            this.missingOptionalTables.add('import_sessions');
+          } else if (!sessErr && sessData !== null && Array.isArray(sessData)) {
+            this.importSessions = sessData.map((s: any) => ({
+              id: s.id,
+              university_name: s.university_name || s.college_name || '',
+              college_name: s.college_name || s.university_name || '',
+              source_file_name: s.source_file_name || 'import.xlsx',
+              total_records: s.total_records || 0,
+              total_class_ids: s.total_class_ids || 0,
+              created_at: s.created_at || new Date().toISOString(),
+            }));
+            if (this.importSessions.length > 0) {
+              this.activeUniversity = this.importSessions[0].university_name;
+              this.activeSessionId = this.importSessions[0].id;
+            }
           }
+        } catch {
+          // Optional session table
         }
-      } catch {
-        // Optional session table
       }
 
       // 2. Fetch imported data with full pagination (supports high loads: 5k, 10k, 50k+ records)
@@ -1226,6 +1233,8 @@ class ImportedService {
           console.log('[ImportedService] Supabase returned 0 imported records. Representing imported data as empty, preserving scan history.');
           this.importInwarded = [];
           this.importSessions = [];
+          this.activeExamDate = null;
+          try { if (typeof localStorage !== 'undefined') localStorage.removeItem('examscan_active_exam_date'); } catch {}
         } else {
           this.importInwarded = impRows.map((r: any) => ({
             id: r.id || `${r.class_id}_${r.member_id || r.mem_id}`,
@@ -1243,10 +1252,27 @@ class ImportedService {
 
           this.rebuildDateIndex();
 
-          // Align active university with imported records
+          // Align active university with imported records (clear stale mismatched university)
           const firstUni = this.importInwarded[0].university_name || this.importInwarded[0].college_name;
-          if (firstUni && !this.activeUniversity) {
-            this.activeUniversity = firstUni;
+          if (firstUni) {
+            const activeUniMatchesImported = Boolean(this.activeUniversity) && this.importInwarded.some(
+              r => (r.university_name || r.college_name || '').toLowerCase() === this.activeUniversity.toLowerCase()
+            );
+            if (!this.activeUniversity || !activeUniMatchesImported) {
+              this.activeUniversity = firstUni;
+            }
+          }
+
+          // Self-heal stale activeExamDate if zero imported records match it
+          if (this.activeExamDate) {
+            const hasMatchingDate = this.importInwarded.some(r =>
+              isRecordMatchingDateFilter(r.exam_date, this.activeExamDate)
+            );
+            if (!hasMatchingDate) {
+              console.warn(`[ImportedService] Clearing stale activeExamDate "${this.activeExamDate}" — 0 matching imported records in backend.`);
+              this.activeExamDate = null;
+              try { if (typeof localStorage !== 'undefined') localStorage.removeItem('examscan_active_exam_date'); } catch {}
+            }
           }
         }
         this.saveToLocalStorage();
@@ -1366,24 +1392,28 @@ class ImportedService {
         console.warn('[ImportedService] Supabase manual_inward_data sync note:', e);
       }
 
-      // 6. Fetch scan_session_items (paginated)
-      try {
-        const { data: itemsData, error: itemsErr } = await fetchAllRowsFromTable('scan_session_items');
-        if (!itemsErr && itemsData !== null && Array.isArray(itemsData)) {
-          this.scanItems = itemsData.map((i: any) => ({
-            id: i.id,
-            scan_session_id: i.scan_session_id,
-            class_id: String(i.class_id || '').trim(),
-            member_id: String(i.member_id || '').trim(),
-            barcode: i.barcode,
-            detected_at: i.detected_at || new Date().toISOString(),
-            detected_by: i.detected_by || 'Siva Sai',
-            status: i.status || 'PENDING_SAVE',
-            created_at: i.created_at || new Date().toISOString(),
-          }));
+      // 6. Fetch scan_session_items (paginated, optional table)
+      if (!this.missingOptionalTables.has('scan_session_items')) {
+        try {
+          const { data: itemsData, error: itemsErr } = await fetchAllRowsFromTable('scan_session_items');
+          if (itemsErr && (itemsErr.code === 'PGRST205' || String(itemsErr.message || '').includes('Could not find the table'))) {
+            this.missingOptionalTables.add('scan_session_items');
+          } else if (!itemsErr && itemsData !== null && Array.isArray(itemsData)) {
+            this.scanItems = itemsData.map((i: any) => ({
+              id: i.id,
+              scan_session_id: i.scan_session_id,
+              class_id: String(i.class_id || '').trim(),
+              member_id: String(i.member_id || '').trim(),
+              barcode: i.barcode,
+              detected_at: i.detected_at || new Date().toISOString(),
+              detected_by: i.detected_by || 'Siva Sai',
+              status: i.status || 'PENDING_SAVE',
+              created_at: i.created_at || new Date().toISOString(),
+            }));
+          }
+        } catch (e) {
+          console.warn('[ImportedService] Supabase scan_session_items sync note:', e);
         }
-      } catch (e) {
-        console.warn('[ImportedService] Supabase scan_session_items sync note:', e);
       }
 
       // Auto-reconcile manual inward records into saved_scanned_data
@@ -2400,6 +2430,262 @@ class ImportedService {
     }
 
     return this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() === cleanCid.toLowerCase());
+  }
+
+  /**
+   * Fetches authoritative live backend data from Supabase strictly for a single Class ID:
+   * imported_inward_data, saved_scanned_data, manual_inward_data, and scan_session_items.
+   * Ensures Admin inspection shows 100% real records belonging ONLY to that Class ID.
+   */
+  public async refreshClassLiveDetails(classId: string): Promise<void> {
+    const cleanCid = normalizeIdentifier(classId);
+    if (!cleanCid || !isSupabaseConfigured) return;
+
+    const cleanLower = cleanCid.toLowerCase();
+
+    const fetchClassTable = async (tableName: string): Promise<any[] | null> => {
+      try {
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('*')
+          .eq('class_id', cleanCid)
+          .limit(5000);
+        if (!error && Array.isArray(data)) return data;
+      } catch {}
+      return null;
+    };
+
+    const [impData, savedData, manData, itemsData] = await Promise.all([
+      fetchClassTable('imported_inward_data'),
+      fetchClassTable('saved_scanned_data'),
+      fetchClassTable('manual_inward_data'),
+      fetchClassTable('scan_session_items'),
+    ]);
+
+    let changed = false;
+
+    if (impData !== null) {
+      const freshImp: ImportInwardedRecord[] = impData.map((r: any) => ({
+        id: r.id || `${r.class_id}_${r.member_id || r.mem_id}`,
+        import_session_id: r.import_session_id || r.import_batch_id || 'default_session',
+        college_name: r.university_name || r.college_name || this.activeUniversity || '',
+        university_name: r.university_name || r.college_name || this.activeUniversity || '',
+        class_id: normalizeIdentifier(r.class_id),
+        sch_id: r.sch_id,
+        member_id: normalizeIdentifier(r.member_id || r.mem_id),
+        barcode: r.barcode ? normalizeIdentifier(r.barcode) : undefined,
+        exam_date: r.exam_date
+          ? (healInvertedExamDate(r.exam_date) || normalizeExamDate(r.exam_date))
+          : (r.date ? (healInvertedExamDate(r.date) || normalizeExamDate(r.date)) : undefined),
+        created_by: r.created_by,
+        created_at: r.created_at || new Date().toISOString(),
+      }));
+      this.importInwarded = [
+        ...this.importInwarded.filter(r => normalizeIdentifier(r.class_id).toLowerCase() !== cleanLower),
+        ...freshImp,
+      ];
+      changed = true;
+    }
+
+    if (savedData !== null) {
+      const freshSaved: SavedScannedRecord[] = savedData.map((s: any) => ({
+        id: s.id,
+        scan_session_id: s.scan_session_id,
+        import_session_id: s.import_session_id,
+        college_name: s.college_name || this.activeUniversity,
+        class_id: normalizeIdentifier(s.class_id),
+        sch_id: s.sch_id,
+        member_id: normalizeIdentifier(s.member_id),
+        barcode: s.barcode ? normalizeIdentifier(s.barcode) : undefined,
+        exam_date: s.exam_date
+          ? (healInvertedExamDate(s.exam_date) || normalizeExamDate(s.exam_date))
+          : (s.date ? (healInvertedExamDate(s.date) || normalizeExamDate(s.date)) : undefined),
+        scanned_by: s.scanned_by || 'Operator',
+        scanned_at: s.scanned_at || new Date().toISOString(),
+        saved_by: s.saved_by || 'Operator',
+        saved_at: s.saved_at || new Date().toISOString(),
+        status: s.status || 'SAVED',
+      }));
+      this.savedScanned = [
+        ...this.savedScanned.filter(s => normalizeIdentifier(s.class_id).toLowerCase() !== cleanLower),
+        ...freshSaved,
+      ];
+      changed = true;
+    }
+
+    if (manData !== null) {
+      const freshMan: ManualInwardedRecord[] = manData.map((m: any) => ({
+        id: m.id,
+        session_code: m.session_code,
+        bundle_code: m.bundle_code,
+        class_id: normalizeIdentifier(m.class_id),
+        school_id: m.school_id,
+        room_number: m.room_number,
+        subject_name: m.subject_name,
+        booklet_barcode: m.booklet_barcode ? normalizeIdentifier(m.booklet_barcode) : undefined,
+        roll_number: m.roll_number ? normalizeIdentifier(m.roll_number) : undefined,
+        member_id: normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || ''),
+        college_name: m.college_name || this.activeUniversity,
+        exam_date: m.exam_date ? normalizeExamDate(m.exam_date) : (m.date ? normalizeExamDate(m.date) : undefined),
+        status: m.status || 'inwarded',
+        inwarded_by: m.inwarded_by || 'Manual Inward',
+        notes: m.notes,
+        scanned_at: m.scanned_at || m.created_at,
+        created_at: m.created_at || new Date().toISOString(),
+      }));
+      this.manualInwarded = [
+        ...this.manualInwarded.filter(m => normalizeIdentifier(m.class_id).toLowerCase() !== cleanLower),
+        ...freshMan,
+      ];
+      changed = true;
+    }
+
+    if (itemsData !== null) {
+      const freshItems: ScanSessionItem[] = itemsData.map((i: any) => ({
+        id: i.id,
+        scan_session_id: i.scan_session_id,
+        class_id: String(i.class_id || '').trim(),
+        member_id: String(i.member_id || '').trim(),
+        barcode: i.barcode,
+        detected_at: i.detected_at || new Date().toISOString(),
+        detected_by: i.detected_by || 'Operator',
+        status: i.status || 'PENDING_SAVE',
+        created_at: i.created_at || new Date().toISOString(),
+      }));
+      this.scanItems = [
+        ...this.scanItems.filter(i => normalizeIdentifier(i.class_id).toLowerCase() !== cleanLower),
+        ...freshItems,
+      ];
+      changed = true;
+    }
+
+    if (changed) {
+      this.saveToLocalStorage();
+      this.notify();
+    }
+  }
+
+  /**
+   * Returns strict per-Class ID member status breakdown (Not Inwarded vs Inwarded)
+   * matching getClassBundles() logic 1-to-1 and strictly scoped to ONLY that Class ID.
+   */
+  public getStrictClassMemberBreakdown(
+    classId: string,
+    dateFilter?: ExamDateFilter
+  ): BundleRecordView[] {
+    const clean = normalizeIdentifier(classId);
+    if (!clean) return [];
+    const cleanLower = clean.toLowerCase();
+
+    const isExplicitlyAll = dateFilter === 'ALL' || dateFilter === 'all' || dateFilter === '' || dateFilter === null;
+    const isFiltering = Boolean(!isExplicitlyAll && dateFilter !== undefined);
+    const targetFilter = isFiltering ? dateFilter : null;
+
+    // 1. Authoritative imported members strictly belonging to this exact Class ID
+    const expected = this.importInwarded.filter(r => {
+      if (normalizeIdentifier(r.class_id).toLowerCase() !== cleanLower) return false;
+      if (targetFilter && !isRecordMatchingDateFilter(r.exam_date, targetFilter)) return false;
+      return true;
+    });
+
+    // 2. Saved scans strictly belonging to this exact Class ID
+    const savedMap = new Map<string, SavedScannedRecord>();
+    for (const s of this.savedScanned) {
+      if (normalizeIdentifier(s.class_id).toLowerCase() !== cleanLower) continue;
+      const mid = normalizeIdentifier(s.member_id).toLowerCase();
+      if (mid) savedMap.set(mid, s);
+    }
+
+    // 3. Manual inwards strictly belonging to this exact Class ID
+    const manualMap = new Map<string, ManualInwardedRecord>();
+    for (const m of this.manualInwarded) {
+      if (normalizeIdentifier(m.class_id).toLowerCase() !== cleanLower) continue;
+      const mid = normalizeIdentifier(m.member_id || m.roll_number || m.booklet_barcode || '').toLowerCase();
+      if (mid) manualMap.set(mid, m);
+    }
+
+    // 4. Pending session scans strictly belonging to this exact Class ID
+    const pendingMap = new Map<string, ScanSessionItem>();
+    for (const p of this.scanItems) {
+      if (p.status !== 'PENDING_SAVE') continue;
+      if (normalizeIdentifier(p.class_id).toLowerCase() !== cleanLower) continue;
+      const mid = normalizeIdentifier(p.member_id).toLowerCase();
+      if (mid) pendingMap.set(mid, p);
+    }
+
+    const views: BundleRecordView[] = [];
+    for (const exp of expected) {
+      const mid = normalizeIdentifier(exp.member_id);
+      const midLower = mid.toLowerCase();
+
+      const sv = savedMap.get(midLower);
+      const man = manualMap.get(midLower);
+      const pend = pendingMap.get(midLower);
+
+      if (sv) {
+        views.push({
+          id: sv.id,
+          class_id: exp.class_id,
+          member_id: mid,
+          barcode: sv.barcode || exp.barcode || null,
+          exam_date: sv.exam_date || exp.exam_date || null,
+          scan_status: 'saved',
+          scanned_by: sv.scanned_by,
+          scanned_at: sv.scanned_at,
+          saved_by: sv.saved_by,
+          saved_at: sv.saved_at,
+        });
+      } else if (man) {
+        views.push({
+          id: man.id,
+          class_id: exp.class_id,
+          member_id: mid,
+          barcode: man.booklet_barcode || exp.barcode || null,
+          exam_date: man.exam_date || exp.exam_date || null,
+          scan_status: 'saved',
+          scanned_by: man.inwarded_by || 'Manual Inward',
+          scanned_at: man.scanned_at || man.created_at,
+          saved_by: man.inwarded_by || 'Manual Inward',
+          saved_at: man.created_at,
+        });
+      } else if (pend) {
+        views.push({
+          id: pend.id,
+          class_id: exp.class_id,
+          member_id: mid,
+          barcode: pend.barcode || exp.barcode || null,
+          exam_date: exp.exam_date || null,
+          scan_status: 'pending_save',
+          scanned_by: pend.detected_by,
+          scanned_at: pend.detected_at,
+          saved_by: null,
+          saved_at: null,
+        });
+      } else {
+        views.push({
+          id: exp.id,
+          class_id: exp.class_id,
+          member_id: mid,
+          barcode: exp.barcode || null,
+          exam_date: exp.exam_date || null,
+          scan_status: 'not_started',
+          scanned_by: null,
+          scanned_at: null,
+          saved_by: null,
+          saved_at: null,
+        });
+      }
+    }
+
+    // Sort: not_started first (most important for missing check), then pending_save, then saved
+    views.sort((a, b) => {
+      const order = { not_started: 0, pending_save: 1, saved: 2 };
+      const diff = order[a.scan_status] - order[b.scan_status];
+      if (diff !== 0) return diff;
+      return a.member_id.localeCompare(b.member_id);
+    });
+
+    return views;
   }
 
   /**

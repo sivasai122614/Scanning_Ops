@@ -29,6 +29,7 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
+  Eye,
 } from 'lucide-react';
 import {
   importedService,
@@ -41,6 +42,7 @@ import {
 } from '../../services/importedService';
 import { ManualInwardModal } from './ManualInwardModal';
 import { AdminInwardRollbackModal } from './AdminInwardRollbackModal';
+import { ClassMissingMembersModal } from './ClassMissingMembersModal';
 import { exportScanningStatusOverviewToExcel } from '../../utils/excelExport';
 
 interface DashboardViewProps {
@@ -353,6 +355,9 @@ function getTomorrowDdMmYyyy(): string {
   const [rollbackTargetClassId, setRollbackTargetClassId] = useState<string>('');
   const [rollbackTargetExamDate, setRollbackTargetExamDate] = useState<string>('');
 
+  // Admin Class ID Missing / Member Breakdown Inspector Modal State (Eye button)
+  const [inspectingClassBundle, setInspectingClassBundle] = useState<ClassBundle | null>(null);
+
   // Status Overview Excel Export
   const [isExportingOverview, setIsExportingOverview] = useState<boolean>(false);
 
@@ -377,10 +382,11 @@ function getTomorrowDdMmYyyy(): string {
   const initialEndIso = normalizeExamDate(getTomorrowDdMmYyyy()) || getTomorrowDdMmYyyy();
   const activeFilterRef = useRef<ExamDateFilter>({ startDate: initialStartIso, endDate: initialEndIso });
   const hasFetchedDataRef = useRef<boolean>(true);
+  const userManuallyFilteredRef = useRef<boolean>(false);
 
   // Load and subscribe to live data scoped to fetched date range
   const loadData = useCallback((explicitFilter?: ExamDateFilter) => {
-    const filterToUse = explicitFilter !== undefined ? explicitFilter : activeFilterRef.current;
+    let filterToUse = explicitFilter !== undefined ? explicitFilter : activeFilterRef.current;
     const isFetched = hasFetchedDataRef.current || (filterToUse !== null && filterToUse !== undefined && filterToUse !== '');
 
     if (!isFetched) {
@@ -390,7 +396,39 @@ function getTomorrowDdMmYyyy(): string {
       return;
     }
 
-    const bList = importedService.getClassBundles(filterToUse || undefined);
+    let bList = importedService.getClassBundles(filterToUse || undefined);
+
+    // CRITICAL FIX: Never trap Dashboard on empty Today->Tomorrow if backend has imported data on other dates!
+    if (!userManuallyFilteredRef.current && bList.length === 0 && importedService.hasImportedData()) {
+      const availDates = importedService.getAvailableExamDates();
+      if (availDates.length > 0) {
+        const first = availDates[0];
+        const last = availDates[availDates.length - 1];
+        const resolvedFilter: ExamDateFilter =
+          first.date === last.date
+            ? first.date
+            : { startDate: first.date, endDate: last.date };
+
+        activeFilterRef.current = resolvedFilter;
+        filterToUse = resolvedFilter;
+        setFilterStartDate(first.displayDate);
+        setFilterEndDate(last.displayDate);
+        setFetchedRange({ startDate: first.date, endDate: last.date });
+        // Only scope station date if single exam date, otherwise leave ALL DATES open for operators
+        importedService.setActiveExamDate(availDates.length === 1 ? first.date : null);
+        bList = importedService.getClassBundles(resolvedFilter);
+      } else {
+        // Imported rows exist without exam_date — show ALL records
+        activeFilterRef.current = null;
+        filterToUse = null;
+        setFilterStartDate('');
+        setFilterEndDate('');
+        setFetchedRange(null);
+        importedService.setActiveExamDate(null);
+        bList = importedService.getClassBundles(undefined);
+      }
+    }
+
     const sum = importedService.getSessionSummary(filterToUse || undefined);
     const manList = importedService.getManualInwardRecords();
     setBundles(bList);
@@ -398,23 +436,21 @@ function getTomorrowDdMmYyyy(): string {
     setManualRecords(manList);
   }, []);
 
-  const handleFetchData = (customStart?: string, customEnd?: string) => {
+  const handleFetchData = (customStart?: string, customEnd?: string, isManual: boolean = true) => {
+    if (isManual) {
+      userManuallyFilteredRef.current = true;
+    }
+
     const s = customStart !== undefined ? customStart : filterStartDate;
     const e = customEnd !== undefined ? customEnd : (filterEndDate || filterStartDate);
 
     if (!s && !e) {
-      if (availableExamDates.length > 0) {
-        const first = availableExamDates[0].date;
-        const firstDisplay = availableExamDates[0].displayDate;
-        setFilterStartDate(firstDisplay);
-        setFilterEndDate(firstDisplay);
-        setFetchedRange({ startDate: first, endDate: first });
-        hasFetchedDataRef.current = true;
-        setHasFetchedData(true);
-        activeFilterRef.current = first;
-        importedService.setActiveExamDate(first);
-        loadData(first);
-      }
+      hasFetchedDataRef.current = true;
+      setHasFetchedData(true);
+      setFetchedRange(null);
+      activeFilterRef.current = null;
+      importedService.setActiveExamDate(null);
+      loadData(null);
       return;
     }
 
@@ -435,23 +471,36 @@ function getTomorrowDdMmYyyy(): string {
       : { startDate: startIso, endDate: endIso };
 
     activeFilterRef.current = filterToUse;
-    // Always sync active station exam date so inward operations stay synchronized
-    importedService.setActiveExamDate(startIso);
+    // Only propagate activeExamDate to Scanning/Inward views if records actually match that date;
+    // never overwrite activeExamDate with an empty future/today date when data exists elsewhere
+    const matchedBundles = importedService.getClassBundles(filterToUse);
+    if (matchedBundles.length > 0) {
+      importedService.setActiveExamDate(startIso === endIso ? startIso : null);
+    }
     loadData(filterToUse);
     setIsFetching(false);
   };
 
   const handleClearDateFilter = () => {
-    const today = getTodayDdMmYyyy();
-    const tomorrow = getTomorrowDdMmYyyy();
-    setFilterStartDate(today);
-    setFilterEndDate(tomorrow);
-    handleFetchData(today, tomorrow);
+    userManuallyFilteredRef.current = true;
+    setFilterStartDate('');
+    setFilterEndDate('');
+    setFetchedRange(null);
+    hasFetchedDataRef.current = true;
+    setHasFetchedData(true);
+    activeFilterRef.current = null;
+    importedService.setActiveExamDate(null);
+    loadData(null);
   };
 
   useEffect(() => {
-    // Auto-fetch data for initial today-to-tomorrow range on mount
-    handleFetchData(getTodayDdMmYyyy(), getTomorrowDdMmYyyy());
+    // Auto-fetch initial range (auto-switches to real backend dates if today-tomorrow is empty)
+    handleFetchData(getTodayDdMmYyyy(), getTomorrowDdMmYyyy(), false);
+
+    // Immediately pull live backend data on mount (do not wait 5s for first poll)
+    importedService.syncFromSupabase().catch(err => {
+      console.warn('[Dashboard] Initial Supabase sync note:', err);
+    });
 
     const unsub = importedService.subscribe(() => {
       loadData();
@@ -822,13 +871,15 @@ function getTomorrowDdMmYyyy(): string {
 
         {/* Right: Active Date Status & Realtime Live Status */}
         <div className="flex items-center gap-2.5 shrink-0">
-          {hasFetchedData && fetchedRange && (
+          {hasFetchedData && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-xl text-[#1565D8] text-xs font-bold">
               <span>ACTIVE:</span>
               <span className="font-mono">
-                {fetchedRange.startDate === fetchedRange.endDate
-                  ? formatExamDate(fetchedRange.startDate)
-                  : `${formatExamDate(fetchedRange.startDate)} → ${formatExamDate(fetchedRange.endDate)}`}
+                {!fetchedRange
+                  ? 'ALL DATES'
+                  : fetchedRange.startDate === fetchedRange.endDate
+                    ? formatExamDate(fetchedRange.startDate)
+                    : `${formatExamDate(fetchedRange.startDate)} → ${formatExamDate(fetchedRange.endDate)}`}
               </span>
             </span>
           )}
@@ -1390,6 +1441,25 @@ function getTomorrowDdMmYyyy(): string {
                       <span className={`px-2 py-0.5 border text-[10px] font-bold uppercase tracking-wider rounded-md ${badgeColor}`}>
                         {b.status}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => setInspectingClassBundle(b)}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                          b.status === 'PARTIAL / SAVED'
+                            ? 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 shadow-2xs'
+                            : classPending > 0
+                            ? 'bg-blue-50 text-[#1565D8] border border-blue-200 hover:bg-blue-100'
+                            : 'p-1 text-slate-400 hover:text-[#1565D8] hover:bg-blue-50'
+                        }`}
+                        title={
+                          classPending > 0
+                            ? `View ${classPending} Not-Inwarded Member IDs for Class ${b.classId}`
+                            : `View Member IDs for Class ${b.classId}`
+                        }
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        {b.status === 'PARTIAL / SAVED' && <span>Missing</span>}
+                      </button>
                       {b.receivedCount > 0 && (
                         <button
                           type="button"
@@ -1513,7 +1583,26 @@ function getTomorrowDdMmYyyy(): string {
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setInspectingClassBundle(b)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                                b.status === 'PARTIAL / SAVED'
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 shadow-2xs'
+                                  : classPending > 0
+                                  ? 'bg-blue-50 text-[#1565D8] border border-blue-200 hover:bg-blue-100'
+                                  : 'p-1.5 text-slate-400 hover:text-[#1565D8] hover:bg-blue-50'
+                              }`}
+                              title={
+                                classPending > 0
+                                  ? `View ${classPending} Not-Inwarded Member IDs for Class ${b.classId}`
+                                  : `View Member IDs for Class ${b.classId}`
+                              }
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                              {b.status === 'PARTIAL / SAVED' && <span>Missing ({classPending})</span>}
+                            </button>
                             {b.receivedCount > 0 && (
                               <button
                                 type="button"
@@ -1553,6 +1642,13 @@ function getTomorrowDdMmYyyy(): string {
         onClose={() => setIsRollbackModalOpen(false)}
         initialClassId={rollbackTargetClassId}
         initialExamDate={rollbackTargetExamDate || (fetchedRange ? fetchedRange.startDate : '')}
+      />
+
+      {/* 9. Dedicated Class ID Missing / Member Breakdown Inspector Modal */}
+      <ClassMissingMembersModal
+        bundle={inspectingClassBundle}
+        dateFilter={fetchedRange || undefined}
+        onClose={() => setInspectingClassBundle(null)}
       />
     </div>
   );

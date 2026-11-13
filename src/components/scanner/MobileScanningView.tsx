@@ -235,11 +235,20 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
   const activeBundle = selectedClassId ? importedService.getClassBundle(selectedClassId) : null;
 
   const loadData = useCallback(() => {
-    const curDate = importedService.getActiveExamDate();
-    setActiveExamDate(curDate || '');
+    let curDate = importedService.getActiveExamDate() || '';
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const bList = importedService.getClassBundles(curDate || undefined);
+
+    let bList = importedService.getClassBundles(curDate || undefined);
+
+    // CRITICAL FALLBACK: Never show "NO IMPORTED DATA" to Inward/Scan users if a stale activeExamDate hides backend records
+    if (hasData && bList.length === 0 && curDate) {
+      importedService.setActiveExamDate(null);
+      curDate = '';
+      bList = importedService.getClassBundles(undefined);
+    }
+
+    setActiveExamDate(curDate);
     const sum = importedService.getSessionSummary(curDate || undefined);
     const allSaved = importedService.getSavedScannedRecords(undefined, curDate || undefined);
     setBundles(bList);
@@ -283,6 +292,16 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
     const unsub = importedService.subscribe(loadData);
     return () => unsub();
   }, [loadData]);
+
+  useEffect(() => {
+    importedService.syncFromSupabase().catch(err => {
+      console.warn('[MobileScanningView] Initial Supabase sync note:', err);
+    });
+    const timer = setInterval(() => {
+      importedService.syncFromSupabase().catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   // When class changes in MEMBER_MODE, fetch fresh member records
   useEffect(() => {
@@ -1472,12 +1491,12 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
             </div>
           </div>
 
-          {/* Viewport: Dynamic Aspect Ratio (No restrictive frame overlay as instructed) */}
+          {/* Viewport: 16:9 Widescreen Aspect Ratio (High visibility, much bigger) */}
           <div
             className={`relative bg-slate-950 w-full flex items-center justify-center overflow-hidden transition-all duration-300 ${
               scanFormat === 'qr_code'
-                ? 'aspect-[4/3] min-h-[150px] max-h-[22vh]'
-                : 'aspect-[2.8/1] min-h-[82px] max-h-[12.5vh]'
+                ? 'aspect-[4/3] min-h-[220px] max-h-[36vh]'
+                : 'aspect-video min-h-[220px] max-h-[36vh]'
             }`}
           >
             {/* Cyber Animated Background Grid */}
@@ -1491,6 +1510,19 @@ export const MobileScanningView: React.FC<MobileScanningViewProps> = ({
               autoPlay
               className={`w-full h-full object-cover relative z-10 ${cameraActive ? 'block' : 'hidden'}`}
             />
+
+            {/* 16:9 Widescreen Barcode Aiming Reticle */}
+            {cameraActive && (
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-20">
+                <div className="relative w-[86%] aspect-[16/7] rounded-xl border border-emerald-400/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.32)] flex items-center justify-center">
+                  <div className="absolute -top-0.5 -left-0.5 w-3.5 h-3.5 border-t-2 border-l-2 border-emerald-400 rounded-tl" />
+                  <div className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 border-t-2 border-r-2 border-emerald-400 rounded-tr" />
+                  <div className="absolute -bottom-0.5 -left-0.5 w-3.5 h-3.5 border-b-2 border-l-2 border-emerald-400 rounded-bl" />
+                  <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 border-b-2 border-r-2 border-emerald-400 rounded-br" />
+                  <div className="absolute inset-x-2 h-[1.5px] bg-gradient-to-r from-transparent via-red-500 to-transparent shadow-[0_0_8px_#EF4444] animate-pulse" />
+                </div>
+              </div>
+            )}
 
             {/* Laser Sweeper Bar Animation */}
             {cameraActive && (

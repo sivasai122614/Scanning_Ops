@@ -129,20 +129,22 @@ export async function requestCameraStream(
 
   let stream: MediaStream | null = null;
 
-  // STEP 5 & 6: 1280x720 ideal resolution and 30fps practical frame rate
+  // Target 16:9 widescreen HD camera stream for high barcode fidelity
   const idealConstraints: MediaStreamConstraints = {
     audio: false,
     video: deviceId
       ? {
           deviceId: { exact: deviceId },
-          width: { ideal: 1280, max: 1280 },
-          height: { ideal: 720, max: 720 },
+          aspectRatio: { ideal: 1.7777777778 },
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
           frameRate: { ideal: 30, min: 20, max: 60 },
         }
       : {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1280, max: 1280 },
-          height: { ideal: 720, max: 720 },
+          aspectRatio: { ideal: 1.7777777778 },
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
           frameRate: { ideal: 30, min: 20, max: 60 },
         },
   };
@@ -150,13 +152,13 @@ export async function requestCameraStream(
   try {
     stream = await navigator.mediaDevices.getUserMedia(idealConstraints);
   } catch (err1) {
-    console.warn('[SCANNER] 720p constraints failed, trying relaxed environment:', err1);
+    console.warn('[SCANNER] 16:9 1080p/720p constraints failed, trying relaxed 16:9 environment:', err1);
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: deviceId
-          ? { deviceId: { exact: deviceId } }
-          : { facingMode: { ideal: 'environment' } },
+          ? { deviceId: { exact: deviceId }, aspectRatio: { ideal: 1.7777777778 } }
+          : { facingMode: { ideal: 'environment' }, aspectRatio: { ideal: 1.7777777778 } },
       });
     } catch (err2) {
       console.warn('[SCANNER] Environment rejected, trying fallback video:', err2);
@@ -285,9 +287,9 @@ export function startContinuousDualScanning(
   const scanMode: ScannerScanFormat = options?.scanMode || 'barcode';
   const isQrMode = scanMode === 'qr_code';
 
-  // Full-frame canvas sizing: 640x360 (16:9 rectangle) for 1D barcodes; 640x480 (4:3) for QR codes
-  const canvasW = 640;
-  const canvasH = isQrMode ? 480 : 360;
+  // High-fidelity 16:9 canvas sizing (960x540 for 16:9 barcodes; 960x720 for QR codes)
+  const canvasW = 960;
+  const canvasH = isQrMode ? 720 : 540;
 
   const scanCanvas = document.createElement('canvas');
   scanCanvas.width = canvasW;

@@ -585,9 +585,9 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
         </div>
       )}
 
-      {/* 3. FULL-FRAME CAMERA SCANNER */}
+      {/* 3. 16:9 WIDESCREEN HD CAMERA SCANNER */}
       <div className="bg-white border border-[#CBD5E1] rounded-2xl shadow-xs overflow-hidden">
-        <div className="relative bg-black w-full aspect-4/3 min-h-[380px] sm:min-h-[460px] max-h-[58vh] flex items-center justify-center overflow-hidden">
+        <div className="relative bg-slate-950 w-full aspect-video min-h-[420px] sm:min-h-[520px] max-h-[75vh] flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
             playsInline
@@ -596,7 +596,21 @@ export const BundleStatisticsView: React.FC<BundleStatisticsViewProps> = ({
             className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
 
-
+          {/* 16:9 Widescreen Barcode Aiming Reticle & Alignment Guide */}
+          {cameraActive && (
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+              <div className="relative w-[82%] max-w-[760px] aspect-[16/6] rounded-2xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.38)] flex items-center justify-center">
+                <div className="absolute -top-1 -left-1 w-6 h-6 border-t-3 border-l-3 border-emerald-400 rounded-tl-lg" />
+                <div className="absolute -top-1 -right-1 w-6 h-6 border-t-3 border-r-3 border-emerald-400 rounded-tr-lg" />
+                <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-3 border-l-3 border-emerald-400 rounded-bl-lg" />
+                <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-3 border-r-3 border-emerald-400 rounded-br-lg" />
+                <div className="absolute inset-x-3 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent shadow-[0_0_12px_#EF4444] animate-pulse" />
+                <div className="absolute -bottom-8 px-3 py-1 bg-slate-900/85 backdrop-blur-sm border border-slate-700 rounded-full text-[11px] font-bold uppercase tracking-wider text-emerald-400 shadow-md">
+                  16:9 Widescreen HD • Align Barcode Horizontally
+                </div>
+              </div>
+            </div>
+          )}
 
           {cameraLoading && (
             <div className="text-center text-white px-4">

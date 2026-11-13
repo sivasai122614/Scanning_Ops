@@ -9,6 +9,7 @@ import { Profile, Role, RoleCode, AppRole } from '../types/auth';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { getUserCredential, removeUserCredential, getDeletedUserIds } from '../services/userService';
 import { enterpriseStore } from '../services/store';
+import { importedService } from '../services/importedService';
 
 export interface AuthContextType {
   user: Profile | null;
@@ -213,6 +214,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       subscription.unsubscribe();
     };
   }, []);
+
+  // Sync operational data from Supabase whenever a user logs in or session becomes active
+  useEffect(() => {
+    if (user && appRole) {
+      importedService.syncFromSupabase().catch(() => {});
+    }
+  }, [user?.id, appRole]);
 
   // 2. Inactivity Monitor
   const resetInactivityTimer = useCallback(() => {

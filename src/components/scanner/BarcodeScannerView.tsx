@@ -818,8 +818,8 @@ export const BarcodeScannerView: React.FC<{
           </div>
         ) : (
         <div className="space-y-3.5">
-          {/* Viewfinder Card with Real-Time Camera Stream (Wide Horizontal Container) */}
-          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center aspect-16/10 sm:aspect-16/9 min-h-[240px] max-h-[380px] w-full max-w-[800px] mx-auto text-center transition-all">
+          {/* Viewfinder Card with Real-Time Camera Stream (16:9 Widescreen Container) */}
+          <div className="relative rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-xl flex flex-col items-center justify-center aspect-video min-h-[380px] sm:min-h-[480px] w-full max-w-[960px] mx-auto text-center transition-all">
             {/* Real-time HTML5 Camera Video Stream */}
             <video
               ref={videoRef}

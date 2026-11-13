@@ -310,13 +310,16 @@ export const ReportsView: React.FC = () => {
     const dates = importedService.getAvailableExamDates();
     setAvailableDates(dates);
 
-    // Initialize date filters from service if not set
+    // Initialize date filters from service only if it actually matches imported dates
     const currentActiveExamDate = importedService.getActiveExamDate();
     if (!filterStartDate && !filterEndDate && currentActiveExamDate) {
-      const disp = formatExamDate(currentActiveExamDate);
-      setFilterStartDate(disp);
-      setFilterEndDate(disp);
-      setActiveDateFilter(currentActiveExamDate);
+      const matchesAvailable = dates.some(d => d.date === currentActiveExamDate);
+      if (matchesAvailable) {
+        const disp = formatExamDate(currentActiveExamDate);
+        setFilterStartDate(disp);
+        setFilterEndDate(disp);
+        setActiveDateFilter(currentActiveExamDate);
+      }
     }
 
     if (currentUni) {
@@ -337,6 +340,14 @@ export const ReportsView: React.FC = () => {
     const unsub = importedService.subscribe(loadData);
     return () => unsub();
   }, [loadData]);
+
+  useEffect(() => {
+    importedService.syncFromSupabase().catch(() => {});
+    const timer = setInterval(() => {
+      importedService.syncFromSupabase().catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Handle Fetch / Apply Date Filter
   const handleApplyDateFilter = () => {

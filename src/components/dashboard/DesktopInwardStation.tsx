@@ -183,18 +183,20 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     return classSet.size || bundles.length;
   }, [availableDates, bundles]);
 
-  const hasInitializedDateRef = useRef<boolean>(false);
-  // Auto-select the active exam date from imported dataset on initial mount only
+  // Validate saved/active date whenever availableDates changes (auto-heal stale dates!)
   useEffect(() => {
-    if (!hasInitializedDateRef.current && availableDates.length > 0) {
-      hasInitializedDateRef.current = true;
-      const savedDate = importedService.getActiveExamDate();
-      if (savedDate !== undefined && savedDate !== null) {
+    if (availableDates.length === 0) return;
+    const savedDate = importedService.getActiveExamDate();
+    if (savedDate) {
+      const dateExistsInBackend = availableDates.some(
+        d => isRecordMatchingDateFilter(d.date, savedDate)
+      );
+      if (dateExistsInBackend) {
         setActiveExamDate(savedDate);
-      } else if (availableDates[0]?.date) {
-        const defaultDate = availableDates[0].date;
-        setActiveExamDate(defaultDate);
-        importedService.setActiveExamDate(defaultDate);
+      } else {
+        // Stale date filter (e.g. today's date when records are from another date) — reset to All Dates
+        setActiveExamDate('');
+        importedService.setActiveExamDate(null);
       }
     }
   }, [availableDates]);
@@ -208,14 +210,23 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
   const loadData = useCallback(() => {
     const hasData = importedService.hasImportedData();
     setHasImportedData(hasData);
-    const svcDate = importedService.getActiveExamDate() || '';
+    let svcDate = importedService.getActiveExamDate() || '';
     if (svcDate !== activeExamDate) {
       setActiveExamDate(svcDate);
     }
-    const currentActive = svcDate || activeExamDate;
-    const isAll = !currentActive || currentActive === 'ALL' || currentActive === 'all';
-    const filterToUse = isAll ? null : currentActive;
-    const bList = importedService.getClassBundles(filterToUse);
+    let currentActive = svcDate || activeExamDate;
+    let isAll = !currentActive || currentActive === 'ALL' || currentActive === 'all';
+    let filterToUse = isAll ? null : currentActive;
+    let bList = importedService.getClassBundles(filterToUse);
+
+    // CRITICAL FALLBACK: Never hide imported classes behind a stale empty activeExamDate
+    if (hasData && bList.length === 0 && filterToUse) {
+      importedService.setActiveExamDate(null);
+      setActiveExamDate('');
+      filterToUse = null;
+      bList = importedService.getClassBundles(null);
+    }
+
     const sum = importedService.getSessionSummary(filterToUse);
     const allSaved = importedService.getSavedScannedRecords(undefined, filterToUse || undefined);
     setBundles(bList);
@@ -238,6 +249,16 @@ export const DesktopInwardStation: React.FC<DesktopInwardStationProps> = ({
     const unsub = importedService.subscribe(loadData);
     return () => unsub();
   }, [loadData]);
+
+  useEffect(() => {
+    importedService.syncFromSupabase().catch(err => {
+      console.warn('[DesktopInwardStation] Initial Supabase sync note:', err);
+    });
+    const timer = setInterval(() => {
+      importedService.syncFromSupabase().catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Load records for currently selected class scoped to date & user role
   useEffect(() => {

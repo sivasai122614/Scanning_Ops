@@ -268,14 +268,27 @@ export const FirstBookletScannerModal: React.FC<FirstBookletScannerModalProps> =
           </button>
         </div>
 
-        {/* Viewfinder area: Wide rectangular aspect ratio designed for wide 1D barcodes */}
-        <div className="relative bg-black w-full aspect-16/10 sm:aspect-16/9 min-h-[260px] max-h-[420px] flex items-center justify-center overflow-hidden">
+        {/* Viewfinder area: 16:9 Widescreen aspect ratio designed for wide 1D barcodes */}
+        <div className="relative bg-slate-950 w-full aspect-video min-h-[340px] sm:min-h-[440px] max-h-[58vh] flex items-center justify-center overflow-hidden">
           <video
             ref={videoRef}
             playsInline
             muted
-            className={`w-full h-full object-contain ${cameraActive ? 'block' : 'hidden'}`}
+            className={`w-full h-full object-cover ${cameraActive ? 'block' : 'hidden'}`}
           />
+
+          {/* 16:9 Widescreen Barcode Aiming Reticle */}
+          {cameraActive && (
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+              <div className="relative w-[82%] aspect-[16/6] rounded-2xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.38)] flex items-center justify-center">
+                <div className="absolute -top-1 -left-1 w-5 h-5 border-t-3 border-l-3 border-emerald-400 rounded-tl-lg" />
+                <div className="absolute -top-1 -right-1 w-5 h-5 border-t-3 border-r-3 border-emerald-400 rounded-tr-lg" />
+                <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-3 border-l-3 border-emerald-400 rounded-bl-lg" />
+                <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-3 border-r-3 border-emerald-400 rounded-br-lg" />
+                <div className="absolute inset-x-3 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent shadow-[0_0_10px_#EF4444] animate-pulse" />
+              </div>
+            </div>
+          )}
 
           {cameraLoading && (
             <div className="text-center text-white px-4">
