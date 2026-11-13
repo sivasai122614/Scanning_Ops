@@ -245,13 +245,13 @@ export const userService = {
     // Check duplicate existence in Supabase backend
     if (isSupabaseConfigured) {
       try {
-        const { data: existing } = await supabase
+        const { data: existingRows } = await supabase
           .from('profiles')
           .select('id, email, username')
           .or(`email.eq.${cleanEmail},username.eq.${cleanEmail}`)
-          .maybeSingle();
+          .limit(1);
 
-        if (existing) {
+        if (Array.isArray(existingRows) && existingRows.length > 0) {
           return { success: false, error: `A user with email/username '${cleanEmail}' already exists in backend.` };
         }
       } catch (checkErr) {
@@ -736,11 +736,24 @@ export const userService = {
 };
 
 export const SUPABASE_USERS_SETUP_SQL = `-- ==============================================================================
--- 1. Auto-Confirm Existing Users (Fixes "Waiting for verification" in Supabase Auth)
+-- 1. Repair existing auth.users rows (Fixes 500 "Database error querying schema" & confirms email)
 -- ==============================================================================
 UPDATE auth.users
-SET email_confirmed_at = now()
-WHERE email_confirmed_at IS NULL;
+SET
+  email_confirmed_at = COALESCE(email_confirmed_at, now()),
+  confirmation_token = COALESCE(confirmation_token, ''),
+  recovery_token = COALESCE(recovery_token, ''),
+  email_change_token_new = COALESCE(email_change_token_new, ''),
+  email_change = COALESCE(email_change, ''),
+  email_change_token_current = COALESCE(email_change_token_current, ''),
+  reauthentication_token = COALESCE(reauthentication_token, '')
+WHERE email_confirmed_at IS NULL
+   OR confirmation_token IS NULL
+   OR recovery_token IS NULL
+   OR email_change_token_new IS NULL
+   OR email_change IS NULL
+   OR email_change_token_current IS NULL
+   OR reauthentication_token IS NULL;
 
 -- ==============================================================================
 -- 2. Relax foreign key on profiles table & add email column
@@ -770,7 +783,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ==============================================================================
 -- 5. FUNCTION: admin_create_user
--- Directly adds users into Supabase Authentication -> Users table (Pre-confirmed, no rate limits!)
+-- Directly adds users into Supabase Authentication -> Users table (Pre-confirmed, no rate limits, cross-device mobile/desktop login!)
 -- AND also saves into Table Editor -> public.profiles
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.admin_create_user(
@@ -797,16 +810,22 @@ BEGIN
 
   -- A. Check if user already exists in auth.users
   IF EXISTS (SELECT 1 FROM auth.users WHERE lower(email) = clean_email) THEN
-    -- Update password and confirm user
     UPDATE auth.users
     SET encrypted_password = crypt(new_password, gen_salt('bf')),
         email_confirmed_at = COALESCE(email_confirmed_at, now()),
+        confirmation_token = COALESCE(confirmation_token, ''),
+        recovery_token = COALESCE(recovery_token, ''),
+        email_change_token_new = COALESCE(email_change_token_new, ''),
+        email_change = COALESCE(email_change, ''),
+        email_change_token_current = COALESCE(email_change_token_current, ''),
+        reauthentication_token = COALESCE(reauthentication_token, ''),
+        raw_app_meta_data = '{"provider": "email", "providers": ["email"]}'::jsonb,
         raw_user_meta_data = jsonb_build_object('username', extracted_username, 'role', clean_role, 'email', clean_email),
         updated_at = now()
     WHERE lower(email) = clean_email
     RETURNING id INTO v_user_id;
   ELSE
-    -- B. Insert directly into auth.users (Appears instantly in Authentication -> Users)
+    -- B. Insert directly into auth.users with non-null empty token defaults
     INSERT INTO auth.users (
       id,
       instance_id,
@@ -815,6 +834,12 @@ BEGIN
       email,
       encrypted_password,
       email_confirmed_at,
+      confirmation_token,
+      recovery_token,
+      email_change_token_new,
+      email_change,
+      email_change_token_current,
+      reauthentication_token,
       raw_app_meta_data,
       raw_user_meta_data,
       created_at,
@@ -827,8 +852,30 @@ BEGIN
       clean_email,
       crypt(new_password, gen_salt('bf')),
       now(),
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
       '{"provider": "email", "providers": ["email"]}'::jsonb,
       jsonb_build_object('username', extracted_username, 'role', clean_role, 'email', clean_email),
+      now(),
+      now()
+    );
+  END IF;
+
+  -- Ensure email identity exists for Supabase GoTrue signInWithPassword
+  IF NOT EXISTS (SELECT 1 FROM auth.identities WHERE user_id = v_user_id AND provider = 'email') THEN
+    INSERT INTO auth.identities (
+      id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
+    ) VALUES (
+      gen_random_uuid(),
+      v_user_id,
+      jsonb_build_object('sub', v_user_id::text, 'email', clean_email, 'email_verified', true, 'phone_verified', false),
+      'email',
+      v_user_id::text,
+      now(),
       now(),
       now()
     );

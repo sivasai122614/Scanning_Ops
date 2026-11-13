@@ -197,8 +197,8 @@ export const LoginScreen: React.FC = () => {
               </div>
             )}
 
-            {/* Form */}
-            <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Form (autoComplete=off + text-security masking prevents Mobile Chrome "Change your password / data breach" popup blocking login) */}
+            <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4">
               {/* Mail Id or Username Field */}
               <div>
                 <label className="block text-xs font-semibold text-[#111827] mb-2">
@@ -210,8 +210,13 @@ export const LoginScreen: React.FC = () => {
                   </div>
                   <input
                     type="text"
+                    name="examscan_login_identifier"
                     required
-                    autoComplete="username"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    inputMode="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                     placeholder="Enter your Mail Id or Username"
@@ -221,7 +226,7 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Password Field (Cleanly integrated for Supabase Auth) */}
+              {/* Password Field (Masked via -webkit-text-security so Google Password Manager leak popup does not hijack mobile login) */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-semibold text-[#111827]">
@@ -240,13 +245,20 @@ export const LoginScreen: React.FC = () => {
                     <Lock className="h-4 w-4" />
                   </div>
                   <input
-                    type={showPassword ? 'text' : 'password'}
+                    type="text"
+                    name="examscan_login_secret"
                     required
-                    autoComplete="current-password"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     placeholder="Enter your password"
                     disabled={isLoading || isSubmitting}
+                    style={!showPassword ? ({ WebkitTextSecurity: 'disc' } as React.CSSProperties) : undefined}
                     className="w-full h-12 rounded-xl border border-slate-300 bg-white pl-10 pr-10 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:border-[#0D6EFD] focus:ring-2 focus:ring-[#0D6EFD]/20 focus:outline-hidden transition-all duration-150 disabled:bg-slate-50"
                   />
                   <button

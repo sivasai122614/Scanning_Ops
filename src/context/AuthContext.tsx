@@ -372,12 +372,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanInput);
 
         try {
-          // A. Look up profile by username
-          const { data: byUsername } = await supabase
+          // A. Look up profile by username (use limit(1) instead of maybeSingle to handle duplicate rows cleanly)
+          const { data: byUsernameRows } = await supabase
             .from('profiles')
             .select('*')
             .ilike('username', cleanInput)
-            .maybeSingle();
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          const byUsername = Array.isArray(byUsernameRows) ? byUsernameRows[0] : null;
 
           if (byUsername) {
             profileRow = byUsername;
@@ -386,22 +389,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           } else if (cleanInput.includes('@')) {
             // B. Look up profile by email
-            const { data: byEmail } = await supabase
+            const { data: byEmailRows } = await supabase
               .from('profiles')
               .select('*')
               .ilike('email', cleanInput)
-              .maybeSingle();
+              .order('created_at', { ascending: false })
+              .limit(1);
+            const byEmail = Array.isArray(byEmailRows) ? byEmailRows[0] : null;
             if (byEmail) {
               profileRow = byEmail;
               resolvedEmail = byEmail.email || cleanInput;
             }
           } else if (isUuid) {
             // C. Look up profile by UUID
-            const { data: byId } = await supabase
+            const { data: byIdRows } = await supabase
               .from('profiles')
               .select('*')
               .eq('id', cleanInput)
-              .maybeSingle();
+              .limit(1);
+            const byId = Array.isArray(byIdRows) ? byIdRows[0] : null;
             if (byId) {
               profileRow = byId;
               if (byId.email) resolvedEmail = byId.email;
@@ -536,6 +542,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setMustChangePassword(false);
             resetInactivityTimer();
             return { success: true };
+          }
+
+          if (supabaseAuthErrorMessage && supabaseAuthErrorMessage.toLowerCase().includes('database error')) {
+            return {
+              success: false,
+              error: 'Supabase Auth token schema error for this account. Ask Admin to run the Users Backend SQL fix in Supabase SQL Editor.',
+            };
           }
 
           return {
